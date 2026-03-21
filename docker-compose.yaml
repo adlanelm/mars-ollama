@@ -19,7 +19,7 @@ services:
       - OLLAMA_DEBUG=1
       - OLLAMA_NEW_ENGINE=True
       - OLLAMA_NEW_ESTIMATES=True
-      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_KEEP_ALIVE=0
       - OLLAMA_ORIGINS="moz-extension://*"
     ports:
       - "11434:11434" # Ollama API at http://localhost:11434
@@ -48,12 +48,18 @@ services:
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       VLLM_BASE_URL: http://127.0.0.1:8000
+      VLLM_SERVER_DEV_MODE: "1"
+      VLLM_SLEEP_LEVEL: "1"
+      VLLM_WAKE_TIMEOUT_SECONDS: "120"
+      VLLM_SLEEP_TIMEOUT_SECONDS: "60"
+      VLLM_PRESTART_ON_LAUNCH: "true"
       #VLLM_API_KEY:
       VLLM_COMMAND: >-
         vllm serve "Qwen/Qwen3-Reranker-0.6B"
         --host 127.0.0.1
         --port 8000
         --runner pooling
+        --enable-sleep-mode
         --chat-template /app/templates/qwen3_reranker.jinja
         --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
         --gpu-memory-utilization 0.92

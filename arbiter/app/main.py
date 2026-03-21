@@ -30,7 +30,11 @@ class Settings(BaseSettings):
     vllm_base_url: str = "http://127.0.0.1:8000"
     vllm_api_key: str = ""
     vllm_start_timeout_seconds: float = 300.0
+    vllm_wake_timeout_seconds: float = 120.0
+    vllm_sleep_timeout_seconds: float = 60.0
     vllm_stop_timeout_seconds: float = 20.0
+    vllm_sleep_level: int = 1
+    vllm_prestart_on_launch: bool = True
 
     log_level: str = "INFO"
 
@@ -147,6 +151,21 @@ def filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
     return result
 
 
+def build_vllm_process_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in (
+        "VLLM_COMMAND",
+        "VLLM_BASE_URL",
+        "VLLM_API_KEY",
+        "VLLM_WAKE_TIMEOUT_SECONDS",
+        "VLLM_SLEEP_TIMEOUT_SECONDS",
+        "VLLM_SLEEP_LEVEL",
+        "VLLM_PRESTART_ON_LAUNCH",
+    ):
+        env.pop(key, None)
+    return env
+
+
 class EngineArbiter:
     def __init__(self, http: httpx.AsyncClient) -> None:
         self.http = http
@@ -162,6 +181,7 @@ class EngineArbiter:
         self._rerank_lock = asyncio.Lock()
 
         self._vllm_proc: Optional[subprocess.Popen] = None
+        self._vllm_sleeping: Optional[bool] = None
 
     @property
     def ollama_busy_count(self) -> int:
@@ -285,10 +305,11 @@ class EngineArbiter:
             stdout=None,
             stderr=None,
             start_new_session=True,
-            env=os.environ.copy(),
+            env=build_vllm_process_env(),
         )
 
         await self._wait_for_vllm_health()
+        self._vllm_sleeping = False
 
     async def _wait_for_vllm_health(self) -> None:
         url = f"{settings.vllm_base_url.rstrip('/')}/health"
@@ -313,9 +334,121 @@ class EngineArbiter:
 
         raise HTTPException(status_code=503, detail="Timed out waiting for vLLM health.")
 
+    async def _post_to_vllm_control(self, path: str) -> httpx.Response:
+        headers: dict[str, str] = {}
+        if settings.vllm_api_key:
+            headers["Authorization"] = f"Bearer {settings.vllm_api_key}"
+
+        resp = await self.http.post(f"{settings.vllm_base_url.rstrip('/')}{path}", headers=headers)
+        resp.raise_for_status()
+        return resp
+
+    async def _get_vllm_sleeping(self) -> bool:
+        headers: dict[str, str] = {}
+        if settings.vllm_api_key:
+            headers["Authorization"] = f"Bearer {settings.vllm_api_key}"
+
+        resp = await self.http.get(f"{settings.vllm_base_url.rstrip('/')}/is_sleeping", headers=headers)
+        resp.raise_for_status()
+
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="vLLM /is_sleeping returned non-JSON data.",
+            ) from exc
+
+        if isinstance(payload, bool):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("is_sleeping", "sleeping", "value"):
+                value = payload.get(key)
+                if isinstance(value, bool):
+                    return value
+
+        raise HTTPException(
+            status_code=503,
+            detail="vLLM /is_sleeping returned an unexpected response shape.",
+        )
+
+    async def _wait_for_vllm_sleep_state(self, expected: bool, timeout_seconds: float) -> None:
+        deadline = time.monotonic() + timeout_seconds
+
+        while time.monotonic() < deadline:
+            if self._vllm_proc is None or self._vllm_proc.poll() is not None:
+                raise HTTPException(status_code=503, detail="vLLM is not running.")
+
+            try:
+                sleeping = await self._get_vllm_sleeping()
+            except (httpx.HTTPError, HTTPException):
+                sleeping = not expected if expected else True
+            else:
+                self._vllm_sleeping = sleeping
+                if sleeping == expected:
+                    return
+
+            await asyncio.sleep(0.5)
+
+        state_name = "sleep" if expected else "wake"
+        raise HTTPException(status_code=503, detail=f"Timed out waiting for vLLM to {state_name}.")
+
+    async def ensure_vllm_awake(self) -> None:
+        await self.ensure_vllm_started()
+
+        if self._vllm_sleeping is False:
+            return
+
+        logger.info("Waking vLLM")
+        try:
+            await self._post_to_vllm_control("/wake_up")
+            await self._wait_for_vllm_sleep_state(expected=False, timeout_seconds=settings.vllm_wake_timeout_seconds)
+            await self._wait_for_vllm_health_after_wake()
+        except Exception:
+            logger.warning("vLLM wake failed; restarting process once", exc_info=True)
+            await self.stop_vllm()
+            await self.ensure_vllm_started()
+
+        self._vllm_sleeping = False
+
+    async def _wait_for_vllm_health_after_wake(self) -> None:
+        url = f"{settings.vllm_base_url.rstrip('/')}/health"
+        deadline = time.monotonic() + settings.vllm_wake_timeout_seconds
+
+        while time.monotonic() < deadline:
+            if self._vllm_proc is None or self._vllm_proc.poll() is not None:
+                raise HTTPException(status_code=503, detail="vLLM is not running after wake.")
+
+            try:
+                resp = await self.http.get(url)
+                if resp.status_code == 200:
+                    return
+            except httpx.HTTPError:
+                pass
+
+            await asyncio.sleep(0.5)
+
+        raise HTTPException(status_code=503, detail="Timed out waiting for vLLM health after wake.")
+
+    async def sleep_vllm(self, level: Optional[int] = None) -> None:
+        proc = self._vllm_proc
+        if proc is None or proc.poll() is not None:
+            self._vllm_sleeping = None
+            return
+
+        if self._vllm_sleeping is True:
+            return
+
+        sleep_level = settings.vllm_sleep_level if level is None else level
+        logger.info("Putting vLLM to sleep at level=%s", sleep_level)
+        await self._post_to_vllm_control(f"/sleep?level={sleep_level}")
+        await self._wait_for_vllm_sleep_state(expected=True, timeout_seconds=settings.vllm_sleep_timeout_seconds)
+        self._vllm_sleeping = True
+
     async def stop_vllm(self) -> None:
         proc = self._vllm_proc
         self._vllm_proc = None
+        self._vllm_sleeping = None
 
         if proc is None or proc.poll() is not None:
             return
@@ -347,6 +480,12 @@ async def lifespan(app: FastAPI):
     app.state.http = http
     app.state.arbiter = arbiter
     try:
+        if settings.vllm_prestart_on_launch:
+            try:
+                await arbiter.ensure_vllm_started()
+                await arbiter.sleep_vllm()
+            except Exception:
+                logger.warning("vLLM prestart failed; continuing without warm standby", exc_info=True)
         yield
     finally:
         await arbiter.stop_vllm()
@@ -366,6 +505,7 @@ async def healthz(request: Request):
         "ollama_busy_count": arbiter.ollama_busy_count,
         "ollama_admission_open": arbiter._ollama_admission_open.is_set(),
         "vllm_running": vllm_running,
+        "vllm_sleeping": arbiter._vllm_sleeping,
         "vllm_base_url": settings.vllm_base_url,
     }
 
@@ -443,6 +583,7 @@ async def proxy_rerank_to_vllm(request: Request) -> Response:
             await arbiter.wait_for_ollama_idle()
             await arbiter.unload_ollama_models()
             await arbiter.ensure_vllm_started()
+            await arbiter.ensure_vllm_awake()
 
             resp = await http.post(
                 f"{settings.vllm_base_url.rstrip('/')}/v1/rerank",
@@ -457,7 +598,10 @@ async def proxy_rerank_to_vllm(request: Request) -> Response:
                 headers=filter_response_headers(resp.headers),
             )
         finally:
-            await arbiter.stop_vllm()
+            try:
+                await arbiter.sleep_vllm()
+            except Exception:
+                logger.warning("Failed to put vLLM to sleep after rerank", exc_info=True)
             arbiter.open_ollama_admission()
 
 

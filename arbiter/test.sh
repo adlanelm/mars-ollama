@@ -24,7 +24,14 @@ check_cmd curl
 check_cmd jq
 
 say "1) Health check"
-curl -fsS "$ARB/healthz" | tee "$TMPDIR/health.json" | jq .
+for _ in $(seq 1 30); do
+  if curl -fsS "$ARB/healthz" > "$TMPDIR/health.json"; then
+    break
+  fi
+  sleep 2
+done
+
+jq . < "$TMPDIR/health.json"
 jq -e '.ok == true' "$TMPDIR/health.json" >/dev/null || fail "healthz did not return ok=true"
 
 say "2) Chat request through arbiter -> Ollama"
@@ -88,5 +95,11 @@ echo "Post-rerank chat content: $CHAT2_TEXT"
 
 say "5) Final health snapshot"
 curl -fsS "$ARB/healthz" | tee "$TMPDIR/health-final.json" | jq .
+
+jq -e '.vllm_running == true' "$TMPDIR/health-final.json" >/dev/null ||
+  fail "Expected persistent vLLM process to remain running after rerank"
+
+jq -e '.vllm_sleeping == true' "$TMPDIR/health-final.json" >/dev/null ||
+  fail "Expected persistent vLLM process to be sleeping after rerank"
 
 say "All basic checks passed"

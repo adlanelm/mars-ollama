@@ -19,7 +19,7 @@ services:
       - OLLAMA_DEBUG=1
       - OLLAMA_NEW_ENGINE=True
       - OLLAMA_NEW_ESTIMATES=True
-      - OLLAMA_KEEP_ALIVE=30m0s
+      - OLLAMA_KEEP_ALIVE=-1
       - OLLAMA_ORIGINS="moz-extension://*"
     ports:
       - "11434:11434" # Ollama API at http://localhost:11434

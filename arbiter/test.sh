@@ -71,11 +71,25 @@ jq -e '.results | type == "array" and length > 0' "$TMPDIR/rerank.json" >/dev/nu
 
 TOP_INDEX="$(jq -r '.results[0].index' "$TMPDIR/rerank.json")"
 TOP_SCORE="$(jq -r '.results[0].relevance_score' "$TMPDIR/rerank.json")"
+SECOND_SCORE="$(jq -r '.results[1].relevance_score // empty' "$TMPDIR/rerank.json")"
 echo "Top rerank result: index=$TOP_INDEX score=$TOP_SCORE"
 
 if [[ "$TOP_INDEX" != "0" && "$TOP_INDEX" != "2" ]]; then
   fail "Unexpected top rerank result. Expected document 0 or 2 to rank first."
 fi
+
+python - <<'PY' "$TOP_SCORE" "$SECOND_SCORE"
+import sys
+
+top = float(sys.argv[1])
+second = float(sys.argv[2]) if sys.argv[2] else 0.0
+
+if top <= 0.9:
+    raise SystemExit("Top rerank score is too low; reranker likely regressed")
+
+if top <= second:
+    raise SystemExit("Top rerank score is not greater than the second result")
+PY
 
 say "4) Verify arbiter becomes usable for chat again after rerank"
 curl -fsS \

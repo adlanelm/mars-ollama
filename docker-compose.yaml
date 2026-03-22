@@ -52,7 +52,7 @@ services:
       VLLM_SLEEP_LEVEL: "1"
       VLLM_WAKE_TIMEOUT_SECONDS: "120"
       VLLM_SLEEP_TIMEOUT_SECONDS: "60"
-      VLLM_PRESTART_ON_LAUNCH: "true"
+      VLLM_PRESTART_ON_LAUNCH: "false"
       #VLLM_API_KEY:
       VLLM_COMMAND: >-
         vllm serve "Qwen/Qwen3-Reranker-0.6B"
@@ -63,9 +63,7 @@ services:
         --chat-template /app/templates/qwen3_reranker.jinja
         --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
         --gpu-memory-utilization 0.92
-        --cpu-offload-gb 16
-        --kv-offloading-size 8
-        --kv-offloading-backend native
+        --cpu-offload-gb 0
         --disable-hybrid-kv-cache-manager
       #      VLLM_COMMAND: >-
       #        vllm serve tomaarsen/Qwen3-Reranker-0.6B-seq-cls

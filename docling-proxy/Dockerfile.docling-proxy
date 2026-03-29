@@ -1,0 +1,19 @@
+FROM ghcr.io/docling-project/docling-serve-rocm:main
+
+USER 0
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY pyproject.toml /app/pyproject.toml
+COPY src /app/src
+
+RUN python -m pip install --no-cache-dir .
+
+USER 1001
+
+EXPOSE 8080
+
+CMD ["python", "-m", "docling_proxy"]

@@ -19,7 +19,7 @@ services:
       - OLLAMA_DEBUG=1
       - OLLAMA_NEW_ENGINE=True
       - OLLAMA_NEW_ESTIMATES=True
-      - OLLAMA_KEEP_ALIVE=0
+      - OLLAMA_KEEP_ALIVE=5
       - OLLAMA_ORIGINS="moz-extension://*"
     ports:
       - "11434:11434" # Ollama API at http://localhost:11434
@@ -35,53 +35,97 @@ services:
     security_opt:
       - seccomp:unconfined
 
-  docling:
-    image: quay.io/docling-project/docling-serve-cpu:latest
-    container_name: docling
-    ports:
-      - "5001:5001"
-    environment:
-      UVICORN_WORKERS: "1"
-      DOCLING_SERVE_ENABLE_REMOTE_SERVICES: "true"
-      DOCLING_SERVE_ENABLE_UI: "true"
-      DOCLING_SERVE_MAX_SYNC_WAIT: "3600"
-      DOCLING_SERVE_LOG_LEVEL: DEBUG
-      DOCLING_SERVE_ALLOW_CUSTOM_VLM_CONFIG: "true"
-    networks:
-      - ollama
+  #docling:
+  #  image: ghcr.io/docling-project/docling-serve-rocm:main
+  #  container_name: docling
+  #  deploy:
+  #    resources:
+  #      limits:
+  #        memory: 12G
+  #  ports:
+  #    - "5001:5001"
+  #  environment:
+  #    UVICORN_WORKERS: "1"
+  #    DOCLING_SERVE_ENABLE_UI: "true"
+  #    DOCLING_SERVE_ENABLE_REMOTE_SERVICES: "true"
+  #    DOCLING_SERVE_LOAD_MODELS_AT_BOOT: "false"
+  #    DOCLING_SERVE_MAX_SYNC_WAIT: "36000"
+  #    DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT: "864000"
+  #    DOCLING_SERVE_MAX_FILE_SIZE: "1073741824"
+  #    DOCLING_SERVE_LOG_LEVEL: DEBUG
+  #    DOCLING_SERVE_ALLOW_CUSTOM_CODE_FORMULA_CONFIG: "true"
+  #    DOCLING_SERVE_ALLOW_CUSTOM_VLM_CONFIG: "true"
+  #    DOCLING_SERVE_ALLOW_CUSTOM_PICTURE_DESCRIPTION_CONFIG: "true"
+  #    GPU_MAX_HEAP_SIZE: 80
+  #    PYTORCH_ALLOC_CONF: "expandable_segments:True"
+  #    TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL: 1
+  #    DOCLING_SERVE_OCR_BATCH_SIZE: 1
+  #    DOCLING_SERVE_LAYOUT_BATCH_SIZE: 2
+  #    DOCLING_SERVE_TABLE_BATCH_SIZE: 2
+  #    DOCLING_PERF_PAGE_BATCH_SIZE: 4
+  #    DOCLING_DEBUG_PROFILE_PIPELINE_TIMINGS: "true"
+  #    DOCLING_NUM_THREADS: "1"
+  #    DOCLING_SERVE_ENABLE_MANAGEMENT_ENDPOINTS: "true"
+  #    DOCLING_SERVE_ARTIFACTS_PATH:
+  #  devices:
+  #    - /dev/dri:/dev/dri
+  #    - /dev/kfd:/dev/kfd
+  #  restart: always
+  #  privileged: true
+  #  security_opt:
+  #    - seccomp:unconfined
+  #  networks:
+  #    - ollama
 
   docling-proxy:
-    image: python:3.12-slim
+    build:
+      context: ./docling-proxy
+      dockerfile: Dockerfile.docling-proxy
     container_name: docling-proxy
-    working_dir: /app
-    volumes:
-      - ./docling_proxy.py:/app/docling_proxy.py:ro
-    command: >
-      sh -lc "pip install --no-cache-dir fastapi uvicorn httpx python-multipart
-      && python /app/docling_proxy.py"
-    environment:
-      DOCLING_BASE_URL: http://docling:5001
-      OLLAMA_CHAT_URL: http://ollama:11434/v1/chat/completions
-      OLLAMA_MODEL: hf.co/ibm-granite/granite-docling-258M-GGUF:latest
-      OLLAMA_TIMEOUT: "180"
-      OLLAMA_TEMPERATURE: "0.0"
-      OLLAMA_MAX_TOKENS: "8192"
-      DOCLING_PIPELINE: vlm
-      PROXY_STRIP_STANDARD_OCR: "true"
-      PROXY_DEBUG: "true"
     ports:
-      - "8000:8000"
-    depends_on:
-      - docling
-      - ollama
+      - "8000:8080"
+    environment:
+      DOCLING_PROXY_MAX_PAGES_PER_PART: 50
+      DOCLING_PROXY_MAX_CONCURRENCY: 1
+      DOCLING_PROXY_UVICORN_WORKERS: 1
+      DOCLING_PROXY_LOCAL_DOCLING_WORKERS: 1
+      DOCLING_PROXY_POLL_INTERVAL_SEC: 2
+      DOCLING_PROXY_LOCAL_DOCLING_STARTUP_TIMEOUT_SEC: 120
+      DOCLING_PROXY_LOCAL_DOCLING_REQUEST_TIMEOUT_SEC: 36000
+      DOCLING_SERVE_ENABLE_UI: "false"
+      DOCLING_SERVE_ENABLE_REMOTE_SERVICES: "true"
+      DOCLING_SERVE_LOAD_MODELS_AT_BOOT: "false"
+      DOCLING_SERVE_MAX_SYNC_WAIT: "36000"
+      DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT: "864000"
+      DOCLING_SERVE_MAX_FILE_SIZE: "1073741824"
+      DOCLING_SERVE_LOG_LEVEL: INFO
+      DOCLING_SERVE_ALLOW_CUSTOM_CODE_FORMULA_CONFIG: "true"
+      DOCLING_SERVE_ALLOW_CUSTOM_VLM_CONFIG: "true"
+      DOCLING_SERVE_ALLOW_CUSTOM_PICTURE_DESCRIPTION_CONFIG: "true"
+      DOCLING_SERVE_SCRATCH_PATH: /tmp/docling-serve
+      GPU_MAX_HEAP_SIZE: 80
+      PYTORCH_ALLOC_CONF: "expandable_segments:True"
+      TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL: 1
+      DOCLING_SERVE_OCR_BATCH_SIZE: 2
+      DOCLING_SERVE_LAYOUT_BATCH_SIZE: 2
+      DOCLING_SERVE_TABLE_BATCH_SIZE: 2
+      DOCLING_PERF_PAGE_BATCH_SIZE: 4
+      DOCLING_DEBUG_PROFILE_PIPELINE_TIMINGS: "true"
+      DOCLING_NUM_THREADS: 16
+      DOCLING_SERVE_ENABLE_MANAGEMENT_ENDPOINTS: "false"
+      DOCLING_SERVE_ARTIFACTS_PATH:
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    restart: always
+    privileged: true
+    security_opt:
+      - seccomp:unconfined
     networks:
       - ollama
 
 networks:
-  openwebui:
   ollama:
 
 volumes:
-  openwebui_data:
-  comfyui_data:
   hf-hub-cache:

@@ -25,6 +25,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    for message in settings.deprecated_environment_messages():
+        logging.getLogger(__name__).warning(message)
     upstream = UpstreamClient()
     archive_store = ArchiveStore()
     state_store = TaskStateStore()

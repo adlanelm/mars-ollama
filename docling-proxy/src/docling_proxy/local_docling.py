@@ -59,9 +59,10 @@ class LocalDoclingManager:
         self._ready_sessions: deque[LocalDoclingSession] = deque()
         self._warm_tasks: set[asyncio.Task[None]] = set()
         self._idle_reaper_task: asyncio.Task[None] | None = None
-        self._session_semaphore = asyncio.Semaphore(settings.max_concurrency)
+        self._active_child_semaphore = asyncio.Semaphore(settings.active_child_limit)
+        self._launch_semaphore = asyncio.Semaphore(settings.child_launch_concurrency)
         self._ready_client = httpx.AsyncClient(timeout=5.0)
-        self._request_client = httpx.Client(timeout=settings.local_docling_request_timeout_sec)
+        self._request_client = httpx.Client(timeout=settings.child_request_timeout_sec)
         self._scratch_root = settings.temp_dir / "child-docling"
         self._scratch_root.mkdir(parents=True, exist_ok=True)
         self._started = False
@@ -74,14 +75,14 @@ class LocalDoclingManager:
         if self._started:
             return
         self._started = True
-        if settings.local_docling_pool_size <= 0:
+        if settings.warm_child_pool_size <= 0:
             return
-        logger.info("prewarming %s local docling-serve instance(s)", settings.local_docling_pool_size)
+        logger.info("prewarming %s local docling-serve instance(s)", settings.warm_child_pool_size)
         await self._ensure_pool_capacity()
-        await self._wait_for_ready_sessions(settings.local_docling_pool_size)
-        if settings.local_docling_pool_idle_timeout_sec > 0:
+        await self._wait_for_ready_sessions(settings.warm_child_pool_size)
+        if settings.warm_child_idle_timeout_sec > 0:
             self._idle_reaper_task = asyncio.create_task(self._run_idle_reaper())
-        logger.info("local docling-serve warm pool ready: idle=%s", settings.local_docling_pool_size)
+        logger.info("local docling-serve warm pool ready: idle=%s", settings.warm_child_pool_size)
 
     async def close(self) -> None:
         async with self._ready_condition:
@@ -142,7 +143,7 @@ class LocalDoclingManager:
         on_request_start: Callable[[LocalDoclingTiming], Awaitable[None] | None] | None = None,
     ) -> LocalDoclingExecution:
         queued_at = time.perf_counter()
-        async with self._session_semaphore:
+        async with self._active_child_semaphore:
             acquired_at = time.perf_counter()
             wait_duration_sec = acquired_at - queued_at
             startup_started_at = time.perf_counter()
@@ -194,7 +195,7 @@ class LocalDoclingManager:
         return response.json()
 
     async def _acquire_session(self) -> LocalDoclingSession:
-        if settings.local_docling_pool_size <= 0:
+        if settings.warm_child_pool_size <= 0:
             return await self._start_session()
         async with self._ready_condition:
             if self._pool_suspended:
@@ -224,7 +225,7 @@ class LocalDoclingManager:
             await self._ensure_pool_capacity()
 
     async def _release_session(self, session: LocalDoclingSession) -> None:
-        should_track_idle = settings.local_docling_pool_size > 0
+        should_track_idle = settings.warm_child_pool_size > 0
         try:
             await self._stop_session(session)
         finally:
@@ -232,25 +233,25 @@ class LocalDoclingManager:
                 async with self._ready_condition:
                     if self._active_leases > 0:
                         self._active_leases -= 1
-                    if self._active_leases == 0 and not self._closed and settings.local_docling_pool_idle_timeout_sec > 0:
+                    if self._active_leases == 0 and not self._closed and settings.warm_child_idle_timeout_sec > 0:
                         self._last_pool_idle_at = time.monotonic()
                         logger.info(
                             "warm pool idle timer started: timeout=%.2fs idle=%s/%s warming=%s",
-                            settings.local_docling_pool_idle_timeout_sec,
+                            settings.warm_child_idle_timeout_sec,
                             len(self._ready_sessions),
-                            settings.local_docling_pool_size,
+                            settings.warm_child_pool_size,
                             len(self._warm_tasks),
                         )
                         self._ready_condition.notify_all()
 
     async def _ensure_pool_capacity(self) -> None:
-        if settings.local_docling_pool_size <= 0:
+        if settings.warm_child_pool_size <= 0:
             return
         tasks_to_create = 0
         async with self._ready_condition:
             if self._closed or self._pool_suspended:
                 return
-            tasks_to_create = max(0, settings.local_docling_pool_size - len(self._ready_sessions) - len(self._warm_tasks))
+            tasks_to_create = max(0, settings.warm_child_pool_size - len(self._ready_sessions) - len(self._warm_tasks))
             for _ in range(tasks_to_create):
                 task = asyncio.create_task(self._warm_session())
                 self._warm_tasks.add(task)
@@ -258,7 +259,7 @@ class LocalDoclingManager:
             logger.info(
                 "scheduling %s warm docling-serve instance(s); idle_target=%s",
                 tasks_to_create,
-                settings.local_docling_pool_size,
+                settings.warm_child_pool_size,
             )
 
     async def _wait_for_ready_sessions(self, target: int) -> None:
@@ -281,7 +282,7 @@ class LocalDoclingManager:
                         if self._closed:
                             return
                     logger.error("failed to prewarm local docling-serve instance: %s", exc)
-                    await asyncio.sleep(settings.local_docling_pool_retry_delay_sec)
+                    await asyncio.sleep(settings.warm_child_pool_retry_delay_sec)
                     continue
                 async with self._ready_condition:
                     if self._closed or self._pool_suspended:
@@ -299,7 +300,7 @@ class LocalDoclingManager:
                         session.process.pid,
                         session.port,
                         ready_count,
-                        settings.local_docling_pool_size,
+                        settings.warm_child_pool_size,
                     )
                 return
         finally:
@@ -312,7 +313,7 @@ class LocalDoclingManager:
     async def _run_idle_reaper(self) -> None:
         try:
             while True:
-                await asyncio.sleep(settings.local_docling_pool_reap_interval_sec)
+                await asyncio.sleep(settings.warm_child_reap_interval_sec)
                 sessions_to_drain: list[LocalDoclingSession] = []
                 idle_for_sec: float | None = None
                 warming = 0
@@ -322,7 +323,7 @@ class LocalDoclingManager:
                     if self._active_leases != 0 or self._last_pool_idle_at is None or self._pool_suspended:
                         continue
                     idle_for_sec = time.monotonic() - self._last_pool_idle_at
-                    if idle_for_sec < settings.local_docling_pool_idle_timeout_sec:
+                    if idle_for_sec < settings.warm_child_idle_timeout_sec:
                         continue
                     self._pool_suspended = True
                     sessions_to_drain = list(self._ready_sessions)
@@ -341,40 +342,41 @@ class LocalDoclingManager:
             raise
 
     async def _start_session(self) -> LocalDoclingSession:
-        port = self._reserve_port()
-        scratch_dir = self._create_child_scratch_dir()
-        command = self._command(port)
-        env = self._environment(scratch_dir)
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        log_prefix = f"docling-serve pid={process.pid} port={port}"
-        stderr_lines: deque[str] = deque(maxlen=50)
-        stream_tasks = (
-            asyncio.create_task(self._capture_stream(process.stdout, log_prefix, "stdout")),
-            asyncio.create_task(self._capture_stream(process.stderr, log_prefix, "stderr", stderr_lines)),
-        )
-        session = LocalDoclingSession(
-            process=process,
-            port=port,
-            base_url=f"http://127.0.0.1:{port}",
-            scratch_dir=scratch_dir,
-            log_prefix=log_prefix,
-            stderr_lines=stderr_lines,
-            stream_tasks=stream_tasks,
-        )
-        async with self._lock:
-            self._active_sessions[process.pid] = session
-        try:
-            await self._wait_until_ready(session)
-        except Exception:
-            await self._stop_session(session)
-            raise
-        return session
+        async with self._launch_semaphore:
+            port = self._reserve_port()
+            scratch_dir = self._create_child_scratch_dir()
+            command = self._command(port)
+            env = self._environment(scratch_dir)
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            log_prefix = f"docling-serve pid={process.pid} port={port}"
+            stderr_lines: deque[str] = deque(maxlen=50)
+            stream_tasks = (
+                asyncio.create_task(self._capture_stream(process.stdout, log_prefix, "stdout")),
+                asyncio.create_task(self._capture_stream(process.stderr, log_prefix, "stderr", stderr_lines)),
+            )
+            session = LocalDoclingSession(
+                process=process,
+                port=port,
+                base_url=f"http://127.0.0.1:{port}",
+                scratch_dir=scratch_dir,
+                log_prefix=log_prefix,
+                stderr_lines=stderr_lines,
+                stream_tasks=stream_tasks,
+            )
+            async with self._lock:
+                self._active_sessions[process.pid] = session
+            try:
+                await self._wait_until_ready(session)
+            except Exception:
+                await self._stop_session(session)
+                raise
+            return session
 
     def _post_file_request(
         self,
@@ -415,7 +417,7 @@ class LocalDoclingManager:
                     await process.wait()
                     return
                 try:
-                    await asyncio.wait_for(process.wait(), timeout=settings.local_docling_shutdown_timeout_sec)
+                    await asyncio.wait_for(process.wait(), timeout=settings.child_shutdown_timeout_sec)
                 except asyncio.TimeoutError:
                     try:
                         os.killpg(process.pid, signal.SIGKILL)
@@ -427,7 +429,7 @@ class LocalDoclingManager:
             shutil.rmtree(session.scratch_dir, ignore_errors=True)
 
     async def _wait_until_ready(self, session: LocalDoclingSession) -> None:
-        deadline = time.monotonic() + settings.local_docling_startup_timeout_sec
+        deadline = time.monotonic() + settings.child_startup_timeout_sec
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             if session.process.returncode is not None:
@@ -445,7 +447,7 @@ class LocalDoclingManager:
                 last_error = RuntimeError(f"readiness returned {response.status_code}")
             except httpx.HTTPError as exc:
                 last_error = exc
-            await asyncio.sleep(settings.local_docling_ready_poll_interval_sec)
+            await asyncio.sleep(settings.child_ready_poll_interval_sec)
         detail = "Timed out waiting for local docling-serve readiness."
         if last_error is not None:
             detail = f"{detail} last error: {last_error}"
@@ -463,7 +465,7 @@ class LocalDoclingManager:
             "--port",
             str(port),
             "--workers",
-            str(settings.local_docling_workers),
+            "1",
         ]
 
     def _environment(self, scratch_dir: Path) -> dict[str, str]:

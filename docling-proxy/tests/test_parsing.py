@@ -34,3 +34,28 @@ async def test_parse_multipart_form_spools_uploads_to_temp_files():
         assert proxy_options is None
     finally:
         await cleanup_file_payloads(files)
+
+
+@pytest.mark.asyncio
+async def test_parse_multipart_form_accepts_proxy_work_concurrency_aliases():
+    form = FormData(
+        [
+            (
+                "files",
+                UploadFile(
+                    file=BytesIO(b"%PDF-1.4\nproxy-test"),
+                    filename="alpha.pdf",
+                    headers=Headers({"content-type": "application/pdf"}),
+                ),
+            ),
+            ("proxy_max_concurrency", "2"),
+            ("proxy_work_concurrency", "1"),
+        ]
+    )
+
+    files, _, proxy_options = await parse_multipart_form(form)
+    try:
+        assert proxy_options is not None
+        assert proxy_options.work_concurrency == 1
+    finally:
+        await cleanup_file_payloads(files)

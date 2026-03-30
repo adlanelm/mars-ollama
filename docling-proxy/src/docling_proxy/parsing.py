@@ -39,7 +39,7 @@ def as_list(value: Any) -> list[Any]:
 async def parse_multipart_form(form: FormData) -> tuple[list[FilePayload], dict[str, Any], ProxyOptions | None]:
     files: list[FilePayload] = []
     grouped: dict[str, list[Any]] = defaultdict(list)
-    upload_dir = settings.temp_dir / "uploads"
+    upload_dir = settings.upload_staging_dir()
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -106,7 +106,8 @@ def extract_proxy_options(grouped: dict[str, list[Any]]) -> ProxyOptions | None:
         "proxy_force_split": "force_split",
         "proxy_include_proxy_meta": "include_proxy_meta",
         "proxy_max_pages_per_part": "max_pages_per_part",
-        "proxy_max_concurrency": "max_concurrency",
+        "proxy_max_concurrency": "work_concurrency",
+        "proxy_work_concurrency": "work_concurrency",
         "proxy_poll_interval_sec": "poll_interval_sec",
     }
     for form_key, model_key in mapping.items():
@@ -116,7 +117,7 @@ def extract_proxy_options(grouped: dict[str, list[Any]]) -> ProxyOptions | None:
         raw = values[-1]
         if model_key in {"enabled", "force_split", "include_proxy_meta"}:
             kwargs[model_key] = parse_bool(raw)
-        elif model_key in {"max_pages_per_part", "max_concurrency"}:
+        elif model_key in {"max_pages_per_part", "work_concurrency"}:
             kwargs[model_key] = int(raw)
         else:
             kwargs[model_key] = float(raw)

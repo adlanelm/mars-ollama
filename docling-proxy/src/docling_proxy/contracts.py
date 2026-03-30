@@ -10,8 +10,18 @@ class ProxyOptions(BaseModel):
     force_split: bool = False
     include_proxy_meta: bool = False
     max_pages_per_part: int | None = Field(default=None, gt=0)
-    max_concurrency: int | None = Field(default=None, gt=0)
+    work_concurrency: int | None = Field(default=None, gt=0)
     poll_interval_sec: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_compatibility_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if "work_concurrency" not in normalized and "max_concurrency" in normalized:
+            normalized["work_concurrency"] = normalized["max_concurrency"]
+        return normalized
 
 
 class TaskStatusResponse(BaseModel):

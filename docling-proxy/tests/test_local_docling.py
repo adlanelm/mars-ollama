@@ -33,7 +33,8 @@ async def test_child_env_inherits_docling_settings_and_uses_unique_scratch(monke
 
 
 @pytest.mark.asyncio
-async def test_global_session_semaphore_limits_concurrent_child_sessions(monkeypatch):
+async def test_active_child_limit_caps_concurrent_busy_children(monkeypatch):
+    monkeypatch.setattr(local_docling_settings, "active_child_limit", 1)
     manager = LocalDoclingManager()
     active_sessions = 0
     max_active_sessions = 0
@@ -76,9 +77,9 @@ async def test_global_session_semaphore_limits_concurrent_child_sessions(monkeyp
 
 @pytest.mark.asyncio
 async def test_warm_pool_prewarms_and_launches_replacement_before_request_finishes(monkeypatch):
-    monkeypatch.setattr(local_docling_settings, "local_docling_pool_size", 1)
-    monkeypatch.setattr(local_docling_settings, "local_docling_pool_retry_delay_sec", 0.01)
-    monkeypatch.setattr(local_docling_settings, "local_docling_pool_idle_timeout_sec", 300.0)
+    monkeypatch.setattr(local_docling_settings, "warm_child_pool_size", 1)
+    monkeypatch.setattr(local_docling_settings, "warm_child_pool_retry_delay_sec", 0.01)
+    monkeypatch.setattr(local_docling_settings, "warm_child_idle_timeout_sec", 300.0)
 
     manager = LocalDoclingManager()
     start_calls = 0
@@ -130,10 +131,10 @@ async def test_warm_pool_prewarms_and_launches_replacement_before_request_finish
 
 @pytest.mark.asyncio
 async def test_warm_pool_drains_ready_instances_after_idle_timeout(monkeypatch):
-    monkeypatch.setattr(local_docling_settings, "local_docling_pool_size", 1)
-    monkeypatch.setattr(local_docling_settings, "local_docling_pool_retry_delay_sec", 0.01)
-    monkeypatch.setattr(local_docling_settings, "local_docling_pool_idle_timeout_sec", 0.05)
-    monkeypatch.setattr(local_docling_settings, "local_docling_pool_reap_interval_sec", 0.01)
+    monkeypatch.setattr(local_docling_settings, "warm_child_pool_size", 1)
+    monkeypatch.setattr(local_docling_settings, "warm_child_pool_retry_delay_sec", 0.01)
+    monkeypatch.setattr(local_docling_settings, "warm_child_idle_timeout_sec", 0.05)
+    monkeypatch.setattr(local_docling_settings, "warm_child_reap_interval_sec", 0.01)
 
     manager = LocalDoclingManager()
     start_calls = 0
@@ -193,3 +194,67 @@ async def test_warm_pool_drains_ready_instances_after_idle_timeout(monkeypatch):
         assert any(pid != 1 for pid in stop_calls)
     finally:
         await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_child_launch_concurrency_limits_simultaneous_starts(monkeypatch):
+    monkeypatch.setattr(local_docling_settings, "child_launch_concurrency", 1)
+
+    manager = LocalDoclingManager()
+    active_launches = 0
+    max_active_launches = 0
+    first_launch_started = asyncio.Event()
+    release_first_launch = asyncio.Event()
+    next_pid = 100
+
+    class FakeProcess:
+        def __init__(self, pid: int):
+            self.pid = pid
+            self.returncode = None
+            self.stdout = None
+            self.stderr = None
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        nonlocal next_pid
+        process = FakeProcess(next_pid)
+        next_pid += 1
+        return process
+
+    async def fake_wait_until_ready(session):
+        nonlocal active_launches, max_active_launches
+        active_launches += 1
+        max_active_launches = max(max_active_launches, active_launches)
+        if active_launches == 1:
+            first_launch_started.set()
+            await release_first_launch.wait()
+        active_launches -= 1
+
+    async def fake_terminate_session(session):
+        return None
+
+    monkeypatch.setattr(manager, "_reserve_port", lambda: 7000 + next_pid)
+    monkeypatch.setattr(manager, "_create_child_scratch_dir", lambda: Path(f"/tmp/fake-launch-{next_pid}"))
+    monkeypatch.setattr(manager, "_wait_until_ready", fake_wait_until_ready)
+    monkeypatch.setattr(manager, "_terminate_session", fake_terminate_session)
+    monkeypatch.setattr("docling_proxy.local_docling.asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    first_task = asyncio.create_task(manager._start_session())
+    await first_launch_started.wait()
+    second_task = asyncio.create_task(manager._start_session())
+    await asyncio.sleep(0.05)
+
+    assert max_active_launches == 1
+
+    release_first_launch.set()
+    sessions = await asyncio.gather(first_task, second_task)
+    assert len(sessions) == 2
+    await manager.close()
+
+
+def test_child_command_forces_one_http_worker(monkeypatch):
+    monkeypatch.setattr(local_docling_settings, "local_docling_command", None)
+    manager = LocalDoclingManager()
+
+    command = manager._command(8081)
+
+    assert command[-2:] == ["--workers", "1"]

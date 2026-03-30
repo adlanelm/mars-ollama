@@ -1,3 +1,4 @@
+import asyncio
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -12,7 +13,7 @@ from docling_proxy.local_docling import LocalDoclingExecution, LocalDoclingTimin
 from docling_proxy.models import FilePayload, ProxyJob
 from docling_proxy.pdf_tools import split_pdf
 from docling_proxy.state import TaskStateStore
-from docling_proxy.service import ProxyService
+from docling_proxy.service import ProxyService, settings as service_settings
 from docling_proxy.store import job_store
 
 
@@ -182,6 +183,40 @@ class FakeArchiveStore:
         return f"/archive/{request_id}"
 
 
+class ConcurrencyTrackingLocalDocling(FakeLocalDocling):
+    def __init__(self):
+        super().__init__()
+        self.active_calls = 0
+        self.max_active_calls = 0
+
+    async def execute_file_sync(self, files, data, headers, on_request_start=None):
+        self.calls.append((files[0], data, headers))
+        self.active_calls += 1
+        self.max_active_calls = max(self.max_active_calls, self.active_calls)
+        timing = LocalDoclingTiming(
+            wait_duration_sec=0.1,
+            startup_duration_sec=0.2,
+            request_duration_sec=0.3,
+            processing_duration_sec=0.5,
+        )
+        if on_request_start is not None:
+            maybe_result = on_request_start(timing)
+            if maybe_result is not None:
+                await maybe_result
+        await asyncio.sleep(0.02)
+        self.active_calls -= 1
+        return LocalDoclingExecution(
+            response=FakeResponse(
+                payload={
+                    "document": {"json_content": {"name": f"chunk-{len(self.calls)}"}},
+                    "errors": [],
+                    "processing_time": 1.0,
+                }
+            ),
+            timing=timing,
+        )
+
+
 @pytest.mark.asyncio
 async def test_small_pdf_passthrough(monkeypatch):
     upstream = FakeUpstream()
@@ -215,7 +250,7 @@ async def test_split_pdf_merges_chunk_results(monkeypatch, caplog):
 
     result = await service._process_split_file(
         filename="large.pdf",
-        data=make_pdf(5),
+        pdf_source=make_pdf(5),
         options={"to_formats": ["md"]},
         proxy_options=ProxyOptions(force_split=True, max_pages_per_part=2, poll_interval_sec=0.001),
         headers={},
@@ -230,6 +265,27 @@ async def test_split_pdf_merges_chunk_results(monkeypatch, caplog):
     assert "queued chunk 1/3 for file=large.pdf, pages 1-2" in caplog.text
     assert "started chunk 1/3 for file=large.pdf, pages 1-2, wait=0.10s, startup=0.20s" in caplog.text
     assert "finished chunk 1/3 for file=large.pdf, pages 1-2, total=0.50s, per_page=0.25s, wait=0.10s, startup=0.20s, convert=0.30s" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_split_respects_request_work_concurrency_override(monkeypatch):
+    monkeypatch.setattr(service_settings, "work_concurrency", 3)
+    upstream = FakeUpstream()
+    local_docling = ConcurrencyTrackingLocalDocling()
+    service = ProxyService(upstream, local_docling, FakeArchiveStore())
+    monkeypatch.setattr("docling_proxy.service.merge_results", make_merged_result)
+
+    result = await service._process_split_file(
+        filename="large.pdf",
+        pdf_source=make_pdf(3),
+        options={"to_formats": ["md"]},
+        proxy_options=ProxyOptions(force_split=True, max_pages_per_part=1, work_concurrency=1),
+        headers={},
+        target_kind="inbody",
+    )
+
+    assert local_docling.max_active_calls == 1
+    assert result.document.md_content == "chunk-1\nchunk-2\nchunk-3"
 
 
 @pytest.mark.asyncio
@@ -256,6 +312,55 @@ async def test_async_small_pdf_uses_local_isolated_processing():
     assert len(local_docling.relay_file_calls) == 1
     assert job.result_payload["status"] == "success"
     assert len(archive_store.payload_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_operation_state_adopts_temp_file_into_task_state(tmp_path):
+    upstream = FakeUpstream()
+    archive_store = FakeArchiveStore()
+    state_store = TaskStateStore(tmp_path / "state")
+    service = ProxyService(upstream, FakeLocalDocling(), archive_store, state_store)
+    upload_path = tmp_path / "incoming.pdf"
+    upload_path.write_bytes(make_pdf(1))
+    file = FilePayload("incoming.pdf", None, "application/pdf", temp_path=upload_path)
+    job = ProxyJob(
+        task_id="job-adopt",
+        source_kind="file",
+        filename=file.filename,
+        target_kind="inbody",
+        requested_formats=["md"],
+        options={"to_formats": ["md"]},
+        files=[file],
+        meta=ProxyTaskMeta(source_kind="file", filename=file.filename),
+    )
+
+    await service._ensure_operation_state(job, {})
+
+    assert upload_path.exists() is False
+    assert file.temp_path is not None
+    assert file.temp_path.exists()
+    assert file.temp_path.parent.name == "inputs"
+    assert file.cleanup_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_split_temp_backed_upload_avoids_full_read(tmp_path, monkeypatch):
+    upstream = FakeUpstream()
+    local_docling = FakeLocalDocling()
+    archive_store = FakeArchiveStore()
+    service = ProxyService(upstream, local_docling, archive_store)
+    pdf_path = tmp_path / "large.pdf"
+    pdf_path.write_bytes(make_pdf(3))
+    file = FilePayload("large.pdf", None, "application/pdf", temp_path=pdf_path)
+
+    async def fail_read_content(self):
+        raise AssertionError("read_content should not be used for temp-backed split uploads")
+
+    monkeypatch.setattr(FilePayload, "read_content", fail_read_content)
+    response = await service.process_file_sync([file], {"to_formats": ["md"], "target_type": "inbody"}, ProxyOptions(max_pages_per_part=1), {})
+
+    assert len(local_docling.calls) == 3
+    assert response.status == "success"
 
 
 @pytest.mark.asyncio

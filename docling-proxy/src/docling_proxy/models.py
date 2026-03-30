@@ -25,10 +25,22 @@ class FilePayload:
         self.content = await asyncio.to_thread(self.temp_path.read_bytes)
         return self.content
 
+    async def peek_content(self, size: int = 8) -> bytes:
+        if self.content is not None:
+            return self.content[:size]
+        if self.temp_path is None:
+            return b""
+        return await asyncio.to_thread(self._read_prefix, self.temp_path, size)
+
     def open_binary(self):
         if self.temp_path is not None:
             return self.temp_path.open("rb")
         return BytesIO(self.content or b"")
+
+    def bind_persisted_path(self, path: Path) -> None:
+        self.content = None
+        self.temp_path = path
+        self.cleanup_enabled = False
 
     async def cleanup(self) -> None:
         if self.temp_path is None or not self.cleanup_enabled:
@@ -36,6 +48,11 @@ class FilePayload:
         temp_path = self.temp_path
         self.temp_path = None
         await asyncio.to_thread(temp_path.unlink, missing_ok=True)
+
+    @staticmethod
+    def _read_prefix(path: Path, size: int) -> bytes:
+        with path.open("rb") as handle:
+            return handle.read(size)
 
 
 async def cleanup_file_payloads(files: list[FilePayload]) -> None:

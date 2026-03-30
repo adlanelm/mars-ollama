@@ -6,7 +6,7 @@ The proxy now runs conversions through short-lived `docling-serve` processes ins
 
 All child `DOCLING_SERVE_*` settings are inherited from the proxy container environment, so `docker-compose.yaml` is the source of truth for child runtime configuration. The only exception is bind host and port, which the proxy forces to a localhost address and a per-child ephemeral port. `DOCLING_SERVE_SCRATCH_PATH`, if set, is treated as a base directory and each child gets its own unique subdirectory underneath it.
 
-`DOCLING_PROXY_MAX_CONCURRENCY` is enforced process-wide in the proxy and limits the number of active child `docling-serve` lifecycles across all requests handled by one proxy process. `DOCLING_PROXY_LOCAL_DOCLING_POOL_SIZE` controls how many idle ready child instances the proxy keeps prewarmed. `DOCLING_PROXY_LOCAL_DOCLING_POOL_IDLE_TIMEOUT_SEC` controls how long the warm pool may stay idle after the last in-flight request finishes before those ready instances are shut down. `DOCLING_PROXY_ARCHIVE_DIR` enables persistence of final successful conversion outputs to disk. `DOCLING_PROXY_STATE_DIR` optionally controls where the proxy stores durable task and split-checkpoint state; if unset and `DOCLING_PROXY_ARCHIVE_DIR` is configured, the proxy stores that state under a hidden `.proxy-state/` directory inside the archive root so it survives container restarts on the same mounted volume. `DOCLING_PROXY_UVICORN_WORKERS` controls proxy worker count explicitly, and `DOCLING_PROXY_LOCAL_DOCLING_WORKERS` controls the uvicorn worker count for each child `docling-serve` instance.
+`DOCLING_PROXY_WORK_CONCURRENCY` controls how many split chunks or per-file batch work units the proxy fans out concurrently across all requests handled by one proxy process. `DOCLING_PROXY_ACTIVE_CHILD_LIMIT` controls how many one-shot child `docling-serve` processes may be actively handling work at once. `DOCLING_PROXY_CHILD_LAUNCH_CONCURRENCY` separately controls how many child startups or warm-pool replacements may happen at the same time. `DOCLING_PROXY_WARM_CHILD_POOL_SIZE` controls how many idle ready child instances the proxy keeps prewarmed, and `DOCLING_PROXY_WARM_CHILD_IDLE_TIMEOUT_SEC` controls how long that warm pool may stay idle before those ready instances are shut down. `DOCLING_PROXY_ARCHIVE_DIR` enables persistence of final successful conversion outputs to disk. `DOCLING_PROXY_STATE_DIR` optionally controls where the proxy stores durable task and split-checkpoint state; if unset and `DOCLING_PROXY_ARCHIVE_DIR` is configured, the proxy stores that state under a hidden `.proxy-state/` directory inside the archive root so it survives container restarts on the same mounted volume. `DOCLING_PROXY_UVICORN_WORKERS` controls proxy worker count explicitly. Child `docling-serve` instances always run with one HTTP worker and handle exactly one request before shutdown. Advanced conversion parallelism inside a child request remains controlled by passthrough `DOCLING_SERVE_*` settings such as `DOCLING_SERVE_ENG_LOC_NUM_WORKERS`.
 
 ## Supported endpoints
 
@@ -19,10 +19,12 @@ All child `DOCLING_SERVE_*` settings are inherited from the proxy container envi
 
 ## Optional proxy controls
 
-- Multipart form fields: `proxy_force_split=true`, `proxy_max_pages_per_part=10`, `proxy_include_proxy_meta=true`
-- JSON payload field: `"proxy_options": {"force_split": true, "max_pages_per_part": 10}`
+- Multipart form fields: `proxy_force_split=true`, `proxy_max_pages_per_part=10`, `proxy_work_concurrency=2`, `proxy_include_proxy_meta=true`
+- JSON payload field: `"proxy_options": {"force_split": true, "max_pages_per_part": 10, "work_concurrency": 2}`
 
 If `proxy_force_split` is not set, the proxy splits only when the PDF page count is greater than `max_pages_per_part`.
+
+`proxy_max_concurrency` is still accepted as a deprecated alias for `proxy_work_concurrency`.
 
 ## Run locally
 
@@ -40,7 +42,7 @@ The proxy is a FastAPI application with a small set of focused modules:
 - `src/docling_proxy/archive.py` persists final successful conversion outputs and metadata to the configured archive directory.
 - `src/docling_proxy/state.py` persists async task metadata, split plans, and per-chunk checkpoint payloads so long-running jobs can resume after proxy restarts.
 - `src/docling_proxy/service.py` decides whether to split, starts one-shot local docling instances for isolated conversions, merges split results, and stores async task state.
-- `src/docling_proxy/pdf_tools.py` detects PDF inputs, counts pages, computes chunk ranges, and writes per-chunk PDF byte streams.
+- `src/docling_proxy/pdf_tools.py` detects PDF inputs, counts pages, computes split plans, and materializes per-chunk PDF byte streams lazily.
 - `src/docling_proxy/upstream.py` is now only used for helper downloads such as resolving HTTP PDF sources before split evaluation.
 - `src/docling_proxy/local_docling.py` manages the short-lived child `docling-serve` processes used for both split and non-split conversions, maintains an optional warm pool of ready child instances, inherits child `DOCLING_SERVE_*` settings from the container environment, streams child logs into the proxy logs, and keeps a stderr tail for startup failures.
 - `src/docling_proxy/merge.py` merges chunk results into a single `DoclingDocument` and exports the final formats.
@@ -58,7 +60,7 @@ There are two broad paths through the service:
 
 In isolated single-request mode, the proxy acquires one ready local `docling-serve` child from its warm pool when available, forwards the original request to it, waits for the response, relays the response back to the caller, and then retires that child process. If warm pooling is disabled or depleted, the proxy starts a new child on demand. After the last in-flight request finishes, the warm pool can remain available for a configurable idle timeout and then drain itself back to zero ready children.
 
-In multi-file batch mode, the proxy stores uploaded files on local temp storage, schedules one isolated child conversion per file, and uses the same process-wide concurrency limit that governs split chunks. Each per-file result is requested as a ZIP so any docling-generated assets stay together, and the proxy prefixes each file's ZIP contents before merging them into the final batch ZIP.
+In multi-file batch mode, the proxy stores uploaded files in proxy-managed staging storage, schedules one isolated child conversion per file, and uses the same process-wide concurrency limit that governs split chunks. Each per-file result is requested as a ZIP so any docling-generated assets stay together, and the proxy prefixes each file's ZIP contents before merging them into the final batch ZIP.
 
 In split mode, the proxy takes over the conversion workflow and performs chunk orchestration itself.
 
@@ -66,22 +68,24 @@ In split mode, the proxy takes over the conversion workflow and performs chunk o
 
 For a large PDF sent to `POST /v1/convert/file`, the proxy processes it in this order:
 
-1. FastAPI receives the multipart request and `parse_multipart_form()` spools uploaded files onto local temp storage while separating docling fields from optional proxy fields.
+1. FastAPI receives the multipart request and `parse_multipart_form()` spools uploaded files into proxy-managed staging storage while separating docling fields from optional proxy fields.
+2. For persisted jobs, the proxy adopts that staged file into durable task state instead of copying the same upload a second time.
 3. `service.py` checks whether the request is eligible for splitting:
    - exactly one file
    - detected as a PDF
    - page count exceeds `max_pages_per_part`, or `proxy_force_split=true`
-4. `pdf_tools.py` opens the PDF with `pypdf.PdfReader`, counts pages, and slices it into smaller PDF parts with `PdfWriter`.
+4. `pdf_tools.py` opens the PDF with `pypdf.PdfReader`, counts pages once, and computes page ranges for each chunk without materializing every chunk PDF up front.
 5. The proxy normalizes output options, forces chunk `target_type` to `inbody`, and ensures `json` is included for chunk processing, because merge happens through `DoclingDocument` JSON payloads.
-6. For each chunk, the proxy acquires a ready local `docling-serve` child from the warm pool when available, and starts a replacement child in the background to keep the configured idle pool filled.
-7. If no ready child is available, the proxy waits for one to finish prewarming.
-8. The proxy forwards the chunk to the child server with `POST /v1/convert/file` and waits for the chunk response.
-9. The proxy reads `document.json_content` from the chunk response.
-10. The proxy shuts down the used child `docling-serve` instance and cleans its unique scratch directory.
-11. After each chunk succeeds, the proxy writes that chunk's JSON payload to durable task state on disk.
-12. After every chunk succeeds, `merge.py` reconstructs `DoclingDocument` instances from the persisted chunk JSON files and merges them in page order with `DoclingDocument.concatenate(...)`.
-13. The merged document is exported again into the formats originally requested by the caller, such as Markdown, JSON, HTML, or text.
-14. The proxy returns one final response that looks like a normal docling conversion result.
+6. The proxy enqueues chunk work from those planned page ranges immediately, so `queued chunk ...` logs appear before every chunk PDF has been written.
+7. For each chunk that actually begins work, the proxy materializes that chunk's PDF bytes on demand, acquires a ready local `docling-serve` child from the warm pool when available, and starts a replacement child in the background to keep the configured idle pool filled.
+8. If no ready child is available, the proxy waits for one to finish prewarming.
+9. The proxy forwards the chunk to the child server with `POST /v1/convert/file` and waits for the chunk response.
+10. The proxy reads `document.json_content` from the chunk response.
+11. The proxy shuts down the used child `docling-serve` instance and cleans its unique scratch directory.
+12. After each chunk succeeds, the proxy writes that chunk's JSON payload to durable task state on disk.
+13. After every chunk succeeds, `merge.py` reconstructs `DoclingDocument` instances from the persisted chunk JSON files and merges them in page order with `DoclingDocument.concatenate(...)`.
+14. The merged document is exported again into the formats originally requested by the caller, such as Markdown, JSON, HTML, or text.
+15. The proxy returns one final response that looks like a normal docling conversion result.
 
 The same split workflow is used for `source` requests after the proxy resolves the source into PDF bytes. For base64 file sources it decodes the payload; for HTTP sources it downloads the PDF first.
 
@@ -206,10 +210,13 @@ Requests outside those rules still go through docling-compatible processing, but
 - All conversions run through short-lived local `docling-serve` processes inside the proxy container.
 - Child `docling-serve` stdout and stderr are streamed into the proxy container logs.
 - Child `DOCLING_SERVE_*` configuration comes from the container environment; `DOCLING_SERVE_SCRATCH_PATH` is interpreted as a base path for unique per-child scratch directories.
-- `DOCLING_PROXY_LOCAL_DOCLING_POOL_SIZE` keeps that many idle ready child instances prelaunched when warm pooling is enabled.
-- `DOCLING_PROXY_LOCAL_DOCLING_POOL_IDLE_TIMEOUT_SEC` drains those idle ready children after the configured period since the last active request finished.
+- `DOCLING_PROXY_WORK_CONCURRENCY` limits proxy fan-out for split chunks and batch-file work units.
+- `DOCLING_PROXY_ACTIVE_CHILD_LIMIT` limits how many one-shot child `docling-serve` processes may be busy at once.
+- `DOCLING_PROXY_CHILD_LAUNCH_CONCURRENCY` limits simultaneous child startups and warm-pool replacements.
+- `DOCLING_PROXY_WARM_CHILD_POOL_SIZE` keeps that many idle ready child instances prelaunched when warm pooling is enabled.
+- `DOCLING_PROXY_WARM_CHILD_IDLE_TIMEOUT_SEC` drains those idle ready children after the configured period since the last active request finished.
 - Chunk completion order does not affect final merge order.
-- The default split concurrency is `1` so only one local child server is active at a time unless you explicitly raise it.
-- The concurrency cap is global per proxy process, not just per split request.
+- Per-request `proxy_work_concurrency` can lower the fan-out for one split or batch request, but it cannot exceed the global proxy work limit.
+- Child `docling-serve` HTTP worker count is fixed at `1`; if you need more parallelism inside a single conversion, tune advanced passthrough settings such as `DOCLING_SERVE_ENG_LOC_NUM_WORKERS` instead.
 - `proxy_include_proxy_meta=true` can be used to expose split details in the final response.
 - Async task state is persisted to disk, so split progress, final async results, and resumable in-flight work survive proxy restarts as long as the configured state directory survives.

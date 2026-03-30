@@ -59,11 +59,7 @@ class TaskStateStore:
     def _resolve_state_dir(self, explicit_state_dir: Path | None) -> Path:
         if explicit_state_dir is not None:
             return explicit_state_dir
-        if settings.state_dir is not None:
-            return settings.state_dir
-        if settings.archive_dir is not None:
-            return settings.archive_dir / ".proxy-state"
-        return settings.temp_dir / "state"
+        return settings.resolved_state_dir()
 
     def _task_dir(self, task_id: str) -> Path:
         return self.tasks_dir / task_id
@@ -196,6 +192,10 @@ class TaskStateStore:
         part_path = self.part_payload_path(task_id, part_index)
         return await asyncio.to_thread(part_path.exists)
 
+    async def existing_part_payload_indices(self, task_id: str) -> set[int]:
+        parts_dir = self._task_dir(task_id) / "parts"
+        return await asyncio.to_thread(self._existing_part_payload_indices_sync, parts_dir)
+
     async def persist_part_payload(self, task_id: str, part_index: int, payload: dict[str, Any]) -> Path:
         part_path = self.part_payload_path(task_id, part_index)
         await asyncio.to_thread(self._write_json_atomic, part_path, payload)
@@ -272,7 +272,7 @@ class TaskStateStore:
         input_entries: list[dict[str, Any]] = []
         for index, file in enumerate(files):
             path = self._input_file_path(task_id, index, file.filename)
-            self._copy_file_payload(file, path)
+            self._persist_file_payload(file, path)
             input_entries.append(
                 {
                     "filename": file.filename,
@@ -419,12 +419,30 @@ class TaskStateStore:
     async def _write_manifest(self, task_id: str, manifest: dict[str, Any]) -> None:
         await asyncio.to_thread(self._write_json_atomic, self._manifest_path(task_id), manifest)
 
-    def _copy_file_payload(self, file: FilePayload, destination: Path) -> None:
+    def _persist_file_payload(self, file: FilePayload, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if file.temp_path is not None:
-            shutil.copy2(file.temp_path, destination)
+            source = file.temp_path
+            if source != destination:
+                try:
+                    os.replace(source, destination)
+                except OSError:
+                    shutil.copy2(source, destination)
+                    source.unlink(missing_ok=True)
+            file.bind_persisted_path(destination)
             return
         self._write_bytes_atomic(destination, file.content or b"")
+        file.bind_persisted_path(destination)
+
+    def _existing_part_payload_indices_sync(self, parts_dir: Path) -> set[int]:
+        if not parts_dir.exists():
+            return set()
+        indices: set[int] = set()
+        for payload_path in parts_dir.glob("*.payload.json"):
+            stem = payload_path.name.split(".", 1)[0]
+            if stem.isdigit():
+                indices.add(int(stem))
+        return indices
 
     def _read_json_file(self, path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))

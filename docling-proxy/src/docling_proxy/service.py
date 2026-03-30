@@ -13,12 +13,19 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 
 from docling_proxy.archive import ArchiveStore
+from docling_proxy.config import settings
 from docling_proxy.contracts import ConvertDocumentResponse, ProxyOptions, ProxyPartInfo, ProxyTaskMeta, TaskStatusResponse
 from docling_proxy.local_docling import LocalDoclingManager
 from docling_proxy.merge import build_batch_zip_response_bytes, build_zip_response_bytes, merge_results
 from docling_proxy.models import FilePayload, NormalizedSource, ProxyJob, cleanup_file_payloads
 from docling_proxy.parsing import decode_file_source, filename_from_url, normalize_requested_formats
-from docling_proxy.pdf_tools import decide_split, is_pdf, split_pdf
+from docling_proxy.pdf_tools import (
+    PdfSplitPlan,
+    build_split_plan,
+    decide_split_from_plan,
+    is_pdf,
+    materialize_pdf_chunk,
+)
 from docling_proxy.state import TaskStateStore
 from docling_proxy.store import job_store
 from docling_proxy.upstream import UpstreamClient
@@ -72,6 +79,28 @@ class ProxyService:
         self.local_docling = local_docling
         self.archive_store = archive_store
         self.state_store = state_store
+        self._work_semaphore = asyncio.Semaphore(settings.work_concurrency)
+
+    def _effective_work_concurrency(self, proxy_options: ProxyOptions | None) -> int:
+        request_limit = proxy_options.work_concurrency if proxy_options is not None else None
+        if request_limit is None:
+            return settings.work_concurrency
+        return min(settings.work_concurrency, request_limit)
+
+    async def _file_payload_is_pdf(self, file: FilePayload) -> bool:
+        if file.content_type == "application/pdf":
+            return True
+        if file.filename.lower().endswith(".pdf"):
+            return True
+        return (await file.peek_content()).startswith(b"%PDF")
+
+    async def _file_payload_source(self, file: FilePayload) -> bytes | Path:
+        if file.temp_path is not None:
+            return file.temp_path
+        return await file.read_content()
+
+    async def _plan_split(self, source: bytes | Path, proxy_options: ProxyOptions | None) -> PdfSplitPlan:
+        return await asyncio.to_thread(build_split_plan, source, proxy_options)
 
     async def resume_incomplete_operations(self) -> None:
         if self.state_store is None:
@@ -197,7 +226,7 @@ class ProxyService:
         try:
             if len(files) != 1:
                 logger.info("[%s] isolated local batch processing: file_count=%s target=%s", request_id, len(files), target_kind)
-                batch_result = await self._process_multi_file_request(request_id, files, data, headers)
+                batch_result = await self._process_multi_file_request(request_id, files, data, headers, proxy_options)
                 await self._archive_zip_bytes(
                     request_id,
                     "file",
@@ -211,14 +240,16 @@ class ProxyService:
                 return self._zip_response(batch_result.zip_bytes)
 
             file = files[0]
-            file_content = await file.read_content()
-            if not is_pdf(file.filename, file.content_type, file_content):
+            if not await self._file_payload_is_pdf(file):
                 logger.info("[%s] isolated local processing: non-pdf file=%s", request_id, file.filename)
                 response = await self.local_docling.relay_file_sync(files, data, headers)
                 await self._archive_httpx_response(request_id, "file", file.filename, target_kind, response)
                 return response
 
-            decision = decide_split(file_content, proxy_options)
+            pdf_source = await self._file_payload_source(file)
+            logger.info("[%s] planning split for file=%s", request_id, file.filename)
+            split_plan = await self._plan_split(pdf_source, proxy_options)
+            decision = decide_split_from_plan(split_plan, proxy_options)
             logger.info(
                 "[%s] evaluated file=%s pages=%s should_split=%s reason=%s target=%s",
                 request_id,
@@ -247,7 +278,7 @@ class ProxyService:
                 meta=ProxyTaskMeta(source_kind="file", filename=file.filename),
             )
             await self._ensure_operation_state(split_job, headers)
-            await self._run_file_job(split_job, proxy_headers_subset(headers))
+            await self._run_file_job(split_job, proxy_headers_subset(headers), split_plan=split_plan)
             if split_job.status == "failure":
                 raise RuntimeError(split_job.error_message or f"Split conversion failed for {file.filename}.")
             return self._build_sync_result_from_job(split_job)
@@ -278,7 +309,9 @@ class ProxyService:
             await self._archive_httpx_response(request_id, "source", normalized_source.filename, target_kind, response)
             return response
 
-        decision = decide_split(normalized_source.content, proxy_options)
+        logger.info("[%s] planning split for source=%s", request_id, normalized_source.filename)
+        split_plan = await self._plan_split(normalized_source.content, proxy_options)
+        decision = decide_split_from_plan(split_plan, proxy_options)
         logger.info(
             "[%s] evaluated source=%s pages=%s should_split=%s reason=%s target=%s",
             request_id,
@@ -307,7 +340,7 @@ class ProxyService:
             meta=ProxyTaskMeta(source_kind="source", filename=normalized_source.filename),
         )
         await self._ensure_operation_state(split_job, headers, normalized_source)
-        await self._run_source_job(split_job, proxy_headers_subset(headers), normalized_source)
+        await self._run_source_job(split_job, proxy_headers_subset(headers), normalized_source, split_plan=split_plan)
         if split_job.status == "failure":
             raise RuntimeError(split_job.error_message or f"Split conversion failed for {normalized_source.filename}.")
         return self._build_sync_result_from_job(split_job)
@@ -384,7 +417,12 @@ class ProxyService:
             raise HTTPException(status_code=404, detail="Task result not found. Please wait for a completion status.")
         return job
 
-    async def _run_file_job(self, job: ProxyJob, headers: dict[str, str]) -> None:
+    async def _run_file_job(
+        self,
+        job: ProxyJob,
+        headers: dict[str, str],
+        split_plan: PdfSplitPlan | None = None,
+    ) -> None:
         if await self._restore_completed_job_if_needed(job):
             logger.info("[%s] restored completed file job from persisted state", job.task_id)
             return
@@ -395,19 +433,22 @@ class ProxyService:
         try:
             if len(job.files) != 1:
                 logger.info("[%s] async isolated local batch processing: file_count=%s target=%s", job.task_id, len(job.files), job.target_kind)
-                batch_result = await self._process_multi_file_request(job.task_id, job.files, job.options, headers)
+                batch_result = await self._process_multi_file_request(job.task_id, job.files, job.options, headers, job.proxy_options)
                 await self._store_batch_result(job, batch_result)
                 return
 
             file = job.files[0]
-            file_content = await file.read_content()
-            if not is_pdf(file.filename, file.content_type, file_content):
+            if not await self._file_payload_is_pdf(file):
                 logger.info("[%s] async isolated local processing: non-pdf file=%s", job.task_id, file.filename)
                 response = await self.local_docling.relay_file_sync(job.files, job.options, headers)
                 await self._store_local_response(job, response)
                 return
 
-            decision = decide_split(file_content, job.proxy_options)
+            pdf_source = await self._file_payload_source(file)
+            if split_plan is None:
+                logger.info("[%s] planning split for file=%s", job.task_id, file.filename)
+                split_plan = await self._plan_split(pdf_source, job.proxy_options)
+            decision = decide_split_from_plan(split_plan, job.proxy_options)
             logger.info(
                 "[%s] async evaluated file=%s pages=%s should_split=%s reason=%s",
                 job.task_id,
@@ -424,12 +465,13 @@ class ProxyService:
 
             result = await self._process_split_file(
                 filename=file.filename,
-                data=file_content,
+                pdf_source=pdf_source,
                 options=job.options,
                 proxy_options=job.proxy_options,
                 headers=headers,
                 target_kind=job.target_kind,
                 job=job,
+                split_plan=split_plan,
             )
             await self._store_split_result(job, result, file.filename)
         except Exception as exc:  # noqa: BLE001
@@ -440,7 +482,13 @@ class ProxyService:
         finally:
             await cleanup_file_payloads(job.files)
 
-    async def _run_source_job(self, job: ProxyJob, headers: dict[str, str], normalized_source: NormalizedSource | None) -> None:
+    async def _run_source_job(
+        self,
+        job: ProxyJob,
+        headers: dict[str, str],
+        normalized_source: NormalizedSource | None,
+        split_plan: PdfSplitPlan | None = None,
+    ) -> None:
         if await self._restore_completed_job_if_needed(job):
             logger.info("[%s] restored completed source job from persisted state", job.task_id)
             return
@@ -455,7 +503,10 @@ class ProxyService:
                 await self._store_local_response(job, response)
                 return
 
-            decision = decide_split(normalized_source.content, job.proxy_options)
+            if split_plan is None:
+                logger.info("[%s] planning split for source=%s", job.task_id, normalized_source.filename)
+                split_plan = await self._plan_split(normalized_source.content, job.proxy_options)
+            decision = decide_split_from_plan(split_plan, job.proxy_options)
             logger.info(
                 "[%s] async evaluated source=%s pages=%s should_split=%s reason=%s",
                 job.task_id,
@@ -472,12 +523,13 @@ class ProxyService:
 
             result = await self._process_split_file(
                 filename=normalized_source.filename,
-                data=normalized_source.content,
+                pdf_source=normalized_source.content,
                 options=job.options,
                 proxy_options=job.proxy_options,
                 headers=headers,
                 target_kind=job.target_kind,
                 job=job,
+                split_plan=split_plan,
             )
             await self._store_split_result(job, result, normalized_source.filename)
         except Exception as exc:  # noqa: BLE001
@@ -656,13 +708,21 @@ class ProxyService:
         files: list[FilePayload],
         options: dict[str, Any],
         headers: dict[str, str],
+        proxy_options: ProxyOptions | None = None,
     ) -> BatchConversionResult:
         total_files = len(files)
         completed_files = 0
         progress_lock = asyncio.Lock()
         batch_options = self._batch_request_options(options)
         prefixes = self._batch_output_prefixes(files)
-        logger.info("[%s] batching %s file(s) into merged zip output", operation_id, total_files)
+        request_work_limit = self._effective_work_concurrency(proxy_options)
+        request_work_semaphore = asyncio.Semaphore(request_work_limit)
+        logger.info(
+            "[%s] batching %s file(s) into merged zip output with work_concurrency=%s",
+            operation_id,
+            total_files,
+            request_work_limit,
+        )
 
         async def convert_file(index: int, file: FilePayload, prefix: str) -> BatchFileResult:
             nonlocal completed_files
@@ -680,49 +740,51 @@ class ProxyService:
                     timing.startup_duration_sec,
                 )
 
-            try:
-                execution = await self.local_docling.execute_file_sync(
-                    [file],
-                    batch_options,
-                    headers,
-                    on_request_start=log_file_started,
-                )
-                execution.response.raise_for_status()
-                content_type = execution.response.headers.get("content-type", "")
-                payload = execution.response.json() if content_type.startswith("application/json") else None
-                result = BatchFileResult(
-                    filename=file.filename,
-                    prefix=prefix,
-                    processing_time=float((payload or {}).get("processing_time") or execution.timing.processing_duration_sec),
-                    zip_bytes=None if payload is not None else execution.response.content,
-                    payload=payload,
-                )
-                logger.info(
-                    "[%s] finished batch file %s/%s: file=%s, total=%.2fs, wait=%.2fs, startup=%.2fs, convert=%.2fs",
-                    operation_id,
-                    index + 1,
-                    total_files,
-                    file.filename,
-                    execution.timing.processing_duration_sec,
-                    execution.timing.wait_duration_sec,
-                    execution.timing.startup_duration_sec,
-                    execution.timing.request_duration_sec,
-                )
-            except Exception as exc:
-                result = BatchFileResult(
-                    filename=file.filename,
-                    prefix=prefix,
-                    processing_time=time.perf_counter() - started_at,
-                    error={"filename": file.filename, "message": str(exc)},
-                )
-                logger.error(
-                    "[%s] batch file %s/%s failed: file=%s, error=%s",
-                    operation_id,
-                    index + 1,
-                    total_files,
-                    file.filename,
-                    exc,
-                )
+            async with request_work_semaphore:
+                async with self._work_semaphore:
+                    try:
+                        execution = await self.local_docling.execute_file_sync(
+                            [file],
+                            batch_options,
+                            headers,
+                            on_request_start=log_file_started,
+                        )
+                        execution.response.raise_for_status()
+                        content_type = execution.response.headers.get("content-type", "")
+                        payload = execution.response.json() if content_type.startswith("application/json") else None
+                        result = BatchFileResult(
+                            filename=file.filename,
+                            prefix=prefix,
+                            processing_time=float((payload or {}).get("processing_time") or execution.timing.processing_duration_sec),
+                            zip_bytes=None if payload is not None else execution.response.content,
+                            payload=payload,
+                        )
+                        logger.info(
+                            "[%s] finished batch file %s/%s: file=%s, total=%.2fs, wait=%.2fs, startup=%.2fs, convert=%.2fs",
+                            operation_id,
+                            index + 1,
+                            total_files,
+                            file.filename,
+                            execution.timing.processing_duration_sec,
+                            execution.timing.wait_duration_sec,
+                            execution.timing.startup_duration_sec,
+                            execution.timing.request_duration_sec,
+                        )
+                    except Exception as exc:
+                        result = BatchFileResult(
+                            filename=file.filename,
+                            prefix=prefix,
+                            processing_time=time.perf_counter() - started_at,
+                            error={"filename": file.filename, "message": str(exc)},
+                        )
+                        logger.error(
+                            "[%s] batch file %s/%s failed: file=%s, error=%s",
+                            operation_id,
+                            index + 1,
+                            total_files,
+                            file.filename,
+                            exc,
+                        )
             async with progress_lock:
                 completed_files += 1
                 logger.info("[%s] completed batch files %s/%s", operation_id, completed_files, total_files)
@@ -801,13 +863,14 @@ class ProxyService:
     async def _process_split_file(
         self,
         filename: str,
-        data: bytes,
+        pdf_source: bytes | Path,
         options: dict[str, Any],
         proxy_options: ProxyOptions | None,
         headers: dict[str, str],
         target_kind: str,
         job: ProxyJob | None = None,
         operation_id: str | None = None,
+        split_plan: PdfSplitPlan | None = None,
     ) -> ConvertDocumentResponse:
         op_id = operation_id or (job.task_id if job is not None else uuid.uuid4().hex[:8])
         requested_formats = normalize_requested_formats(options)
@@ -816,45 +879,51 @@ class ProxyService:
         if "json" not in requested_formats:
             part_options["to_formats"] = requested_formats + ["json"]
 
-        parts = split_pdf(data, proxy_options)
+        if split_plan is None:
+            logger.info("[%s] planning split parts for file=%s", op_id, filename)
+            split_plan = await self._plan_split(pdf_source, proxy_options)
         use_persistence = self.state_store is not None and await self.state_store.exists(op_id)
         if use_persistence and self.state_store is not None:
             split_meta = await self.state_store.ensure_split_plan(
                 op_id,
                 source_kind=job.source_kind if job is not None else "file",
                 filename=filename,
-                parts=[(start, end) for start, end, _ in parts],
+                parts=[(chunk.start_page, chunk.end_page) for chunk in split_plan.chunks],
             )
             if job is not None:
                 job.meta = split_meta
 
-        total_chunks = len(parts)
-        total_pages = sum(end - start + 1 for start, end, _ in parts)
+        total_chunks = len(split_plan.chunks)
+        total_pages = split_plan.total_pages
         completed_chunks = 0
         completed_pages = 0
         progress_lock = asyncio.Lock()
+        request_work_limit = self._effective_work_concurrency(proxy_options)
+        request_work_semaphore = asyncio.Semaphore(request_work_limit)
         logger.info(
-            "[%s] splitting file=%s into %s part(s) with formats=%s target=%s",
+            "[%s] splitting file=%s into %s part(s) with formats=%s target=%s work_concurrency=%s",
             op_id,
             filename,
             total_chunks,
             requested_formats,
             target_kind,
+            request_work_limit,
         )
         if job is not None and not job.meta.split:
             job.meta.split = True
-            job.meta.total_parts = len(parts)
+            job.meta.total_parts = total_chunks
             job.meta.completed_parts = 0
             job.meta.filename = filename
             job.meta.parts = [
-                ProxyPartInfo(part_index=index, start_page=start, end_page=end)
-                for index, (start, end, _) in enumerate(parts)
+                ProxyPartInfo(part_index=chunk.part_index, start_page=chunk.start_page, end_page=chunk.end_page)
+                for chunk in split_plan.chunks
             ]
         if job is not None and use_persistence and self.state_store is not None:
+            persisted_parts = await self.state_store.existing_part_payload_indices(op_id)
             recovered_completed_parts = 0
             for index, part in enumerate(job.meta.parts):
                 page_count = part.end_page - part.start_page + 1
-                if part.task_status == "success" and await self.state_store.part_payload_exists(op_id, index):
+                if part.task_status == "success" and index in persisted_parts:
                     completed_chunks += 1
                     completed_pages += page_count
                     recovered_completed_parts += 1
@@ -875,8 +944,11 @@ class ProxyService:
                     total_chunks,
                 )
 
-        async def convert_part(index: int, start_page: int, end_page: int, part_bytes: bytes) -> dict[str, Any]:
+        async def convert_part(chunk) -> dict[str, Any]:
             nonlocal completed_chunks, completed_pages
+            index = chunk.part_index
+            start_page = chunk.start_page
+            end_page = chunk.end_page
             page_count = end_page - start_page + 1
             logger.info(
                 "[%s] queued chunk %s/%s for file=%s, pages %s-%s",
@@ -887,7 +959,6 @@ class ProxyService:
                 start_page,
                 end_page,
             )
-            part_file = FilePayload(filename=f"{index + 1:04d}_{filename}", content=part_bytes, content_type="application/pdf")
 
             async def log_chunk_started(timing) -> None:
                 logger.info(
@@ -908,96 +979,97 @@ class ProxyService:
                         if use_persistence:
                             await self._sync_job_state(job)
 
-            try:
-                execution = await self.local_docling.execute_file_sync(
-                    [part_file],
-                    part_options,
-                    headers,
-                    on_request_start=log_chunk_started,
-                )
-                execution.response.raise_for_status()
-                payload = execution.response.json()
-            except Exception as exc:
-                if job is not None:
+            async with request_work_semaphore:
+                async with self._work_semaphore:
+                    part_bytes = await asyncio.to_thread(materialize_pdf_chunk, pdf_source, chunk)
+                    part_file = FilePayload(filename=f"{index + 1:04d}_{filename}", content=part_bytes, content_type="application/pdf")
+                    try:
+                        execution = await self.local_docling.execute_file_sync(
+                            [part_file],
+                            part_options,
+                            headers,
+                            on_request_start=log_chunk_started,
+                        )
+                        execution.response.raise_for_status()
+                        payload = execution.response.json()
+                    except Exception as exc:
+                        if job is not None:
+                            async with progress_lock:
+                                job.meta.parts[index].error_message = str(exc)
+                                job.meta.parts[index].task_status = "failure"
+                                if use_persistence:
+                                    await self._sync_job_state(job)
+                        logger.error(
+                            "[%s] chunk %s/%s for file=%s failed, pages %s-%s, error=%s",
+                            op_id,
+                            index + 1,
+                            total_chunks,
+                            filename,
+                            start_page,
+                            end_page,
+                            exc,
+                        )
+                        raise
+                    if use_persistence and self.state_store is not None:
+                        await self.state_store.persist_part_payload(op_id, index, payload)
                     async with progress_lock:
-                        job.meta.parts[index].error_message = str(exc)
-                        job.meta.parts[index].task_status = "failure"
-                        if use_persistence:
-                            await self._sync_job_state(job)
-                logger.error(
-                    "[%s] chunk %s/%s for file=%s failed, pages %s-%s, error=%s",
-                    op_id,
-                    index + 1,
-                    total_chunks,
-                    filename,
-                    start_page,
-                    end_page,
-                    exc,
-                )
-                raise
-            if use_persistence and self.state_store is not None:
-                await self.state_store.persist_part_payload(op_id, index, payload)
-            async with progress_lock:
-                if job is not None:
-                    job.meta.parts[index].task_status = "success"
-                    job.meta.parts[index].error_message = None
-                    job.meta.completed_parts = sum(1 for part in job.meta.parts if part.task_status == "success")
-                    if use_persistence:
-                        await self._sync_job_state(job)
-                completed_chunks += 1
-                completed_pages += page_count
-                per_page_duration_sec = execution.timing.processing_duration_sec / page_count
-                logger.info(
-                    "[%s] finished chunk %s/%s for file=%s, pages %s-%s, total=%.2fs, per_page=%.2fs, wait=%.2fs, startup=%.2fs, convert=%.2fs",
-                    op_id,
-                    index + 1,
-                    total_chunks,
-                    filename,
-                    start_page,
-                    end_page,
-                    execution.timing.processing_duration_sec,
-                    per_page_duration_sec,
-                    execution.timing.wait_duration_sec,
-                    execution.timing.startup_duration_sec,
-                    execution.timing.request_duration_sec,
-                )
-                logger.info(
-                    "[%s] completed %s/%s for file=%s, %s/%s",
-                    op_id,
-                    completed_chunks,
-                    total_chunks,
-                    filename,
-                    completed_pages,
-                    total_pages,
-                )
+                        if job is not None:
+                            job.meta.parts[index].task_status = "success"
+                            job.meta.parts[index].error_message = None
+                            job.meta.completed_parts = sum(1 for part in job.meta.parts if part.task_status == "success")
+                            if use_persistence:
+                                await self._sync_job_state(job)
+                        completed_chunks += 1
+                        completed_pages += page_count
+                        per_page_duration_sec = execution.timing.processing_duration_sec / page_count
+                        logger.info(
+                            "[%s] finished chunk %s/%s for file=%s, pages %s-%s, total=%.2fs, per_page=%.2fs, wait=%.2fs, startup=%.2fs, convert=%.2fs",
+                            op_id,
+                            index + 1,
+                            total_chunks,
+                            filename,
+                            start_page,
+                            end_page,
+                            execution.timing.processing_duration_sec,
+                            per_page_duration_sec,
+                            execution.timing.wait_duration_sec,
+                            execution.timing.startup_duration_sec,
+                            execution.timing.request_duration_sec,
+                        )
+                        logger.info(
+                            "[%s] completed %s/%s for file=%s, %s/%s",
+                            op_id,
+                            completed_chunks,
+                            total_chunks,
+                            filename,
+                            completed_pages,
+                            total_pages,
+                        )
             return payload
 
         if use_persistence and self.state_store is not None:
+            persisted_parts = await self.state_store.existing_part_payload_indices(op_id)
             pending_parts = [
-                (index, start, end, part_bytes)
-                for index, (start, end, part_bytes) in enumerate(parts)
+                chunk
+                for chunk in split_plan.chunks
                 if not (
                     job is not None
-                    and index < len(job.meta.parts)
-                    and job.meta.parts[index].task_status == "success"
-                    and await self.state_store.part_payload_exists(op_id, index)
+                    and chunk.part_index < len(job.meta.parts)
+                    and job.meta.parts[chunk.part_index].task_status == "success"
+                    and chunk.part_index in persisted_parts
                 )
             ]
             if pending_parts:
-                await asyncio.gather(
-                    *(convert_part(index, start, end, part_bytes) for index, start, end, part_bytes in pending_parts)
-                )
+                await asyncio.gather(*(convert_part(chunk) for chunk in pending_parts))
             results = await self.state_store.load_part_payloads(op_id, total_chunks)
         else:
-            results = await asyncio.gather(
-                *(convert_part(index, start, end, part_bytes) for index, (start, end, part_bytes) in enumerate(parts))
-            )
-        logger.info("[%s] all chunks completed; merging %s part(s) for file=%s", op_id, len(parts), filename)
+            results = await asyncio.gather(*(convert_part(chunk) for chunk in split_plan.chunks))
+        logger.info("[%s] all chunks completed; merging %s part(s) for file=%s", op_id, total_chunks, filename)
         proxy_meta = {
             "split": True,
             "parts": [part.model_dump() for part in job.meta.parts] if job is not None else [
-                {"part_index": index, "start_page": start, "end_page": end}
-                for index, (start, end, _) in enumerate(parts)
+                {"part_index": chunk.part_index, "start_page": chunk.start_page, "end_page": chunk.end_page}
+                for chunk in split_plan.chunks
             ],
         }
         return merge_results(

@@ -38,16 +38,31 @@ class UpstreamClient:
         await asyncio.to_thread(self._sync_client.close)
 
     async def relay_file_sync(self, endpoint: str, files: list[FilePayload], data: dict[str, Any], headers: dict[str, str]) -> httpx.Response:
-        upstream_files = [
-            ("files", (file.filename, file.content, file.content_type)) for file in files
-        ]
-        return await asyncio.to_thread(
-            self._sync_client.post,
-            f"{settings.upstream_url}{endpoint}",
-            files=upstream_files,
-            data=form_data(data),
-            headers=forwarded_headers(headers),
-        )
+        return await asyncio.to_thread(self._relay_file_sync_impl, endpoint, files, data, headers)
+
+    def _relay_file_sync_impl(
+        self,
+        endpoint: str,
+        files: list[FilePayload],
+        data: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        opened_files = []
+        upstream_files = []
+        try:
+            for file in files:
+                handle = file.open_binary()
+                opened_files.append(handle)
+                upstream_files.append(("files", (file.filename, handle, file.content_type)))
+            return self._sync_client.post(
+                f"{settings.upstream_url}{endpoint}",
+                files=upstream_files,
+                data=form_data(data),
+                headers=forwarded_headers(headers),
+            )
+        finally:
+            for handle in opened_files:
+                handle.close()
 
     async def relay_source_sync(self, endpoint: str, payload: dict[str, Any], headers: dict[str, str]) -> httpx.Response:
         return await self._client.post(

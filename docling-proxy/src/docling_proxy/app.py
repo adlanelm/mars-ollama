@@ -6,10 +6,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from docling_proxy.archive import ArchiveStore
 from docling_proxy.config import settings
 from docling_proxy.contracts import ProxySourceRequest
 from docling_proxy.local_docling import LocalDoclingManager
 from docling_proxy.parsing import normalize_source_request, parse_multipart_form
+from docling_proxy.state import TaskStateStore
 from docling_proxy.service import ProxyService, source_to_normalized_source
 from docling_proxy.upstream import UpstreamClient
 
@@ -24,8 +26,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     upstream = UpstreamClient()
+    archive_store = ArchiveStore()
+    state_store = TaskStateStore()
     local_docling = LocalDoclingManager()
-    app.state.proxy_service = ProxyService(upstream, local_docling)
+    await local_docling.start()
+    app.state.proxy_service = ProxyService(upstream, local_docling, archive_store, state_store)
+    await app.state.proxy_service.resume_incomplete_operations()
     yield
     await local_docling.close()
     await upstream.close()
@@ -128,7 +134,7 @@ async def poll_status(task_id: str, request: Request):
 @app.get("/v1/result/{task_id}")
 async def get_result(task_id: str, request: Request):
     job = await service(request).get_result(task_id)
-    if job.result_zip is not None and job.target_kind == "zip":
+    if job.result_zip is not None:
         return Response(
             content=job.result_zip,
             media_type="application/zip",

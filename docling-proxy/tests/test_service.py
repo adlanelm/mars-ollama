@@ -1,14 +1,19 @@
 from io import BytesIO
+from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import logging
 
 import pytest
 from pypdf import PdfWriter
 
-from docling_proxy.contracts import ProxyOptions, ProxyTaskMeta
+from docling_proxy.contracts import ConvertDocumentResponse, ExportDocumentResponse, ProxyOptions, ProxyTaskMeta
 from docling_proxy.local_docling import LocalDoclingExecution, LocalDoclingTiming
 from docling_proxy.models import FilePayload, ProxyJob
+from docling_proxy.pdf_tools import split_pdf
+from docling_proxy.state import TaskStateStore
 from docling_proxy.service import ProxyService
+from docling_proxy.store import job_store
 
 
 def make_pdf(page_count: int) -> bytes:
@@ -18,6 +23,28 @@ def make_pdf(page_count: int) -> bytes:
     buffer = BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
+
+
+def make_zip_bytes(filename: str, content: str = "ok") -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        zip_file.writestr(f"{Path(filename).stem}.md", content)
+    return buffer.getvalue()
+
+
+def make_merged_result(results, requested_formats, page_break_placeholder=None, include_proxy_meta=False, proxy_meta=None):
+    names = [result["document"]["json_content"]["name"] for result in results]
+    return ConvertDocumentResponse(
+        document=ExportDocumentResponse(
+            md_content="\n".join(names) if "md" in requested_formats else None,
+            json_content={"names": names} if "json" in requested_formats else None,
+        ),
+        status="success",
+        errors=[],
+        processing_time=float(len(results)),
+        timings={},
+        proxy_meta=proxy_meta if include_proxy_meta else None,
+    )
 
 
 class FakeResponse:
@@ -120,6 +147,15 @@ class FakeLocalDocling:
             maybe_result = on_request_start(timing)
             if maybe_result is not None:
                 await maybe_result
+        if data.get("target_type") == "zip":
+            filename = files[0].filename
+            return LocalDoclingExecution(
+                response=FakeResponse(
+                    content=make_zip_bytes(filename, content=f"zip-{Path(filename).stem}"),
+                    headers={"content-type": "application/zip"},
+                ),
+                timing=timing,
+            )
         return LocalDoclingExecution(
             response=FakeResponse(
                 payload={
@@ -132,17 +168,33 @@ class FakeLocalDocling:
         )
 
 
+class FakeArchiveStore:
+    def __init__(self):
+        self.payload_calls = []
+        self.zip_calls = []
+
+    async def persist_payload(self, request_id, source_kind, filename, target_kind, payload):
+        self.payload_calls.append((request_id, source_kind, filename, target_kind, payload))
+        return f"/archive/{request_id}"
+
+    async def persist_zip(self, request_id, source_kind, filename, target_kind, zip_bytes, *, status="success", errors=None, processing_time=None):
+        self.zip_calls.append((request_id, source_kind, filename, target_kind, zip_bytes, status, errors, processing_time))
+        return f"/archive/{request_id}"
+
+
 @pytest.mark.asyncio
 async def test_small_pdf_passthrough(monkeypatch):
     upstream = FakeUpstream()
     local_docling = FakeLocalDocling()
-    service = ProxyService(upstream, local_docling)
+    archive_store = FakeArchiveStore()
+    service = ProxyService(upstream, local_docling, archive_store)
     file = FilePayload("small.pdf", make_pdf(1), "application/pdf")
 
     response = await service.process_file_sync([file], {"to_formats": ["md"]}, None, {})
     assert upstream.sync_calls == 0
     assert local_docling.calls == []
     assert len(local_docling.relay_file_calls) == 1
+    assert len(archive_store.payload_calls) == 1
     assert response.json()["status"] == "success"
 
 
@@ -150,7 +202,7 @@ async def test_small_pdf_passthrough(monkeypatch):
 async def test_split_pdf_merges_chunk_results(monkeypatch, caplog):
     upstream = FakeUpstream()
     local_docling = FakeLocalDocling()
-    service = ProxyService(upstream, local_docling)
+    service = ProxyService(upstream, local_docling, FakeArchiveStore())
     caplog.set_level(logging.INFO)
 
     monkeypatch.setattr(
@@ -184,7 +236,8 @@ async def test_split_pdf_merges_chunk_results(monkeypatch, caplog):
 async def test_async_small_pdf_uses_local_isolated_processing():
     upstream = FakeUpstream()
     local_docling = FakeLocalDocling()
-    service = ProxyService(upstream, local_docling)
+    archive_store = FakeArchiveStore()
+    service = ProxyService(upstream, local_docling, archive_store)
     file = FilePayload("small.pdf", make_pdf(1), "application/pdf")
     job = ProxyJob(
         task_id="job-1",
@@ -202,3 +255,158 @@ async def test_async_small_pdf_uses_local_isolated_processing():
     assert job.status == "success"
     assert len(local_docling.relay_file_calls) == 1
     assert job.result_payload["status"] == "success"
+    assert len(archive_store.payload_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_split_job_persists_chunk_payloads_and_final_result_state(tmp_path, monkeypatch):
+    upstream = FakeUpstream()
+    local_docling = FakeLocalDocling()
+    archive_store = FakeArchiveStore()
+    state_store = TaskStateStore(tmp_path)
+    service = ProxyService(upstream, local_docling, archive_store, state_store)
+    monkeypatch.setattr("docling_proxy.service.merge_results", make_merged_result)
+
+    file = FilePayload("large.pdf", make_pdf(5), "application/pdf")
+    job = ProxyJob(
+        task_id="job-split-state",
+        source_kind="file",
+        filename=file.filename,
+        target_kind="inbody",
+        requested_formats=["md"],
+        options={"to_formats": ["md"]},
+        proxy_options=ProxyOptions(force_split=True, max_pages_per_part=2, poll_interval_sec=0.001),
+        files=[file],
+        meta=ProxyTaskMeta(source_kind="file", filename=file.filename),
+    )
+
+    await service._ensure_operation_state(job, {})
+    await service._run_file_job(job, {})
+
+    assert job.status == "success"
+    assert job.result_payload is not None
+    assert job.result_payload_path is not None
+    assert len(archive_store.payload_calls) == 1
+    for part_index in range(3):
+        assert state_store.part_payload_path(job.task_id, part_index).exists()
+
+    await job_store.delete(job.task_id)
+    recovered_service = ProxyService(FakeUpstream(), FakeLocalDocling(), archive_store, state_store)
+    recovered_job = await recovered_service.get_result(job.task_id)
+
+    assert recovered_job.status == "success"
+    assert recovered_job.result_payload is not None
+    assert recovered_job.result_payload["document"]["md_content"] == "chunk-1\nchunk-2\nchunk-3"
+
+
+@pytest.mark.asyncio
+async def test_split_recovery_skips_already_persisted_chunks(tmp_path, monkeypatch):
+    upstream = FakeUpstream()
+    local_docling = FakeLocalDocling()
+    archive_store = FakeArchiveStore()
+    state_store = TaskStateStore(tmp_path)
+    service = ProxyService(upstream, local_docling, archive_store, state_store)
+    monkeypatch.setattr("docling_proxy.service.merge_results", make_merged_result)
+
+    file_bytes = make_pdf(5)
+    file = FilePayload("large.pdf", file_bytes, "application/pdf")
+    job = ProxyJob(
+        task_id="job-split-resume",
+        source_kind="file",
+        filename=file.filename,
+        target_kind="inbody",
+        requested_formats=["md"],
+        options={"to_formats": ["md"]},
+        proxy_options=ProxyOptions(force_split=True, max_pages_per_part=2, poll_interval_sec=0.001),
+        files=[file],
+        meta=ProxyTaskMeta(source_kind="file", filename=file.filename),
+    )
+
+    await service._ensure_operation_state(job, {})
+    split_parts = split_pdf(file_bytes, job.proxy_options)
+    job.meta = await state_store.ensure_split_plan(
+        job.task_id,
+        source_kind="file",
+        filename=file.filename,
+        parts=[(start, end) for start, end, _ in split_parts],
+    )
+    await state_store.persist_part_payload(
+        job.task_id,
+        0,
+        {
+            "document": {"json_content": {"name": "chunk-1"}},
+            "errors": [],
+            "processing_time": 1.0,
+        },
+    )
+    job.meta.parts[0].task_status = "success"
+    job.meta.completed_parts = 1
+    job.status = "started"
+    await state_store.sync_job(job)
+
+    recovered_local_docling = FakeLocalDocling()
+    recovered_service = ProxyService(FakeUpstream(), recovered_local_docling, archive_store, state_store)
+    recovered_job = await state_store.load_job(job.task_id, include_private=True)
+
+    assert recovered_job is not None
+    await recovered_service._run_file_job(recovered_job, {})
+
+    assert recovered_job.status == "success"
+    assert len(recovered_local_docling.calls) == 2
+    assert recovered_job.result_payload is not None
+    assert recovered_job.result_payload["document"]["md_content"] == "chunk-1\nchunk-1\nchunk-2"
+    for part_index in range(3):
+        assert state_store.part_payload_path(job.task_id, part_index).exists()
+
+
+@pytest.mark.asyncio
+async def test_sync_multi_file_request_builds_merged_zip_and_uses_per_file_isolation():
+    upstream = FakeUpstream()
+    local_docling = FakeLocalDocling()
+    archive_store = FakeArchiveStore()
+    service = ProxyService(upstream, local_docling, archive_store)
+    files = [
+        FilePayload("alpha.pdf", b"alpha", "application/pdf"),
+        FilePayload("beta.pdf", b"beta", "application/pdf"),
+    ]
+
+    response = await service.process_file_sync(files, {"to_formats": ["md"]}, None, {})
+
+    assert len(local_docling.calls) == 2
+    assert len(local_docling.relay_file_calls) == 0
+    assert len(archive_store.zip_calls) == 1
+    assert archive_store.zip_calls[0][5] == "success"
+    with ZipFile(BytesIO(response.body)) as zip_file:
+        assert sorted(zip_file.namelist()) == ["alpha/alpha.md", "beta/beta.md"]
+
+
+@pytest.mark.asyncio
+async def test_async_multi_file_job_returns_zip_even_without_explicit_zip_target():
+    upstream = FakeUpstream()
+    local_docling = FakeLocalDocling()
+    archive_store = FakeArchiveStore()
+    service = ProxyService(upstream, local_docling, archive_store)
+    files = [
+        FilePayload("alpha.pdf", b"alpha", "application/pdf"),
+        FilePayload("beta.pdf", b"beta", "application/pdf"),
+    ]
+    job = ProxyJob(
+        task_id="job-batch",
+        source_kind="file",
+        filename="batch-2-files",
+        target_kind="zip",
+        requested_formats=["md"],
+        options={"to_formats": ["md"]},
+        files=files,
+        meta=ProxyTaskMeta(source_kind="file", filename="batch-2-files"),
+    )
+
+    await service._run_file_job(job, {})
+
+    assert job.status == "success"
+    assert job.result_zip is not None
+    assert job.result_payload["status"] == "success"
+    assert len(local_docling.calls) == 2
+    assert len(archive_store.zip_calls) == 1
+    with ZipFile(BytesIO(job.result_zip)) as zip_file:
+        assert sorted(zip_file.namelist()) == ["alpha/alpha.md", "beta/beta.md"]

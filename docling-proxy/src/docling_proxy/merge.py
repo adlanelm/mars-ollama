@@ -3,11 +3,20 @@ from __future__ import annotations
 import json
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from docling_proxy.contracts import ConvertDocumentResponse, ExportDocumentResponse
 
 SUPPORTED_SPLIT_FORMATS = {"md", "json", "html", "text"}
+TEXT_OUTPUTS = {
+    "md_content": ".md",
+    "html_content": ".html",
+    "text_content": ".txt",
+    "doctags_content": ".doctags",
+    "yaml_content": ".yaml",
+    "vtt_content": ".vtt",
+}
 
 
 def ensure_supported_formats(requested_formats: list[str]) -> None:
@@ -64,19 +73,46 @@ def merge_results(
 
 
 def build_zip_response_bytes(result: ConvertDocumentResponse, filename: str) -> bytes:
-    stem = Path(filename).stem or "converted"
-    outputs = {
-        "md": result.document.md_content,
-        "json": json.dumps(result.document.json_content, indent=2) if result.document.json_content is not None else None,
-        "html": result.document.html_content,
-        "text": result.document.text_content,
-    }
-
     buffer = BytesIO()
     with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
-        for fmt, content in outputs.items():
-            if content is None:
-                continue
-            ext = "txt" if fmt == "text" else fmt
-            zip_file.writestr(f"{stem}.{ext}", content)
+        for path, content in payload_to_zip_entries(result, filename).items():
+            zip_file.writestr(path, content)
+    return buffer.getvalue()
+
+
+def payload_to_zip_entries(payload: ConvertDocumentResponse | dict[str, Any], filename: str) -> dict[str, bytes | str]:
+    payload_dict = payload.model_dump(exclude_none=True) if isinstance(payload, ConvertDocumentResponse) else payload
+    document = payload_dict.get("document") or {}
+    stem = Path(filename).stem or "converted"
+    outputs: dict[str, bytes | str] = {}
+    for key, ext in TEXT_OUTPUTS.items():
+        content = document.get(key)
+        if content is None:
+            continue
+        outputs[f"{stem}{ext}"] = str(content)
+    json_content = document.get("json_content")
+    if json_content is not None:
+        outputs[f"{stem}.json"] = json.dumps(json_content, indent=2)
+    return outputs
+
+
+def build_batch_zip_response_bytes(
+    zip_outputs: list[tuple[str, bytes]],
+    payload_outputs: list[tuple[str, str, dict[str, Any]]],
+    errors: list[dict[str, Any]] | None = None,
+) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        for prefix, zip_bytes in zip_outputs:
+            with ZipFile(BytesIO(zip_bytes)) as source_zip:
+                for info in source_zip.infolist():
+                    if info.is_dir():
+                        continue
+                    path = f"{prefix}/{info.filename}" if prefix else info.filename
+                    zip_file.writestr(path, source_zip.read(info.filename))
+        for prefix, filename, payload in payload_outputs:
+            for path, content in payload_to_zip_entries(payload, filename).items():
+                zip_file.writestr(f"{prefix}/{path}" if prefix else path, content)
+        if errors:
+            zip_file.writestr("errors.json", json.dumps(errors, indent=2))
     return buffer.getvalue()

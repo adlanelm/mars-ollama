@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Docling Split Proxy"
+    archive_dir: Path | None = None
+    state_dir: Path | None = None
     uvicorn_workers: int = 1
     upstream_url: str = "http://docling:5001/v1"
     max_pages_per_part: int = 25
@@ -21,6 +23,10 @@ class Settings(BaseSettings):
     upstream_timeout_sec: float = 120.0
     local_docling_command: str | None = None
     local_docling_workers: int = 1
+    local_docling_pool_size: int = 0
+    local_docling_pool_retry_delay_sec: float = 5.0
+    local_docling_pool_idle_timeout_sec: float = 300.0
+    local_docling_pool_reap_interval_sec: float = 5.0
     local_docling_startup_timeout_sec: float = 60.0
     local_docling_ready_poll_interval_sec: float = 0.5
     local_docling_request_timeout_sec: float = 36000.0

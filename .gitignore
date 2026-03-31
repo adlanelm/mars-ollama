@@ -1,4 +1,5 @@
 docling-serve
+.worktrees/
 **/*/.idea
 **/*/__pycache__
 **/*/*.egg-info

@@ -1,6 +1,7 @@
 import asyncio
 from io import BytesIO
 from pathlib import Path
+import time
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import logging
@@ -285,6 +286,34 @@ async def test_split_respects_request_work_concurrency_override(monkeypatch):
     )
 
     assert local_docling.max_active_calls == 1
+    assert result.document.md_content == "chunk-1\nchunk-2\nchunk-3"
+
+
+@pytest.mark.asyncio
+async def test_split_processes_chunks_in_part_order(monkeypatch):
+    monkeypatch.setattr(service_settings, "work_concurrency", 3)
+    upstream = FakeUpstream()
+    local_docling = FakeLocalDocling()
+    service = ProxyService(upstream, local_docling, FakeArchiveStore())
+    monkeypatch.setattr("docling_proxy.service.merge_results", make_merged_result)
+
+    def delayed_materialize(source, chunk):
+        if chunk.part_index == 0:
+            time.sleep(0.05)
+        return make_pdf(1)
+
+    monkeypatch.setattr("docling_proxy.service.materialize_pdf_chunk", delayed_materialize)
+
+    result = await service._process_split_file(
+        filename="large.pdf",
+        pdf_source=make_pdf(3),
+        options={"to_formats": ["md"]},
+        proxy_options=ProxyOptions(force_split=True, max_pages_per_part=1),
+        headers={},
+        target_kind="inbody",
+    )
+
+    assert [call[0].filename.split("_", 1)[0] for call in local_docling.calls] == ["0001", "0002", "0003"]
     assert result.document.md_content == "chunk-1\nchunk-2\nchunk-3"
 
 

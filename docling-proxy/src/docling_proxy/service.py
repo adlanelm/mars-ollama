@@ -1049,15 +1049,12 @@ class ProxyService:
             return payload
 
         async def run_pending_parts(chunks: list[PdfChunkPlan]) -> list[dict[str, Any]]:
-            tasks = [asyncio.create_task(convert_part(chunk)) for chunk in chunks]
-            try:
-                return await asyncio.gather(*tasks)
-            except Exception:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
+            ordered_chunks = sorted(chunks, key=lambda chunk: chunk.part_index)
+            logger.info("[%s] processing %s pending chunk(s) sequentially in part order", op_id, len(ordered_chunks))
+            results: list[dict[str, Any]] = []
+            for chunk in ordered_chunks:
+                results.append(await convert_part(chunk))
+            return results
 
         if use_persistence and self.state_store is not None:
             persisted_parts = await self.state_store.existing_part_payload_indices(op_id)

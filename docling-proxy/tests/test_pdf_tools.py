@@ -1,6 +1,7 @@
 from io import BytesIO
 
 from pypdf import PdfWriter
+from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject
 
 from docling_proxy.contracts import ProxyOptions
 from docling_proxy.pdf_tools import build_split_plan, count_pdf_pages, decide_split, materialize_pdf_chunk, split_pdf
@@ -10,6 +11,27 @@ def make_pdf(page_count: int) -> bytes:
     writer = PdfWriter()
     for _ in range(page_count):
         writer.add_blank_page(width=300, height=300)
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def make_pdf_with_malformed_goto_link() -> bytes:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    annotation = DictionaryObject()
+    annotation[NameObject("/Type")] = NameObject("/Annot")
+    annotation[NameObject("/Subtype")] = NameObject("/Link")
+    annotation[NameObject("/Rect")] = ArrayObject(
+        [NumberObject(10), NumberObject(10), NumberObject(100), NumberObject(100)]
+    )
+    action = DictionaryObject()
+    action[NameObject("/S")] = NameObject("/GoTo")
+    # Intentionally missing /D to simulate malformed PDFs seen in the wild.
+    annotation[NameObject("/A")] = action
+    page[NameObject("/Annots")] = ArrayObject([writer._add_object(annotation)])
+
     buffer = BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
@@ -30,6 +52,15 @@ def test_build_split_plan_separates_ranges_from_chunk_materialization(tmp_path):
 
     assert [(chunk.start_page, chunk.end_page) for chunk in plan.chunks] == [(1, 3), (4, 6), (7, 7)]
     assert count_pdf_pages(materialize_pdf_chunk(pdf_path, plan.chunks[1])) == 3
+
+
+def test_materialize_pdf_chunk_handles_malformed_link_actions():
+    pdf_bytes = make_pdf_with_malformed_goto_link()
+    plan = build_split_plan(pdf_bytes, ProxyOptions(force_split=True, max_pages_per_part=1))
+
+    chunk_bytes = materialize_pdf_chunk(pdf_bytes, plan.chunks[0])
+
+    assert count_pdf_pages(chunk_bytes) == 1
 
 
 def test_decide_split_respects_disable_flag():

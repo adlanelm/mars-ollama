@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from collections import deque
 from types import SimpleNamespace
 from pathlib import Path
@@ -258,3 +259,47 @@ def test_child_command_forces_one_http_worker(monkeypatch):
     command = manager._command(8081)
 
     assert command[-2:] == ["--workers", "1"]
+
+
+@pytest.mark.asyncio
+async def test_request_after_idle_drain_does_not_resuspend_during_warmup(monkeypatch):
+    monkeypatch.setattr(local_docling_settings, "warm_child_pool_size", 1)
+    monkeypatch.setattr(local_docling_settings, "warm_child_pool_retry_delay_sec", 0.01)
+    monkeypatch.setattr(local_docling_settings, "warm_child_idle_timeout_sec", 0.001)
+    monkeypatch.setattr(local_docling_settings, "warm_child_reap_interval_sec", 0.001)
+
+    manager = LocalDoclingManager()
+    start_calls = 0
+    stop_calls: list[int] = []
+
+    async def fake_start_session():
+        nonlocal start_calls
+        await asyncio.sleep(0.02)
+        start_calls += 1
+        return SimpleNamespace(
+            base_url=f"http://127.0.0.1:{9000 + start_calls}",
+            port=9000 + start_calls,
+            process=SimpleNamespace(pid=start_calls, returncode=None),
+            scratch_dir=Path(f"/tmp/fake-resume-{start_calls}"),
+            log_prefix=f"fake-resume-{start_calls}",
+            stderr_lines=deque(),
+            stream_tasks=(),
+        )
+
+    async def fake_stop_session(session):
+        stop_calls.append(session.process.pid)
+
+    monkeypatch.setattr(manager, "_start_session", fake_start_session)
+    monkeypatch.setattr(manager, "_stop_session", fake_stop_session)
+
+    manager._idle_reaper_task = asyncio.create_task(manager._run_idle_reaper())
+    manager._pool_suspended = True
+    manager._last_pool_idle_at = time.monotonic() - 10
+
+    try:
+        session = await asyncio.wait_for(manager._acquire_session(), timeout=0.3)
+        assert session.process.pid == 1
+        assert manager._pool_suspended is False
+        assert stop_calls == []
+    finally:
+        await manager.close()

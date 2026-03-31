@@ -20,6 +20,7 @@ from docling_proxy.merge import build_batch_zip_response_bytes, build_zip_respon
 from docling_proxy.models import FilePayload, NormalizedSource, ProxyJob, cleanup_file_payloads
 from docling_proxy.parsing import decode_file_source, filename_from_url, normalize_requested_formats
 from docling_proxy.pdf_tools import (
+    PdfChunkPlan,
     PdfSplitPlan,
     build_split_plan,
     decide_split_from_plan,
@@ -981,9 +982,9 @@ class ProxyService:
 
             async with request_work_semaphore:
                 async with self._work_semaphore:
-                    part_bytes = await asyncio.to_thread(materialize_pdf_chunk, pdf_source, chunk)
-                    part_file = FilePayload(filename=f"{index + 1:04d}_{filename}", content=part_bytes, content_type="application/pdf")
                     try:
+                        part_bytes = await asyncio.to_thread(materialize_pdf_chunk, pdf_source, chunk)
+                        part_file = FilePayload(filename=f"{index + 1:04d}_{filename}", content=part_bytes, content_type="application/pdf")
                         execution = await self.local_docling.execute_file_sync(
                             [part_file],
                             part_options,
@@ -1047,6 +1048,17 @@ class ProxyService:
                         )
             return payload
 
+        async def run_pending_parts(chunks: list[PdfChunkPlan]) -> list[dict[str, Any]]:
+            tasks = [asyncio.create_task(convert_part(chunk)) for chunk in chunks]
+            try:
+                return await asyncio.gather(*tasks)
+            except Exception:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+
         if use_persistence and self.state_store is not None:
             persisted_parts = await self.state_store.existing_part_payload_indices(op_id)
             pending_parts = [
@@ -1060,10 +1072,10 @@ class ProxyService:
                 )
             ]
             if pending_parts:
-                await asyncio.gather(*(convert_part(chunk) for chunk in pending_parts))
+                await run_pending_parts(pending_parts)
             results = await self.state_store.load_part_payloads(op_id, total_chunks)
         else:
-            results = await asyncio.gather(*(convert_part(chunk) for chunk in split_plan.chunks))
+            results = await run_pending_parts(split_plan.chunks)
         logger.info("[%s] all chunks completed; merging %s part(s) for file=%s", op_id, total_chunks, filename)
         proxy_meta = {
             "split": True,

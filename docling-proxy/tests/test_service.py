@@ -289,6 +289,50 @@ async def test_split_respects_request_work_concurrency_override(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_split_materialization_failure_marks_chunk_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(service_settings, "work_concurrency", 1)
+    upstream = FakeUpstream()
+    local_docling = FakeLocalDocling()
+    archive_store = FakeArchiveStore()
+    state_store = TaskStateStore(tmp_path / "state")
+    service = ProxyService(upstream, local_docling, archive_store, state_store)
+    file_bytes = make_pdf(3)
+    job = ProxyJob(
+        task_id="job-materialize-fail",
+        source_kind="file",
+        filename="large.pdf",
+        target_kind="inbody",
+        requested_formats=["md"],
+        options={"to_formats": ["md"]},
+        proxy_options=ProxyOptions(force_split=True, max_pages_per_part=1, poll_interval_sec=0.001),
+        files=[FilePayload("large.pdf", file_bytes, "application/pdf")],
+        meta=ProxyTaskMeta(source_kind="file", filename="large.pdf"),
+    )
+    await service._ensure_operation_state(job, {})
+
+    def fail_materialize(source, chunk):
+        if chunk.part_index == 0:
+            raise KeyError("/D")
+        return make_pdf(1)
+
+    monkeypatch.setattr("docling_proxy.service.materialize_pdf_chunk", fail_materialize)
+
+    with pytest.raises(KeyError):
+        await service._process_split_file(
+            filename="large.pdf",
+            pdf_source=file_bytes,
+            options=job.options,
+            proxy_options=job.proxy_options,
+            headers={},
+            target_kind=job.target_kind,
+            job=job,
+        )
+
+    assert job.meta.parts[0].task_status == "failure"
+    assert job.meta.parts[0].error_message == "'/D'"
+
+
+@pytest.mark.asyncio
 async def test_async_small_pdf_uses_local_isolated_processing():
     upstream = FakeUpstream()
     local_docling = FakeLocalDocling()

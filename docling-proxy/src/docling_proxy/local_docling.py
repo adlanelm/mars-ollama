@@ -200,6 +200,7 @@ class LocalDoclingManager:
         async with self._ready_condition:
             if self._pool_suspended:
                 self._pool_suspended = False
+                self._last_pool_idle_at = None
                 logger.info("request arrived after warm pool idle drain; resuming prewarm")
         await self._ensure_pool_capacity()
         while True:

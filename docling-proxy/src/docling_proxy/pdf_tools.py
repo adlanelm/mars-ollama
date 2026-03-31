@@ -3,16 +3,19 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
+import logging
 from math import ceil
 from pathlib import Path
 from typing import BinaryIO, Iterator
 
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NameObject
 
 from docling_proxy.config import settings
 from docling_proxy.contracts import ProxyOptions, SplitDecision
 
 PdfSource = bytes | Path
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -108,7 +111,30 @@ def materialize_pdf_chunk(source: PdfSource, chunk: PdfChunkPlan) -> bytes:
         reader = PdfReader(stream)
         writer = PdfWriter()
         for page_index in range(chunk.start_page - 1, chunk.end_page):
-            writer.add_page(reader.pages[page_index])
+            page = reader.pages[page_index]
+            page_count_before_add = len(writer.pages)
+            try:
+                writer.add_page(page)
+            except KeyError as exc:
+                if not _is_missing_goto_destination(exc) or "/Annots" not in page:
+                    raise
+                while len(writer.pages) > page_count_before_add:
+                    writer.remove_page(len(writer.pages) - 1)
+                logger.warning(
+                    "dropping malformed annotations while materializing chunk %s pages %s-%s (page=%s): %s",
+                    chunk.part_index + 1,
+                    chunk.start_page,
+                    chunk.end_page,
+                    page_index + 1,
+                    exc,
+                )
+                annotations = page.get("/Annots")
+                del page[NameObject("/Annots")]
+                try:
+                    writer.add_page(page)
+                finally:
+                    if annotations is not None:
+                        page[NameObject("/Annots")] = annotations
         buffer = BytesIO()
         writer.write(buffer)
         return buffer.getvalue()
@@ -129,3 +155,12 @@ def open_pdf_source(source: PdfSource) -> Iterator[BinaryIO]:
             yield stream
         return
     yield BytesIO(source)
+
+
+def _is_missing_goto_destination(exc: KeyError) -> bool:
+    if not exc.args:
+        return False
+    value = exc.args[0]
+    if isinstance(value, str):
+        return value == "/D"
+    return str(value) == "/D"

@@ -218,6 +218,33 @@ class ConcurrencyTrackingLocalDocling(FakeLocalDocling):
         )
 
 
+class SlowFirstCallLocalDocling(FakeLocalDocling):
+    async def execute_file_sync(self, files, data, headers, on_request_start=None):
+        self.calls.append((files[0], data, headers))
+        timing = LocalDoclingTiming(
+            wait_duration_sec=0.1,
+            startup_duration_sec=0.2,
+            request_duration_sec=0.3,
+            processing_duration_sec=0.5,
+        )
+        if on_request_start is not None:
+            maybe_result = on_request_start(timing)
+            if maybe_result is not None:
+                await maybe_result
+        if len(self.calls) == 1:
+            await asyncio.sleep(0.05)
+        return LocalDoclingExecution(
+            response=FakeResponse(
+                payload={
+                    "document": {"json_content": {"name": f"chunk-{len(self.calls)}"}},
+                    "errors": [],
+                    "processing_time": 1.0,
+                }
+            ),
+            timing=timing,
+        )
+
+
 @pytest.mark.asyncio
 async def test_small_pdf_passthrough(monkeypatch):
     upstream = FakeUpstream()
@@ -556,6 +583,77 @@ async def test_sync_multi_file_request_builds_merged_zip_and_uses_per_file_isola
     assert archive_store.zip_calls[0][5] == "success"
     with ZipFile(BytesIO(response.body)) as zip_file:
         assert sorted(zip_file.namelist()) == ["alpha/alpha.md", "beta/beta.md"]
+
+
+@pytest.mark.asyncio
+async def test_sync_multi_file_request_processes_each_file_fully_before_next(monkeypatch):
+    upstream = FakeUpstream()
+    local_docling = FakeLocalDocling()
+    archive_store = FakeArchiveStore()
+    service = ProxyService(upstream, local_docling, archive_store)
+    monkeypatch.setattr("docling_proxy.service.merge_results", make_merged_result)
+    files = [
+        FilePayload("alpha.pdf", make_pdf(3), "application/pdf"),
+        FilePayload("beta.pdf", make_pdf(3), "application/pdf"),
+    ]
+
+    response = await service.process_file_sync(
+        files,
+        {"to_formats": ["md"]},
+        ProxyOptions(max_pages_per_part=1),
+        {},
+    )
+
+    assert [call[0].filename for call in local_docling.calls] == [
+        "0001_alpha.pdf",
+        "0002_alpha.pdf",
+        "0003_alpha.pdf",
+        "0001_beta.pdf",
+        "0002_beta.pdf",
+        "0003_beta.pdf",
+    ]
+    assert len(archive_store.zip_calls) == 1
+    with ZipFile(BytesIO(response.body)) as zip_file:
+        assert sorted(zip_file.namelist()) == ["alpha/alpha.md", "beta/beta.md"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_single_file_requests_do_not_interleave_files(monkeypatch):
+    monkeypatch.setattr(service_settings, "work_concurrency", 2)
+    upstream = FakeUpstream()
+    local_docling = SlowFirstCallLocalDocling()
+    archive_store = FakeArchiveStore()
+    service = ProxyService(upstream, local_docling, archive_store)
+    monkeypatch.setattr("docling_proxy.service.merge_results", make_merged_result)
+
+    first = asyncio.create_task(
+        service.process_file_sync(
+            [FilePayload("alpha.pdf", make_pdf(3), "application/pdf")],
+            {"to_formats": ["md"]},
+            ProxyOptions(max_pages_per_part=1),
+            {},
+        )
+    )
+    await asyncio.sleep(0)
+    second = asyncio.create_task(
+        service.process_file_sync(
+            [FilePayload("beta.pdf", make_pdf(3), "application/pdf")],
+            {"to_formats": ["md"]},
+            ProxyOptions(max_pages_per_part=1),
+            {},
+        )
+    )
+
+    await asyncio.gather(first, second)
+
+    assert [call[0].filename for call in local_docling.calls] == [
+        "0001_alpha.pdf",
+        "0002_alpha.pdf",
+        "0003_alpha.pdf",
+        "0001_beta.pdf",
+        "0002_beta.pdf",
+        "0003_beta.pdf",
+    ]
 
 
 @pytest.mark.asyncio

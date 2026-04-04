@@ -81,6 +81,9 @@ class ProxyService:
         self.archive_store = archive_store
         self.state_store = state_store
         self._work_semaphore = asyncio.Semaphore(settings.work_concurrency)
+        self._file_order_condition = asyncio.Condition()
+        self._next_file_ticket = 0
+        self._active_file_ticket = 0
 
     def _effective_work_concurrency(self, proxy_options: ProxyOptions | None) -> int:
         request_limit = proxy_options.work_concurrency if proxy_options is not None else None
@@ -102,6 +105,22 @@ class ProxyService:
 
     async def _plan_split(self, source: bytes | Path, proxy_options: ProxyOptions | None) -> PdfSplitPlan:
         return await asyncio.to_thread(build_split_plan, source, proxy_options)
+
+    async def _run_file_in_global_order(self, label: str, work):
+        async with self._file_order_condition:
+            ticket = self._next_file_ticket
+            self._next_file_ticket += 1
+            logger.info("queued global file work ticket=%s file=%s", ticket, label)
+            while ticket != self._active_file_ticket:
+                await self._file_order_condition.wait()
+        logger.info("starting global file work ticket=%s file=%s", ticket, label)
+        try:
+            return await work()
+        finally:
+            async with self._file_order_condition:
+                self._active_file_ticket += 1
+                self._file_order_condition.notify_all()
+            logger.info("finished global file work ticket=%s file=%s", ticket, label)
 
     async def resume_incomplete_operations(self) -> None:
         if self.state_store is None:
@@ -241,48 +260,52 @@ class ProxyService:
                 return self._zip_response(batch_result.zip_bytes)
 
             file = files[0]
-            if not await self._file_payload_is_pdf(file):
-                logger.info("[%s] isolated local processing: non-pdf file=%s", request_id, file.filename)
-                response = await self.local_docling.relay_file_sync(files, data, headers)
-                await self._archive_httpx_response(request_id, "file", file.filename, target_kind, response)
-                return response
 
-            pdf_source = await self._file_payload_source(file)
-            logger.info("[%s] planning split for file=%s", request_id, file.filename)
-            split_plan = await self._plan_split(pdf_source, proxy_options)
-            decision = decide_split_from_plan(split_plan, proxy_options)
-            logger.info(
-                "[%s] evaluated file=%s pages=%s should_split=%s reason=%s target=%s",
-                request_id,
-                file.filename,
-                decision.total_pages,
-                decision.should_split,
-                decision.reason,
-                target_kind,
-            )
-            if not decision.should_split:
-                logger.info("[%s] isolated local processing: below split threshold file=%s", request_id, file.filename)
-                response = await self.local_docling.relay_file_sync(files, data, headers)
-                await self._archive_httpx_response(request_id, "file", file.filename, target_kind, response)
-                return response
-            split_job = ProxyJob(
-                task_id=request_id,
-                public=False,
-                source_kind="file",
-                filename=file.filename,
-                target_kind=target_kind,
-                requested_formats=normalize_requested_formats(data),
-                options=data,
-                proxy_options=proxy_options,
-                files=files,
-                auth_headers=proxy_headers_subset(headers),
-                meta=ProxyTaskMeta(source_kind="file", filename=file.filename),
-            )
-            await self._ensure_operation_state(split_job, headers)
-            await self._run_file_job(split_job, proxy_headers_subset(headers), split_plan=split_plan)
-            if split_job.status == "failure":
-                raise RuntimeError(split_job.error_message or f"Split conversion failed for {file.filename}.")
-            return self._build_sync_result_from_job(split_job)
+            async def process_single_file():
+                if not await self._file_payload_is_pdf(file):
+                    logger.info("[%s] isolated local processing: non-pdf file=%s", request_id, file.filename)
+                    response = await self.local_docling.relay_file_sync(files, data, headers)
+                    await self._archive_httpx_response(request_id, "file", file.filename, target_kind, response)
+                    return response
+
+                pdf_source = await self._file_payload_source(file)
+                logger.info("[%s] planning split for file=%s", request_id, file.filename)
+                split_plan = await self._plan_split(pdf_source, proxy_options)
+                decision = decide_split_from_plan(split_plan, proxy_options)
+                logger.info(
+                    "[%s] evaluated file=%s pages=%s should_split=%s reason=%s target=%s",
+                    request_id,
+                    file.filename,
+                    decision.total_pages,
+                    decision.should_split,
+                    decision.reason,
+                    target_kind,
+                )
+                if not decision.should_split:
+                    logger.info("[%s] isolated local processing: below split threshold file=%s", request_id, file.filename)
+                    response = await self.local_docling.relay_file_sync(files, data, headers)
+                    await self._archive_httpx_response(request_id, "file", file.filename, target_kind, response)
+                    return response
+                split_job = ProxyJob(
+                    task_id=request_id,
+                    public=False,
+                    source_kind="file",
+                    filename=file.filename,
+                    target_kind=target_kind,
+                    requested_formats=normalize_requested_formats(data),
+                    options=data,
+                    proxy_options=proxy_options,
+                    files=files,
+                    auth_headers=proxy_headers_subset(headers),
+                    meta=ProxyTaskMeta(source_kind="file", filename=file.filename),
+                )
+                await self._ensure_operation_state(split_job, headers)
+                await self._run_file_job(split_job, proxy_headers_subset(headers), split_plan=split_plan, ordered=False)
+                if split_job.status == "failure":
+                    raise RuntimeError(split_job.error_message or f"Split conversion failed for {file.filename}.")
+                return self._build_sync_result_from_job(split_job)
+
+            return await self._run_file_in_global_order(f"{request_id}:{file.filename}", process_single_file)
         finally:
             await cleanup_file_payloads(files)
 
@@ -304,47 +327,51 @@ class ProxyService:
             await self._archive_httpx_response(request_id, "source", archive_filename, target_kind, response)
             return response
 
-        if not is_pdf(normalized_source.filename, None, normalized_source.content):
-            logger.info("[%s] isolated local processing: non-pdf source=%s", request_id, normalized_source.filename)
-            response = await self.local_docling.relay_source_sync(payload, headers)
-            await self._archive_httpx_response(request_id, "source", normalized_source.filename, target_kind, response)
-            return response
 
-        logger.info("[%s] planning split for source=%s", request_id, normalized_source.filename)
-        split_plan = await self._plan_split(normalized_source.content, proxy_options)
-        decision = decide_split_from_plan(split_plan, proxy_options)
-        logger.info(
-            "[%s] evaluated source=%s pages=%s should_split=%s reason=%s target=%s",
-            request_id,
-            normalized_source.filename,
-            decision.total_pages,
-            decision.should_split,
-            decision.reason,
-            target_kind,
-        )
-        if not decision.should_split:
-            logger.info("[%s] isolated local processing: below split threshold source=%s", request_id, normalized_source.filename)
-            response = await self.local_docling.relay_source_sync(payload, headers)
-            await self._archive_httpx_response(request_id, "source", normalized_source.filename, target_kind, response)
-            return response
-        split_job = ProxyJob(
-            task_id=request_id,
-            public=False,
-            source_kind="source",
-            filename=normalized_source.filename,
-            target_kind=target_kind,
-            requested_formats=normalize_requested_formats(options),
-            options=options,
-            proxy_options=proxy_options,
-            source_request=payload,
-            auth_headers=proxy_headers_subset(headers),
-            meta=ProxyTaskMeta(source_kind="source", filename=normalized_source.filename),
-        )
-        await self._ensure_operation_state(split_job, headers, normalized_source)
-        await self._run_source_job(split_job, proxy_headers_subset(headers), normalized_source, split_plan=split_plan)
-        if split_job.status == "failure":
-            raise RuntimeError(split_job.error_message or f"Split conversion failed for {normalized_source.filename}.")
-        return self._build_sync_result_from_job(split_job)
+        async def process_single_source():
+            if not is_pdf(normalized_source.filename, None, normalized_source.content):
+                logger.info("[%s] isolated local processing: non-pdf source=%s", request_id, normalized_source.filename)
+                response = await self.local_docling.relay_source_sync(payload, headers)
+                await self._archive_httpx_response(request_id, "source", normalized_source.filename, target_kind, response)
+                return response
+
+            logger.info("[%s] planning split for source=%s", request_id, normalized_source.filename)
+            split_plan = await self._plan_split(normalized_source.content, proxy_options)
+            decision = decide_split_from_plan(split_plan, proxy_options)
+            logger.info(
+                "[%s] evaluated source=%s pages=%s should_split=%s reason=%s target=%s",
+                request_id,
+                normalized_source.filename,
+                decision.total_pages,
+                decision.should_split,
+                decision.reason,
+                target_kind,
+            )
+            if not decision.should_split:
+                logger.info("[%s] isolated local processing: below split threshold source=%s", request_id, normalized_source.filename)
+                response = await self.local_docling.relay_source_sync(payload, headers)
+                await self._archive_httpx_response(request_id, "source", normalized_source.filename, target_kind, response)
+                return response
+            split_job = ProxyJob(
+                task_id=request_id,
+                public=False,
+                source_kind="source",
+                filename=normalized_source.filename,
+                target_kind=target_kind,
+                requested_formats=normalize_requested_formats(options),
+                options=options,
+                proxy_options=proxy_options,
+                source_request=payload,
+                auth_headers=proxy_headers_subset(headers),
+                meta=ProxyTaskMeta(source_kind="source", filename=normalized_source.filename),
+            )
+            await self._ensure_operation_state(split_job, headers, normalized_source)
+            await self._run_source_job(split_job, proxy_headers_subset(headers), normalized_source, split_plan=split_plan, ordered=False)
+            if split_job.status == "failure":
+                raise RuntimeError(split_job.error_message or f"Split conversion failed for {normalized_source.filename}.")
+            return self._build_sync_result_from_job(split_job)
+
+        return await self._run_file_in_global_order(f"{request_id}:{normalized_source.filename}", process_single_source)
 
     async def enqueue_file_job(
         self,
@@ -423,6 +450,7 @@ class ProxyService:
         job: ProxyJob,
         headers: dict[str, str],
         split_plan: PdfSplitPlan | None = None,
+        ordered: bool = True,
     ) -> None:
         if await self._restore_completed_job_if_needed(job):
             logger.info("[%s] restored completed file job from persisted state", job.task_id)
@@ -439,42 +467,50 @@ class ProxyService:
                 return
 
             file = job.files[0]
-            if not await self._file_payload_is_pdf(file):
-                logger.info("[%s] async isolated local processing: non-pdf file=%s", job.task_id, file.filename)
-                response = await self.local_docling.relay_file_sync(job.files, job.options, headers)
-                await self._store_local_response(job, response)
-                return
 
-            pdf_source = await self._file_payload_source(file)
-            if split_plan is None:
-                logger.info("[%s] planning split for file=%s", job.task_id, file.filename)
-                split_plan = await self._plan_split(pdf_source, job.proxy_options)
-            decision = decide_split_from_plan(split_plan, job.proxy_options)
-            logger.info(
-                "[%s] async evaluated file=%s pages=%s should_split=%s reason=%s",
-                job.task_id,
-                file.filename,
-                decision.total_pages,
-                decision.should_split,
-                decision.reason,
-            )
-            if not decision.should_split:
-                logger.info("[%s] async isolated local processing: below split threshold file=%s", job.task_id, file.filename)
-                response = await self.local_docling.relay_file_sync(job.files, job.options, headers)
-                await self._store_local_response(job, response)
-                return
+            async def process_single_file_job():
+                nonlocal split_plan
+                if not await self._file_payload_is_pdf(file):
+                    logger.info("[%s] async isolated local processing: non-pdf file=%s", job.task_id, file.filename)
+                    response = await self.local_docling.relay_file_sync(job.files, job.options, headers)
+                    await self._store_local_response(job, response)
+                    return
 
-            result = await self._process_split_file(
-                filename=file.filename,
-                pdf_source=pdf_source,
-                options=job.options,
-                proxy_options=job.proxy_options,
-                headers=headers,
-                target_kind=job.target_kind,
-                job=job,
-                split_plan=split_plan,
-            )
-            await self._store_split_result(job, result, file.filename)
+                pdf_source = await self._file_payload_source(file)
+                if split_plan is None:
+                    logger.info("[%s] planning split for file=%s", job.task_id, file.filename)
+                    split_plan = await self._plan_split(pdf_source, job.proxy_options)
+                decision = decide_split_from_plan(split_plan, job.proxy_options)
+                logger.info(
+                    "[%s] async evaluated file=%s pages=%s should_split=%s reason=%s",
+                    job.task_id,
+                    file.filename,
+                    decision.total_pages,
+                    decision.should_split,
+                    decision.reason,
+                )
+                if not decision.should_split:
+                    logger.info("[%s] async isolated local processing: below split threshold file=%s", job.task_id, file.filename)
+                    response = await self.local_docling.relay_file_sync(job.files, job.options, headers)
+                    await self._store_local_response(job, response)
+                    return
+
+                result = await self._process_split_file(
+                    filename=file.filename,
+                    pdf_source=pdf_source,
+                    options=job.options,
+                    proxy_options=job.proxy_options,
+                    headers=headers,
+                    target_kind=job.target_kind,
+                    job=job,
+                    split_plan=split_plan,
+                )
+                await self._store_split_result(job, result, file.filename)
+
+            if ordered:
+                await self._run_file_in_global_order(f"{job.task_id}:{file.filename}", process_single_file_job)
+            else:
+                await process_single_file_job()
         except Exception as exc:  # noqa: BLE001
             job.status = "failure"
             job.error_message = str(exc)
@@ -489,6 +525,7 @@ class ProxyService:
         headers: dict[str, str],
         normalized_source: NormalizedSource | None,
         split_plan: PdfSplitPlan | None = None,
+        ordered: bool = True,
     ) -> None:
         if await self._restore_completed_job_if_needed(job):
             logger.info("[%s] restored completed source job from persisted state", job.task_id)
@@ -504,35 +541,42 @@ class ProxyService:
                 await self._store_local_response(job, response)
                 return
 
-            if split_plan is None:
-                logger.info("[%s] planning split for source=%s", job.task_id, normalized_source.filename)
-                split_plan = await self._plan_split(normalized_source.content, job.proxy_options)
-            decision = decide_split_from_plan(split_plan, job.proxy_options)
-            logger.info(
-                "[%s] async evaluated source=%s pages=%s should_split=%s reason=%s",
-                job.task_id,
-                normalized_source.filename,
-                decision.total_pages,
-                decision.should_split,
-                decision.reason,
-            )
-            if not decision.should_split:
-                logger.info("[%s] async isolated local processing: below split threshold source=%s", job.task_id, normalized_source.filename)
-                response = await self.local_docling.relay_source_sync(job.source_request or {}, headers)
-                await self._store_local_response(job, response)
-                return
+            async def process_single_source_job():
+                nonlocal split_plan
+                if split_plan is None:
+                    logger.info("[%s] planning split for source=%s", job.task_id, normalized_source.filename)
+                    split_plan = await self._plan_split(normalized_source.content, job.proxy_options)
+                decision = decide_split_from_plan(split_plan, job.proxy_options)
+                logger.info(
+                    "[%s] async evaluated source=%s pages=%s should_split=%s reason=%s",
+                    job.task_id,
+                    normalized_source.filename,
+                    decision.total_pages,
+                    decision.should_split,
+                    decision.reason,
+                )
+                if not decision.should_split:
+                    logger.info("[%s] async isolated local processing: below split threshold source=%s", job.task_id, normalized_source.filename)
+                    response = await self.local_docling.relay_source_sync(job.source_request or {}, headers)
+                    await self._store_local_response(job, response)
+                    return
 
-            result = await self._process_split_file(
-                filename=normalized_source.filename,
-                pdf_source=normalized_source.content,
-                options=job.options,
-                proxy_options=job.proxy_options,
-                headers=headers,
-                target_kind=job.target_kind,
-                job=job,
-                split_plan=split_plan,
-            )
-            await self._store_split_result(job, result, normalized_source.filename)
+                result = await self._process_split_file(
+                    filename=normalized_source.filename,
+                    pdf_source=normalized_source.content,
+                    options=job.options,
+                    proxy_options=job.proxy_options,
+                    headers=headers,
+                    target_kind=job.target_kind,
+                    job=job,
+                    split_plan=split_plan,
+                )
+                await self._store_split_result(job, result, normalized_source.filename)
+
+            if ordered:
+                await self._run_file_in_global_order(f"{job.task_id}:{normalized_source.filename}", process_single_source_job)
+            else:
+                await process_single_source_job()
         except Exception as exc:  # noqa: BLE001
             job.status = "failure"
             job.error_message = str(exc)
@@ -716,13 +760,10 @@ class ProxyService:
         progress_lock = asyncio.Lock()
         batch_options = self._batch_request_options(options)
         prefixes = self._batch_output_prefixes(files)
-        request_work_limit = self._effective_work_concurrency(proxy_options)
-        request_work_semaphore = asyncio.Semaphore(request_work_limit)
         logger.info(
-            "[%s] batching %s file(s) into merged zip output with work_concurrency=%s",
+            "[%s] batching %s file(s) into merged zip output with strict file-by-file ordering",
             operation_id,
             total_files,
-            request_work_limit,
         )
 
         async def convert_file(index: int, file: FilePayload, prefix: str) -> BatchFileResult:
@@ -741,59 +782,102 @@ class ProxyService:
                     timing.startup_duration_sec,
                 )
 
-            async with request_work_semaphore:
-                async with self._work_semaphore:
+            async def process_batch_file() -> BatchFileResult:
+                if await self._file_payload_is_pdf(file):
+                    pdf_source = await self._file_payload_source(file)
+                    split_plan = None
+                    decision = None
                     try:
-                        execution = await self.local_docling.execute_file_sync(
-                            [file],
-                            batch_options,
-                            headers,
-                            on_request_start=log_file_started,
-                        )
-                        execution.response.raise_for_status()
-                        content_type = execution.response.headers.get("content-type", "")
-                        payload = execution.response.json() if content_type.startswith("application/json") else None
-                        result = BatchFileResult(
-                            filename=file.filename,
-                            prefix=prefix,
-                            processing_time=float((payload or {}).get("processing_time") or execution.timing.processing_duration_sec),
-                            zip_bytes=None if payload is not None else execution.response.content,
-                            payload=payload,
-                        )
-                        logger.info(
-                            "[%s] finished batch file %s/%s: file=%s, total=%.2fs, wait=%.2fs, startup=%.2fs, convert=%.2fs",
-                            operation_id,
-                            index + 1,
-                            total_files,
-                            file.filename,
-                            execution.timing.processing_duration_sec,
-                            execution.timing.wait_duration_sec,
-                            execution.timing.startup_duration_sec,
-                            execution.timing.request_duration_sec,
-                        )
+                        split_plan = await self._plan_split(pdf_source, proxy_options)
+                        decision = decide_split_from_plan(split_plan, proxy_options)
                     except Exception as exc:
-                        result = BatchFileResult(
-                            filename=file.filename,
-                            prefix=prefix,
-                            processing_time=time.perf_counter() - started_at,
-                            error={"filename": file.filename, "message": str(exc)},
-                        )
-                        logger.error(
-                            "[%s] batch file %s/%s failed: file=%s, error=%s",
+                        logger.warning(
+                            "[%s] split planning failed for batch file %s/%s: file=%s, falling back to direct conversion, error=%s",
                             operation_id,
                             index + 1,
                             total_files,
                             file.filename,
                             exc,
                         )
+                    if decision is not None and decision.should_split:
+                        logger.info(
+                            "[%s] processing batch file %s/%s via ordered split path: file=%s parts=%s",
+                            operation_id,
+                            index + 1,
+                            total_files,
+                            file.filename,
+                            decision.parts,
+                        )
+                        result_payload = await self._process_split_file(
+                            filename=file.filename,
+                            pdf_source=pdf_source,
+                            options=batch_options,
+                            proxy_options=proxy_options,
+                            headers=headers,
+                            target_kind="zip",
+                            operation_id=f"{operation_id}:file-{index + 1}",
+                            split_plan=split_plan,
+                        )
+                        return BatchFileResult(
+                            filename=file.filename,
+                            prefix=prefix,
+                            processing_time=float(result_payload.processing_time),
+                            zip_bytes=build_zip_response_bytes(result_payload, file.filename),
+                        )
+
+                execution = await self.local_docling.execute_file_sync(
+                    [file],
+                    batch_options,
+                    headers,
+                    on_request_start=log_file_started,
+                )
+                execution.response.raise_for_status()
+                content_type = execution.response.headers.get("content-type", "")
+                payload = execution.response.json() if content_type.startswith("application/json") else None
+                logger.info(
+                    "[%s] finished batch file %s/%s: file=%s, total=%.2fs, wait=%.2fs, startup=%.2fs, convert=%.2fs",
+                    operation_id,
+                    index + 1,
+                    total_files,
+                    file.filename,
+                    execution.timing.processing_duration_sec,
+                    execution.timing.wait_duration_sec,
+                    execution.timing.startup_duration_sec,
+                    execution.timing.request_duration_sec,
+                )
+                return BatchFileResult(
+                    filename=file.filename,
+                    prefix=prefix,
+                    processing_time=float((payload or {}).get("processing_time") or execution.timing.processing_duration_sec),
+                    zip_bytes=None if payload is not None else execution.response.content,
+                    payload=payload,
+                )
+
+            try:
+                result = await self._run_file_in_global_order(f"{operation_id}:{file.filename}", process_batch_file)
+            except Exception as exc:
+                result = BatchFileResult(
+                    filename=file.filename,
+                    prefix=prefix,
+                    processing_time=time.perf_counter() - started_at,
+                    error={"filename": file.filename, "message": str(exc)},
+                )
+                logger.error(
+                    "[%s] batch file %s/%s failed: file=%s, error=%s",
+                    operation_id,
+                    index + 1,
+                    total_files,
+                    file.filename,
+                    exc,
+                )
             async with progress_lock:
                 completed_files += 1
                 logger.info("[%s] completed batch files %s/%s", operation_id, completed_files, total_files)
             return result
 
-        results = await asyncio.gather(
-            *(convert_file(index, file, prefixes[index]) for index, file in enumerate(files))
-        )
+        results: list[BatchFileResult] = []
+        for index, file in enumerate(files):
+            results.append(await convert_file(index, file, prefixes[index]))
 
         zip_outputs: list[tuple[str, bytes]] = []
         payload_outputs: list[tuple[str, str, dict[str, Any]]] = []

@@ -7,10 +7,10 @@ services:
     container_name: ollama
     pull_policy: always
     mem_limit: 28g
+    cpus: "12.8" # 80% of 16 logical CPUs; models set PARAMETER num_thread 13
     environment:
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_MAX_LOADED_MODELS=2
-      - OLLAMA_NUM_THREADS=16
       - OLLAMA_VULKAN=1
       #- HSA_OVERRIDE_GFX_VERSION=10.3.0
       - OLLAMA_KV_CACHE_TYPE=q8_0
@@ -19,7 +19,7 @@ services:
       - OLLAMA_DEBUG=0
       - OLLAMA_NEW_ENGINE=True
       - OLLAMA_NEW_ESTIMATES=True
-      - OLLAMA_KEEP_ALIVE=5
+      - OLLAMA_KEEP_ALIVE=35
       - OLLAMA_ORIGINS="moz-extension://*"
     ports:
       - "11434:11434" # Ollama API at http://localhost:11434

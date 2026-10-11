@@ -4,7 +4,7 @@ Also fetches the rembg BiRefNet ONNX (pinned url + sha256) into /cache/u2net (= 
 node never downloads at run time: rembg uses an existing file as is, without any checksum check.
 Run (no host installs):
   docker run --rm -v ~/llm/trellis/models:/models -v ~/llm/trellis/cache:/cache -v $PWD/trellis:/w:ro --entrypoint python \
-    comfyui-rocm:0.39.0 /w/fetch-weights.py [QUANT]
+    comfyui-rocm:0.39.2 /w/fetch-weights.py [QUANT]
 QUANT defaults to Q8_0 (~11 GB incl. DINOv3; Q4_K_M ~6 GB). The node verifies the 1024 models too, so they are included.
 """
 import hashlib, os, sys, urllib.request

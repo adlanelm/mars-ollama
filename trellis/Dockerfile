@@ -1,11 +1,11 @@
 # TRELLIS.2 (image -> textured 3D mesh) for the RX 7800 XT (gfx1101), as ComfyUI custom nodes.
-# Derived from comfyui-rocm:0.39.0 (torch 2.14.1+rocm7.2, ComfyUI v0.39.0); that image stays untouched.
+# Derived from comfyui-rocm:0.39.2 (torch 2.14.1+rocm7.2, ComfyUI v0.39.2); that image stays untouched.
 # Install: our own install.sh (every git clone pinned, gfx1101 targets); the recipe follows the one validated on RDNA3
 # by toastmanAu/trellis-2-rocm-comfyui @2c93cb94.
 # Spec and numbers: docs/trellis.md. Weights are NOT baked in: models/Trellis2 is a volume (~/llm/trellis/models).
 # Licence-clean (docs/licenses.md): nvdiffrast, nvdiffrec renderutils and MeshLib (all non-commercial) are not built or
 # installed; licence-stubs/ satisfies their module-level imports and raises on use. Colour is baked on vertices.
-FROM comfyui-rocm:0.39.0
+FROM comfyui-rocm:0.39.2
 USER root
 ARG ROCM_APT=7.2
 # HIP toolchain to compile the CUDA extensions (CuMesh, FlexGEMM, o-voxel) with hipcc.
@@ -44,6 +44,8 @@ RUN cd /opt/ComfyUI/custom_nodes/ComfyUI-Trellis2-GGUF \
  && curl -fsSL https://raw.githubusercontent.com/toastmanAu/trellis-2-rocm-comfyui/${TOAST_COMMIT}/patches/06-postprocess-infinite-vertices.patch | git apply \
  # rembg was installed --no-deps by the script; add its runtime deps (u2net background removal, Apache-2.0)
  && pip install onnxruntime==1.31.0 pymatting==1.1.16 jsonschema \
+ # platformdirs: needed by pooch (rembg); it used to arrive via controlnet_aux's yapf/fvcore, dropped in a587a4c1
+ && pip install platformdirs==4.13.0 \
  # Aero-Ex pins transformers==5.2.0, which rejects the base's huggingface_hub 2.2 / tokenizers 0.23.3:
  # go back to the base image's 5.19.0 (has DINOv3ViTModel).
  && pip install --no-deps transformers==5.19.0 \

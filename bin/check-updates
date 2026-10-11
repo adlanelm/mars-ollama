@@ -57,7 +57,7 @@ check_image() { local n=$1 tag new   # compose tag vNNN-vulkan-bNNNNN; the vNNN 
   if [[ ${tag%%-*} == "$new" ]]; then row "$n" "docker-compose.yaml llama-swap" "$tag" "$new-vulkan-*" current
   else row "$n" "docker-compose.yaml llama-swap" "$tag" "$new-vulkan-*" OUTDATED; fi; }
 
-check_torch() { local n=$1 img=comfyui-rocm:0.39.0 have new idx   # image's torch (+rocm local tag) vs download.pytorch.org
+check_torch() { local n=$1 img=comfyui-rocm:0.39.2 have new idx   # image's torch (+rocm local tag) vs download.pytorch.org
   have=$(docker run --rm --entrypoint pip "$img" show torch 2>/dev/null | sed -nE 's/^Version: (.*)/\1/p')
   [[ -n $have ]] || { err "$n" "torch in $img"; return; }
   idx=${TORCH_INDEX:-https://download.pytorch.org/whl/rocm7.2/torch/}

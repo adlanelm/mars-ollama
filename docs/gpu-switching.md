@@ -1,6 +1,6 @@
 # GPU switching
 
-Status: `bin/gpu-mode` and the `comfyui` service (`comfyui-rocm:0.39.0`, profile `comfy`, port 127.0.0.1:8188) exist; Phase 6 is done, see [../bench/comfyui-results.md](../bench/comfyui-results.md). llama-swap behaviour measured in Phase 3 ([../bench/llama-swap-results.md](../bench/llama-swap-results.md)). Items marked **[verify]** are still unconfirmed.
+Status: `bin/gpu-mode` and the `comfyui` service (`comfyui-rocm:0.39.2`, profile `comfy`, port 127.0.0.1:8188) exist; Phase 6 is done, see [../bench/comfyui-results.md](../bench/comfyui-results.md). llama-swap behaviour measured in Phase 3 ([../bench/llama-swap-results.md](../bench/llama-swap-results.md)). Items marked **[verify]** are still unconfirmed.
 
 See also: [architecture.md](architecture.md), [colibri.md](colibri.md), Phase 6 in [../ROADMAP.md](../ROADMAP.md).
 

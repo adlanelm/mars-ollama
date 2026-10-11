@@ -1,6 +1,6 @@
 # TRELLIS.2 on the RX 7800 XT (image → vertex-coloured .glb)
 
-**Status 2026-10-12: works, licence-clean.** One concept image becomes a vertex-coloured `.glb` (about 48k triangles) in about 63 s warm (153 s cold in the measurement run, which still downloaded BiRefNet on first use; it is now pre-fetched by `fetch-weights.py`) at the 512 pipeline, with a 4.1 GiB VRAM peak. It runs in a separate ComfyUI image (`comfyui-trellis2-rocm:0.39.0-b3b9e95-clean`, compose service `comfyui-trellis`, profile `trellis`, port `127.0.0.1:8189`). The Krita image `comfyui-rocm:0.39.0` is unchanged.
+**Status 2026-10-12: works, licence-clean.** One concept image becomes a vertex-coloured `.glb` (about 48k triangles) in about 63 s warm (153 s cold in the measurement run, which still downloaded BiRefNet on first use; it is now pre-fetched by `fetch-weights.py`) at the 512 pipeline, with a 4.1 GiB VRAM peak. It runs in a separate ComfyUI image (`comfyui-trellis2-rocm:0.39.2-b3b9e95-clean`, compose service `comfyui-trellis`, profile `trellis`, port `127.0.0.1:8189`). The Krita image `comfyui-rocm:0.39.2` is unchanged.
 
 The image contains **no non-commercial code**: nvdiffrast, nvdiffrec and MeshLib are neither built nor installed ([licenses.md](licenses.md) P0-a/P0-b). So there is no UV texture bake and no MeshLib hole fill. Colour is sampled per vertex from the voxel attribute grid, and the PS1 texture is baked later in Blender (P0-c). The first version (2026-10-11, image `…-b3b9e95` without `-clean`) used nvdiffrast for a 2048² PBR bake. Its outputs `prop-terminal_0000{1,2}_` are prototype-only. Its numbers are kept below for comparison.
 
@@ -28,7 +28,7 @@ All extensions are compiled for **gfx1101** (`PYTORCH_ROCM_ARCH=gfx1101`), so no
 
 ## Build (what the Dockerfile does)
 
-`trellis/Dockerfile` builds on `comfyui-rocm:0.39.0` (torch 2.14.1+rocm7.2, HIP 7.2.53211, ComfyUI v0.39.0):
+`trellis/Dockerfile` builds on `comfyui-rocm:0.39.2` (torch 2.14.1+rocm7.2, HIP 7.2.53211, ComfyUI v0.39.2):
 
 1. Installs the ROCm 7.2 HIP toolchain from repo.radeon.com: hipcc, hip-dev, rocm-llvm, rocprim/hipcub/rocthrust. Only the **headers** of hipblas/hipblaslt/hipsolver/hipsparse/rocblas are taken, via `dpkg -x`, because the libraries already ship in the torch wheel. It also installs Mesa GL/EGL (MIT; kept for layer caching, and open3d/cv2 load libGL), Eigen 3.4 and sparsehash.
 2. Runs `trellis/install.sh`, our own install script (written for P1-b; it replaces egore's unlicensed `install-trellis2-gguf-rocm.sh`, which used to be downloaded at build time and rewritten by `pin-install.sh`). It does the same steps:
@@ -42,7 +42,7 @@ All extensions are compiled for **gfx1101** (`PYTORCH_ROCM_ARCH=gfx1101`), so no
    - Adds the rembg runtime deps onnxruntime 1.31.0 and pymatting 1.1.16.
    - Adds `libusb-1.0-0` for open3d.
 4. Patches the preprocess node: rembg 2.0.85's default `remove()` model is **bria-rmbg (RMBG-2.0, CC BY-NC 4.0)**. The node now uses `new_session($REMBG_MODEL)`, default **`birefnet-general`** (BiRefNet, MIT code and weights, ~973 MB ONNX), pre-fetched by `fetch-weights.py` (pinned sha256) into the `/cache` mount rather than downloaded at run time. `isnet-general-use` is not used: DIS licenses its code, not its weights.
-5. Puts `licence-stubs/` on `sys.path` (a `.pth` file), because `nodes.py` and o_voxel import nvdiffrast and MeshLib at module load. Then it runs `licence-check.py`, which fails the build if any NC package or file is in the image or a stub doesn't raise. To re-check a built image: `docker run --rm --entrypoint python comfyui-trellis2-rocm:0.39.0-b3b9e95-clean /opt/licence-check.py`.
+5. Puts `licence-stubs/` on `sys.path` (a `.pth` file), because `nodes.py` and o_voxel import nvdiffrast and MeshLib at module load. Then it runs `licence-check.py`, which fails the build if any NC package or file is in the image or a stub doesn't raise. To re-check a built image: `docker run --rm --entrypoint python comfyui-trellis2-rocm:0.39.2-b3b9e95-clean /opt/licence-check.py`.
 6. Launches plain `main.py`. The old `trellis_main.py` only existed to create an nvdiffrast GL context early (toast issue #5).
 
 Build time is about 8 min (the CuMesh compile takes about 2 min). The clean image is 25.3 GB (the first image was 25.7 GB). `pip freeze` is saved in the image at `/opt/trellis-pip-freeze.txt`.
@@ -72,7 +72,7 @@ bin/gpu-mode llm --stop                       # stop the Krita ComfyUI, free VRA
 docker compose build comfyui-trellis          # once (~8 min)
 # weights, once (~11 GB at Q8_0; Q4_K_M ~6 GB) at pinned revisions into ~/llm/trellis/models/Trellis2, plus BiRefNet (sha256-pinned) into ~/llm/trellis/cache
 docker run --rm --user 1000:1000 -e HF_HOME=/models/.hf -v ~/llm/trellis/models:/models -v ~/llm/trellis/cache:/cache \
-  -v $PWD/trellis:/w:ro --entrypoint python comfyui-rocm:0.39.0 /w/fetch-weights.py Q8_0
+  -v $PWD/trellis:/w:ro --entrypoint python comfyui-rocm:0.39.2 /w/fetch-weights.py Q8_0
 cp concept.png ~/llm/trellis/in/
 docker compose --profile trellis up -d comfyui-trellis      # UI/API on http://localhost:8189
 trellis/run_workflow.py --image concept.png [--seed N]      # host python3, stdlib only; prints stage timings
@@ -80,7 +80,7 @@ trellis/sample-peaks.sh comfyui-trellis > peaks.log &       # optional: VRAM / R
 docker compose --profile trellis stop comfyui-trellis
 # optional stats + 4-view unlit preview PNG next to the .glb (CPU only, no GPU needed, can run any time):
 docker run --rm --user 1000:1000 -v ~/llm/trellis/out:/out -v $PWD/trellis:/w:ro --entrypoint python \
-  comfyui-trellis2-rocm:0.39.0-b3b9e95-clean /w/inspect_glb.py /out/trellis2/<name>.glb
+  comfyui-trellis2-rocm:0.39.2-b3b9e95-clean /w/inspect_glb.py /out/trellis2/<name>.glb
 ```
 
 The workflow is `trellis/workflows/trellis2_512_api.json` (ComfyUI API format):

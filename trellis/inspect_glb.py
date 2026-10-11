@@ -1,6 +1,6 @@
 """Print mesh stats of a .glb and render a 4-view unlit preview PNG (CPU painter's algorithm: numpy + PIL, no GPU).
   docker run --rm -v ~/llm/trellis/out:/out -v $PWD/trellis:/w:ro --entrypoint python \
-    comfyui-trellis2-rocm:0.39.0-b3b9e95-clean /w/inspect_glb.py /out/trellis2/prop-terminal_00005_.glb
+    comfyui-trellis2-rocm:0.39.2-b3b9e95-clean /w/inspect_glb.py /out/trellis2/prop-terminal_00005_.glb
 Writes <file>.preview.png next to the input. Colour per face: mean vertex colour, or the UV texture sampled at the face
 centroid. Licence-clean: the former nvdiffrast GL renderer is gone (docs/licenses.md).
 """

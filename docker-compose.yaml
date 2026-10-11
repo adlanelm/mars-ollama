@@ -78,7 +78,7 @@ services:
   comfyui:
     profiles: ["comfy"]
     build: ./comfyui
-    image: comfyui-rocm:0.39.0
+    image: comfyui-rocm:0.39.2
     container_name: comfyui
     devices:
       - /dev/kfd
@@ -102,7 +102,7 @@ services:
   comfyui-trellis:
     profiles: ["trellis"]
     build: ./trellis
-    image: comfyui-trellis2-rocm:0.39.0-b3b9e95-clean
+    image: comfyui-trellis2-rocm:0.39.2-b3b9e95-clean
     container_name: comfyui-trellis
     devices:
       - /dev/kfd

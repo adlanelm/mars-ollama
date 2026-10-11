@@ -97,12 +97,12 @@ services:
       - ${HOME}/llm/comfyui/user:/opt/ComfyUI/user
     restart: "no" # gpu-mode starts and stops it
 
-  # TRELLIS.2 image -> textured .glb (docs/trellis.md). Separate image/tag so the Krita ComfyUI stays untouched.
+  # TRELLIS.2 image -> vertex-coloured .glb, licence-clean (docs/trellis.md, docs/licenses.md). Separate image/tag so the Krita ComfyUI stays untouched.
   # Exclusive GPU use: `bin/gpu-mode llm --stop` first; `docker compose --profile trellis up -d comfyui-trellis`.
   comfyui-trellis:
     profiles: ["trellis"]
     build: ./trellis
-    image: comfyui-trellis2-rocm:0.39.0-b3b9e95
+    image: comfyui-trellis2-rocm:0.39.0-b3b9e95-clean
     container_name: comfyui-trellis
     devices:
       - /dev/kfd

@@ -1,13 +1,12 @@
-"""Print mesh stats of a .glb and render a 4-view textured preview PNG (nvdiffrast GL, inside the trellis image).
-  docker run --rm --device /dev/kfd --device /dev/dri --group-add 983 --group-add 987 \
-    -v ~/llm/trellis/out:/out -v $PWD/trellis:/w:ro --entrypoint python \
-    comfyui-trellis2-rocm:0.39.0-b3b9e95 /w/inspect_glb.py /out/trellis2/prop-terminal_00001_.glb
-Writes <file>.preview.png next to the input. Run it while comfyui-trellis is stopped (one GPU user at a time).
+"""Print mesh stats of a .glb and render a 4-view unlit preview PNG (CPU painter's algorithm: numpy + PIL, no GPU).
+  docker run --rm -v ~/llm/trellis/out:/out -v $PWD/trellis:/w:ro --entrypoint python \
+    comfyui-trellis2-rocm:0.39.0-b3b9e95-clean /w/inspect_glb.py /out/trellis2/prop-terminal_00005_.glb
+Writes <file>.preview.png next to the input. Colour per face: mean vertex colour, or the UV texture sampled at the face
+centroid. Licence-clean: the former nvdiffrast GL renderer is gone (docs/licenses.md).
 """
 import math, sys
-import numpy as np, torch, trimesh
-from PIL import Image
-import nvdiffrast.torch as dr
+import numpy as np, trimesh
+from PIL import Image, ImageDraw
 
 path = sys.argv[1]
 scene = trimesh.load(path)
@@ -26,32 +25,39 @@ for attr in ("baseColorTexture", "image"):
             if o is not None: print(f"  {other}={o.size}")
         break
 uv = getattr(m.visual, "uv", None)
-print(f"uv={'yes' if uv is not None else 'no'}")
+vc = m.visual.vertex_colors if m.visual.kind == "vertex" else None
+print(f"uv={'yes' if uv is not None else 'no'} vertex_colors={'yes' if vc is not None else 'no'}")
 
-dev = "cuda"
-v = torch.tensor(m.vertices - m.bounds.mean(0), dtype=torch.float32, device=dev)
-v = v / v.abs().max()
-f = torch.tensor(m.faces, dtype=torch.int32, device=dev)
-ctx = dr.RasterizeGLContext()
+faces = np.asarray(m.faces)
+if vc is not None:
+    fcol = np.asarray(vc)[faces, :3].mean(1)
+elif tex is not None and uv is not None:
+    t = np.asarray(tex.convert("RGB"))
+    c = np.asarray(uv)[faces].mean(1)
+    x = np.clip((c[:, 0] % 1) * (t.shape[1] - 1), 0, t.shape[1] - 1).astype(int)
+    y = np.clip((1 - c[:, 1] % 1) * (t.shape[0] - 1), 0, t.shape[0] - 1).astype(int)
+    fcol = t[y, x].astype(float)
+else:
+    fcol = np.full((len(faces), 3), 178.0)
+fcol = fcol.astype(np.uint8)
+
+v = m.vertices - m.bounds.mean(0)
+v = v / np.abs(v).max()
 R = 512
 
 def view(az, el):
     a, e = math.radians(az), math.radians(el)
-    ry = torch.tensor([[math.cos(a), 0, math.sin(a)], [0, 1, 0], [-math.sin(a), 0, math.cos(a)]])
-    rx = torch.tensor([[1, 0, 0], [0, math.cos(e), -math.sin(e)], [0, math.sin(e), math.cos(e)]])
-    p = v @ (rx @ ry).T.to(dev)
-    clip = torch.cat([p[:, :2] * 0.75, (p[:, 2:3] * -0.5), torch.ones_like(p[:, :1])], 1)[None]
-    rast, _ = dr.rasterize(ctx, clip.contiguous(), f, resolution=[R, R])
-    mask = rast[..., 3:4] > 0
-    if tex is not None and uv is not None:
-        t = torch.tensor(np.asarray(tex.convert("RGB")), dtype=torch.float32, device=dev)[None] / 255
-        uvt = torch.tensor(np.stack([uv[:, 0], 1 - uv[:, 1]], 1), dtype=torch.float32, device=dev)[None].contiguous()
-        uvi, _ = dr.interpolate(uvt, rast, f)
-        col = dr.texture(t.contiguous(), uvi, filter_mode="linear")
-    else:
-        col = torch.ones(1, R, R, 3, device=dev) * 0.7
-    col = torch.where(mask, col, torch.full_like(col, 0.85))
-    return (col[0].flip(0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+    ry = np.array([[math.cos(a), 0, math.sin(a)], [0, 1, 0], [-math.sin(a), 0, math.cos(a)]])
+    rx = np.array([[1, 0, 0], [0, math.cos(e), -math.sin(e)], [0, math.sin(e), math.cos(e)]])
+    p = v @ (rx @ ry).T
+    xy = np.stack([(p[:, 0] * 0.75 + 1) * R / 2, (1 - p[:, 1] * 0.75) * R / 2], 1)
+    tri = xy[faces]
+    order = np.argsort(p[faces, 2].mean(1))  # far to near: larger z is nearer, as in the old nvdiffrast view
+    im = Image.new("RGB", (R, R), (217, 217, 217))
+    d = ImageDraw.Draw(im)
+    for i in order:
+        d.polygon([tuple(q) for q in tri[i]], fill=tuple(int(c) for c in fcol[i]))
+    return np.asarray(im)
 
 tiles = [view(az, el) for az, el in [(45, 25), (135, 25), (225, 25), (315, 25)]]
 out = path.rsplit(".", 1)[0] + ".preview.png"

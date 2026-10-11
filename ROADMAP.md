@@ -269,8 +269,8 @@ Then revert the client settings from the Phase 0 screenshots.
 This phase lives in the game project repos. Full detail: [docs/game-asset-workflow.md](docs/game-asset-workflow.md).
 
 1. ComfyUI models and LoRAs, then a test character turnaround.
-2. Krita + krita-ai-diffusion connected to the local ComfyUI. *Done 2026-10-11: Krita Flatpak 5.3.4.1 + plugin 1.53.0 on the custom server; generate (Klein, Krea 2), inpaint and upscale verified by the user. See [docs/krita.md](docs/krita.md).*
-3. TRELLIS.2 (ROCm port, gfx1101): take one prop from concept to mesh. *Done 2026-10-11: prop-terminal concept → 188k-tri textured .glb (2048² PBR) in 67 s warm / 133 s cold at 512, VRAM peak 4.7 GiB, NVMe swap 0; Aero-Ex nodes + egore/toast ROCm recipe, all clones pinned. Flag: nvdiffrast (texture bake) is NVIDIA non-commercial. See [docs/trellis.md](docs/trellis.md).*
+2. Krita + krita-ai-diffusion connected to the local ComfyUI. *Done 2026-10-11: Krita Flatpak 5.3.4.1 + plugin 1.53.0 on the custom server; generate (Klein, Krea 2), inpaint and upscale verified by the user. MAT → LaMa and NMKD → OmniSR 4x on 2026-10-12 (licence). See [docs/krita.md](docs/krita.md).*
+3. TRELLIS.2 (ROCm port, gfx1101): take one prop from concept to mesh. *Done 2026-10-11: prop-terminal concept → 188k-tri textured .glb (2048² PBR) in 67 s warm / 133 s cold at 512, VRAM peak 4.7 GiB, NVMe swap 0; Aero-Ex nodes + egore/toast ROCm recipe, all clones pinned. On 2026-10-12 the image was made licence-clean (no nvdiffrast/MeshLib; vertex colours, ~48k tris, 63 s warm, 4.1 GiB). The PS1 texture is baked in Blender later. See [docs/trellis.md](docs/trellis.md) and [docs/licenses.md](docs/licenses.md).*
 4. Blender MCP plus `ps1_prep.py` (decimate, UV, bake, export at 128/256px).
 5. Unity URP project: PSX shader, `PsxSettings`, AssetPostprocessor, unity-mcp, git-lfs.
 6. **Vertical slice:** 1 room tileset, 3 props, 1 humanoid, 1 creature, an SFX set and a music loop.

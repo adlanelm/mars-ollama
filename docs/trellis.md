@@ -1,6 +1,8 @@
-# TRELLIS.2 on the RX 7800 XT (image → textured .glb)
+# TRELLIS.2 on the RX 7800 XT (image → vertex-coloured .glb)
 
-**Status 2026-10-11: works.** One concept image becomes a textured, UV-mapped `.glb` in about 67 s warm (133 s cold) at the 512 pipeline, with a 4.7 GiB VRAM peak. It runs in a separate ComfyUI image (`comfyui-trellis2-rocm:0.39.0-b3b9e95`, compose service `comfyui-trellis`, profile `trellis`, port `127.0.0.1:8189`). The Krita image `comfyui-rocm:0.39.0` is unchanged.
+**Status 2026-10-12: works, licence-clean.** One concept image becomes a vertex-coloured `.glb` (about 48k triangles) in about 63 s warm (153 s cold, including a one-off BiRefNet download) at the 512 pipeline, with a 4.1 GiB VRAM peak. It runs in a separate ComfyUI image (`comfyui-trellis2-rocm:0.39.0-b3b9e95-clean`, compose service `comfyui-trellis`, profile `trellis`, port `127.0.0.1:8189`). The Krita image `comfyui-rocm:0.39.0` is unchanged.
+
+The image contains **no non-commercial code**: nvdiffrast, nvdiffrec and MeshLib are neither built nor installed ([licenses.md](licenses.md) P0-a/P0-b). So there is no UV texture bake and no MeshLib hole fill. Colour is sampled per vertex from the voxel attribute grid, and the PS1 texture is baked later in Blender (P0-c). The first version (2026-10-11, image `…-b3b9e95` without `-clean`) used nvdiffrast for a 2048² PBR bake. Its outputs `prop-terminal_0000{1,2}_` are prototype-only. Its numbers are kept below for comparison.
 
 ## What was tried
 
@@ -17,8 +19,8 @@
 | flash-attn / xformers | PyTorch SDPA (`backend: sdpa`, `ATTN_BACKEND=sdpa`) using aotriton kernels |
 | spconv | FlexGEMM (Triton sparse conv; TF32 disabled on HIP), built from source |
 | CuMesh (cub, `cuda::std::tuple`) | hipified build; `rocprim::tuple`, hipcub |
-| nvdiffrast CUDA rasterizer (PTX) | removed. The OpenGL rasterizer from v0.3.5 is rebuilt as an EGL surfaceless plugin with CPU-bounce copies (no HIP-GL interop on Mesa). `interpolate`/`texture`/`antialias` come from v0.4.0, hipified |
-| nvdiffrec renderutils | hipified (`-lcuda -lnvrtc` dropped) |
+| nvdiffrast, nvdiffrec renderutils | **not installed** (non-commercial licence). `licence-stubs/` provides import-time stubs that raise `LicenceRemovedError` on use. The first image had a hipified EGL GL-rasterizer build |
+| MeshLib (hole fill, simplify) | **not installed** (non-commercial licence); stubbed the same way. Simplification uses CuMesh |
 | o-voxel / flexible dual grid | built with hipcc from TRELLIS.2 |
 | kaolin | not used by this node pack |
 
@@ -28,21 +30,23 @@ All extensions are compiled for **gfx1101** (`PYTORCH_ROCM_ARCH=gfx1101`), so no
 
 `trellis/Dockerfile` builds on `comfyui-rocm:0.39.0` (torch 2.14.1+rocm7.2, HIP 7.2.53211, ComfyUI v0.39.0):
 
-1. Installs the ROCm 7.2 HIP toolchain from repo.radeon.com: hipcc, hip-dev, rocm-llvm, rocprim/hipcub/rocthrust. Only the **headers** of hipblas/hipblaslt/hipsolver/hipsparse/rocblas are taken, via `dpkg -x`, because the libraries already ship in the torch wheel. It also installs Mesa EGL/radeonsi, Eigen 3.4 and sparsehash.
+1. Installs the ROCm 7.2 HIP toolchain from repo.radeon.com: hipcc, hip-dev, rocm-llvm, rocprim/hipcub/rocthrust. Only the **headers** of hipblas/hipblaslt/hipsolver/hipsparse/rocblas are taken, via `dpkg -x`, because the libraries already ship in the torch wheel. It also installs Mesa GL/EGL (MIT; kept for layer caching, and open3d/cv2 load libGL), Eigen 3.4 and sparsehash.
 2. Downloads egore's `install-trellis2-gguf-rocm.sh` @`0afa00c9` and rewrites it with `trellis/pin-install.sh`. Every edit must match exactly once, or the build fails. The rewrite:
    - targets gfx1101
    - skips weight downloads
    - pins every clone (table below)
-   - replaces `-std=c++17` with `-std=c++20` (torch 2.14 headers require C++20)
-   - turns the nvdiffrast/nvdiffrec "build failed" warnings into errors
+   - replaces `-std=c++17` with `-std=c++20` (torch 2.14 headers require C++20); exactly 3 extension builds (CuMesh, FlexGEMM, o-voxel)
+   - deletes the nvdiffrast/nvdiffrec build block and the GL-rasterizer patch, and drops `meshlib` from Aero-Ex's `requirements.txt`
+   The node pack's vendored nvdiffrast wheels and its `install.py` are deleted too.
 3. Fixes the Python side:
    - Aero-Ex pins `transformers==5.2.0`, which conflicts with the base image's huggingface_hub 2.2 and tokenizers 0.23.3, so the image goes back to the base's **5.19.0**.
-   - Adds `meshlib-core`, plus the rembg runtime deps onnxruntime 1.31.0 and pymatting 1.1.16.
+   - Adds the rembg runtime deps onnxruntime 1.31.0 and pymatting 1.1.16.
    - Adds `libusb-1.0-0` for open3d.
-4. Patches the preprocess node: rembg 2.0.85's default `remove()` model is **bria-rmbg (RMBG-2.0, CC BY-NC 4.0)**. The node now uses `new_session($REMBG_MODEL)`, default `isnet-general-use` (Apache-2.0).
-5. Changes the launcher to `trellis_main.py`, which creates one nvdiffrast GL context **before** ComfyUI starts. Without it, the texture-bake step segfaults in `RasterizeGLContext()` inside the prompt worker (toast issue #5; a standalone script works). Measured here: the first run crashed exactly there, and runs with the launcher pass.
+4. Patches the preprocess node: rembg 2.0.85's default `remove()` model is **bria-rmbg (RMBG-2.0, CC BY-NC 4.0)**. The node now uses `new_session($REMBG_MODEL)`, default **`birefnet-general`** (BiRefNet, MIT code and weights, ~973 MB ONNX). `isnet-general-use` is not used: DIS licenses its code, not its weights.
+5. Puts `licence-stubs/` on `sys.path` (a `.pth` file), because `nodes.py` and o_voxel import nvdiffrast and MeshLib at module load. Then it runs `licence-check.py`, which fails the build if any NC package or file is in the image or a stub doesn't raise. To re-check a built image: `docker run --rm --entrypoint python comfyui-trellis2-rocm:0.39.0-b3b9e95-clean /opt/licence-check.py`.
+6. Launches plain `main.py`. The old `trellis_main.py` only existed to create an nvdiffrast GL context early (toast issue #5).
 
-Build time is about 8 min (the CuMesh compile takes about 2 min). The image is 25.7 GB, about 6 GB on top of the shared `comfyui-rocm` layers. `pip freeze` is saved in the image at `/opt/trellis-pip-freeze.txt`.
+Build time is about 8 min (the CuMesh compile takes about 2 min). The clean image is 25.3 GB (the first image was 25.7 GB). `pip freeze` is saved in the image at `/opt/trellis-pip-freeze.txt`.
 
 ### Pins
 
@@ -54,8 +58,6 @@ Build time is about 8 min (the CuMesh compile takes about 2 min). The image is 2
 | visualbruno/CuMesh | `d10e54c30ddd03d11472c1431693f985501c7966` (+ cubvh with Ubuntu Eigen 3.4.0) |
 | JeffreyXiang/FlexGEMM | `6dd94a859c26ee8246888502eada3dd8ad85532e` |
 | microsoft/TRELLIS.2 (o-voxel) | `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. GitLab was overloaded during the build, so the Eigen submodule fell back to Ubuntu Eigen 3.4.0 (the fallback is in `pin-install.sh`) |
-| NVlabs/nvdiffrast | tags `v0.4.0` (`253ac4fc`) and `v0.3.5` (`20c4135f`) |
-| JeffreyXiang/nvdiffrec (renderutils) | `b296927cc7fd01c2ac1087c8065c4d7248f72da4` |
 | EasternJournalist/utils3d | `83bfa5bda008803f6521ce9547f94023b8afeddd` |
 | HF Aero-Ex/Trellis2-GGUF | `edf81aef93af0823ac8721da3c9cd3c52d539f87` |
 | HF Aero-Ex/Dinov3 | `33aa61361f167fadf08fa88f312717ba5f482c42` |
@@ -77,20 +79,20 @@ docker compose --profile trellis up -d comfyui-trellis      # UI/API on http://l
 trellis/run_workflow.py --image concept.png [--seed N]      # host python3, stdlib only; prints stage timings
 trellis/sample-peaks.sh comfyui-trellis > peaks.log &       # optional: VRAM / RAM / NVMe-swap peaks
 docker compose --profile trellis stop comfyui-trellis
-# optional stats + 4-view preview PNG next to the .glb:
-docker run --rm --device /dev/kfd --device /dev/dri --group-add 983 --group-add 987 --user 1000:1000 \
-  -v ~/llm/trellis/out:/out -v $PWD/trellis:/w:ro --entrypoint python \
-  comfyui-trellis2-rocm:0.39.0-b3b9e95 /w/inspect_glb.py /out/trellis2/<name>.glb
+# optional stats + 4-view unlit preview PNG next to the .glb (CPU only, no GPU needed, can run any time):
+docker run --rm --user 1000:1000 -v ~/llm/trellis/out:/out -v $PWD/trellis:/w:ro --entrypoint python \
+  comfyui-trellis2-rocm:0.39.0-b3b9e95-clean /w/inspect_glb.py /out/trellis2/<name>.glb
 ```
 
 The workflow is `trellis/workflows/trellis2_512_api.json` (ComfyUI API format):
 
 ```
-LoadImageWithTransparency → PreProcessImage (rembg isnet) → MeshWithVoxelGenerator → PostProcessAndUnWrapAndRasterizer → ExportMesh
+LoadImageWithTransparency → PreProcessImage (rembg birefnet) → MeshWithVoxelGenerator → PostProcessAndUnWrapAndRasterizer (bake_on_vertices) → ExportMesh
 ```
 
 - Generator settings: Q8_0, `sdpa`, `low_vram`, `pipeline_type 512`, 12/12/12 steps, seed 1234.
-- Post-processing settings: remesh at dual-contouring 512, `target_face_num` 200k, Xatlas UV, 2048² texture.
+- Post-processing settings: remesh at dual-contouring 512, CuMesh simplify to `target_face_num` 50k, `fill_holes: false`, `bake_on_vertices: true` (the node skips UV unwrap and texture bake; `texture_size` is ignored).
+- Don't switch on `fill_holes`, `simplify_method: Meshlib` or `bake_on_vertices: false`: they call the stubs and the prompt fails with `LicenceRemovedError`, by design. Fill holes in Blender instead (`Select Non-Manifold` → `Fill`).
 
 In the UI, the node pack's example workflows also load; re-pick `backend: sdpa` in the loader.
 
@@ -98,9 +100,22 @@ Volumes:
 - `~/llm/trellis/models/Trellis2` (weights)
 - `in/` and `out/` (ComfyUI input/output; the .glb lands in `out/trellis2/`)
 - `user/`
-- `cache/` (isnet model, Triton JIT cache)
+- `cache/` (rembg models in `u2net/`, Triton JIT cache)
 
-## Measured (2026-10-11, prop-terminal concept `krea-sweep/s6-1024/05_1234.png`)
+## Measured, clean image (2026-10-12, same concept `prop-terminal_05_1234.png`)
+
+| | cold (1st run after start, seed 1234) | warm (seed 42) |
+|---|---|---|
+| load + rembg + generate | 141.7 s (includes the one-off ~973 MB BiRefNet download) | 54.1 s |
+| remesh + simplify + vertex colours | 10.9 s | 8.9 s |
+| **total** | **152.7 s** | **63.0 s** |
+
+- **Peak VRAM** (absolute): 4.15 GiB cold, 4.04 GiB warm. **Container RAM peak** 11.5 GB. Host available RAM never below 13.0 GiB; **NVMe swap 0 B**.
+- **Result**: `prop-terminal_00003_.glb` (seed 1234): 24,843 vertices / 48,027 triangles, about 1 MB, `COLOR_0` RGBA per vertex, no UVs or textures, not watertight. Seed 42 (`_00005_`): 26,267 / 47,974.
+- **Quality** (`_00003_.preview.png` next to the old `_00001_.preview.png`, same seed): same geometry and palette. The CRT, green screen, keyboard, vents and disk slot all read clearly. The warning stickers come out as blotchy colour patches, because colour resolution is now one colour per vertex. At the 128/256 px PS1 texture that Blender bakes from this mesh, the difference doesn't show.
+- No `LicenceRemovedError` in the container log, so no stub was reached.
+
+## Measured, first image with nvdiffrast bake (2026-10-11, prop-terminal concept `krea-sweep/s6-1024/05_1234.png`)
 
 | | cold (1st run after start) | warm (2nd run, seed 42) |
 |---|---|---|
@@ -137,8 +152,10 @@ Volumes:
 | egore install script | **no licence file** | fetched at build time, not vendored |
 | steelxt fork | no licence file | not used |
 | toastmanAu guide/patches | MIT | |
-| nvdiffrast (v0.3.5 + v0.4.0), nvdiffrec renderutils | NVIDIA Source Code License: **non-commercial only** ("research or evaluation purposes only", checked in both LICENSE.txt files) | **flag**: the texture bake depends on them. It is fine for a hobby project. Using it for a commercial release needs a licence review; alternatives are a bake path without nvdiffrast (e.g. `bake_on_vertices`, or rebaking in Blender, which `ps1_prep.py` does anyway) |
-| rembg `isnet-general-use` | Apache-2.0 | default here |
+| nvdiffrast (v0.3.5 + v0.4.0), nvdiffrec renderutils | NVIDIA Source Code License: **non-commercial only** | **removed** from the clean image (stubs only); vertex colours + Blender bake instead |
+| MeshLib | non-commercial & education licence | **removed** (stubs only); CuMesh simplify, Blender hole fill |
+| rembg `birefnet-general` (BiRefNet) | MIT (code + weights) | default here |
+| rembg `isnet-general-use` | Apache-2.0 code; weights not explicitly licensed | not used (still in `cache/u2net` from the first image; harmless) |
 | **BRIA RMBG-2.0** (`pipeline.json` default; rembg ≥2.0.6x `remove()` default) | **CC BY-NC 4.0** | **avoided**: patched out; a copy auto-downloaded during the first test was deleted |
 
 No region restrictions were found. Hunyuan3D is not used (its licence excludes the EU).
@@ -147,15 +164,15 @@ No region restrictions were found. Hunyuan3D is not used (its licence excludes t
 
 - **open3d imports fail**: its pybind needs dash/flask/…, which were not installed under `--no-deps`. Only "Laplacian Smoothing (Open3d)" and some PostProcess Mesh options use it.
 - The node pack logs `[SPARSE] Attention backend: flash_attn` and two harmless "monkeypatch" warnings. Dense attention uses SDPA and the run completes; whether sparse attention silently falls back was not investigated.
-- The GL rasterizer copies through host memory (CPU-bounce), so baking at 4096² or with multiview texturing will be slower than on CUDA.
+- No UV texture bake in the node (licence). If higher-resolution textures are ever needed outside PS1, see [licenses.md](licenses.md) P0-d (pure-PyTorch UV rasterizer).
+- Other nodes in the pack that use nvdiffrast or MeshLib (PBR preview renderer, MeshLib simplify/fill-holes nodes, texture re-bake) fail with `LicenceRemovedError`.
 - Only the 512 pipeline with Q8_0 was tested. `1024`, `1024_cascade`, MeshRefiner and multiview are untested.
 - `run_workflow.py` reports three stages because ComfyUI only executes output nodes. Use `docker logs -t` for sub-stages.
 - `gpu-mode` does not know about the `trellis` profile; stop the service by hand.
 
 ## Next steps (PS1 pipeline)
 
-- Feed the `.glb` to `~/unity_projects/psx-iso/Tools/blender/ps1_prep.py` to decimate (300–3k tris), re-UV and bake at 128/256 px.
-- The raw mesh is ~188k tris with a 2048² texture. Lowering `target_face_num` (e.g. 20k) and `texture_size` (1024) in the workflow would make the Blender step faster without losing anything at PS1 resolution.
+- Feed the `.glb` to `~/unity_projects/psx-iso/Tools/blender/ps1_prep.py` to fill holes, decimate (300–3k tris), Smart UV and bake the vertex colours (selected-to-active) at 128/256 px ([licenses.md](licenses.md) P0-c).
 - Try the cryopod (transparent glass) and crate concepts, `1024_cascade` for detail, and Q4_K_M to halve the weight disk use.
 - Add a `trellis` mode to `bin/gpu-mode`.
 - Fallbacks, if this stack breaks after an upgrade: Pixal3D (MIT, low-VRAM; the same Aero-Ex node pack supports it via `modelname: Pixal3D-GGUF`), or TRELLIS.2 on a rented CUDA GPU / the HF Space.

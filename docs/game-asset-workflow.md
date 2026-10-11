@@ -65,7 +65,7 @@ Roles:
 
 ## B3. Image → 3D
 
-1. **TRELLIS.2** (MIT) at 512³ via the ROCm ports (`toastmanAu/trellis-2-rocm-comfyui`, `steelxt/comfyui-trellis2-gguf-rocm`), with arch set to gfx1101, in docker. *Status 2026-10-11: works — image → textured .glb in ~67 s warm / 133 s cold at 512, 4.7 GiB VRAM peak, in `comfyui-trellis2-rocm:0.39.0-b3b9e95` (profile `trellis`, :8189). Licence flag: the texture bake uses nvdiffrast (NVIDIA non-commercial). See [trellis.md](trellis.md).*
+1. **TRELLIS.2** (MIT) at 512³ via the ROCm ports (`toastmanAu/trellis-2-rocm-comfyui`, `steelxt/comfyui-trellis2-gguf-rocm`), with arch set to gfx1101, in docker. *Status 2026-10-11: works — image → textured .glb in ~67 s warm / 133 s cold at 512, 4.7 GiB VRAM peak, in `comfyui-trellis2-rocm:0.39.0-b3b9e95` (profile `trellis`, :8189). Licence (current, 2026-10-12): licence-clean image with no nvdiffrast or MeshLib; output is vertex-coloured (~48k tris), and the PS1 texture is baked in Blender. See [trellis.md](trellis.md) and [licenses.md](licenses.md).*
 2. **Watch Pixal3D** (MIT, low-VRAM mode).
 3. **Low-poly artist meshes:** FastMesh, DeepMesh or MeshAnything V2 on a rented CUDA GPU.
 4. **Fallback:** HF Spaces.

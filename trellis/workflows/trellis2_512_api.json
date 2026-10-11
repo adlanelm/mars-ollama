@@ -15,10 +15,10 @@
         "inputs": {"mesh": ["4", 0], "bvh": ["4", 1],
                    "mesh_cluster_threshold_cone_half_angle_rad": 60.0, "mesh_cluster_refine_iterations": 0,
                    "mesh_cluster_global_iterations": 1, "mesh_cluster_smooth_strength": 1,
-                   "texture_size": 2048, "remesh": true, "remesh_band": 1.0, "remesh_project": 0.0,
-                   "target_face_num": 200000, "simplify_method": "Cumesh", "fill_holes": true,
+                   "texture_size": 1024, "remesh": true, "remesh_band": 1.0, "remesh_project": 0.0,
+                   "target_face_num": 50000, "simplify_method": "Cumesh", "fill_holes": false,
                    "texture_alpha_mode": "OPAQUE", "dual_contouring_resolution": "512",
-                   "double_side_material": false, "remove_floaters": true, "bake_on_vertices": false,
+                   "double_side_material": false, "remove_floaters": true, "bake_on_vertices": true,
                    "use_custom_normals": false, "uv_unwrap_method": "Xatlas", "remove_inner_faces": true}},
   "6": {"class_type": "Trellis2ExportMesh_GGUF", "_meta": {"title": "export glb"},
         "inputs": {"trimesh": ["5", 0], "filename_prefix": "trellis2/prop-terminal", "file_format": "glb"}}

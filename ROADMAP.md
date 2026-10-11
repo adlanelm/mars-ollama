@@ -13,10 +13,10 @@ Background docs: [docs/README.md](docs/README.md).
 | 2 | llama-swap running side by side on `:11435` | Adds a container | **Done** 2026-10-11 |
 | 3 | Validation and tuning | No | **Done** 2026-10-11 |
 | 4 | Cutover on `:11434` + client reconfiguration | **Yes** | Done 2026-10-11 (Page Assist skipped: not used) |
-| 5 | Cleanup of Ollama data | Deletes data | Pending |
-| 6 | `gpu-mode` + ComfyUI | Adds a container | Pending (`bin/gpu-mode` exists, no `comfyui` service yet) |
-| 7 | Colibri big-model tier | Adds a model entry | Pending |
-| 8 | Game asset pipeline | Separate projects | Pending |
+| 5 | Cleanup of Ollama data | Deletes data | Partly done: qwen3.5 + glm removed; `~/llm/ollama` kept as rollback until about 2026-10-25 |
+| 6 | `gpu-mode` + ComfyUI | Adds a container | **Done** 2026-10-11 |
+| 7 | Colibri big-model tier | Adds a model entry | **Done** 2026-10-11 |
+| 8 | Game asset pipeline | Separate projects | In progress: `psx-iso` Unity scaffold done 2026-10-11 |
 
 ---
 
@@ -245,7 +245,7 @@ Then revert the client settings from the Phase 0 screenshots.
 
 ## Phase 7 — Colibri big-model tier
 
-**Status (2026-10-11):** tasks 1–4 done and integrated (`colibri-big` in llama-swap, chat group). Measured 0.5 tok/s cold, 1.1 tok/s warm, NVMe swap 0 B, aux models kept serving; results in [docs/colibri.md](docs/colibri.md#gpu-test-2026-10-11). Live `[progress]` logging via a local patch ([colibri/patches](colibri/patches/README.md)). Task 5 (overnight 50-entry batch) pending.
+**Status: Done (2026-10-11).** `colibri-big` in llama-swap (chat group); tuned to 3.7 tok/s warm (8 threads, cap 44); live `[progress]` logging via a local patch ([colibri/patches](colibri/patches/README.md)). Task 5: 50 lore entries in 57 min, 0 errors, NVMe swap 0 B; a blind AI judge preferred colibri over Qwen3.6 in 40 of 50. Details: [docs/colibri.md](docs/colibri.md).
 
 **Goal:** a slow, unattended tier for models far larger than VRAM plus RAM. Spec: [docs/colibri.md](docs/colibri.md).
 

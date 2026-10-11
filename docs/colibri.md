@@ -224,6 +224,37 @@ Each token routes to 10 of 512 experts in each of 48 layers. The draft rows add 
 
 `--cap 44`, `CAP=44`, `OMP_NUM_THREADS=8` (keep `COLI_NO_OMP_TUNE=1`), `--kv-slots 1`, VRAM reserve and streaming at their defaults. The previous config is saved as `llama-swap/config.yaml.bak-2026-10-11-pretune`. Untested headroom: cap 60 would use about 3.3 GiB more RAM (RAM available would drop to ~7 GiB).
 
+## Lore batch and blind comparison (2026-10-11)
+
+Phase 7 task 5. `bin/colibri-batch colibri/batch/lore-50.txt ~/llm/colibri/batch/lore-50 --system colibri/batch/system.txt`: 50 synthetic in-world documents (10 station subjects × log, memo, diary, item, terminal), thinking off, max 600 tokens, temperature 0.8. Then the same prompts on `qwen3.6-35b-a3b` for comparison.
+
+| | colibri (Qwen3.8-Flash-Next) | Qwen3.6-35B-A3B |
+|---|---|---|
+| Items ok / errors / empty / cut at max | 50 / 0 / 0 / 0 | 50 / 0 / 0 / 0 |
+| Wall time | 57 min | 5 min |
+| Speed | 2.66 tok/s (33–240 s per item) | 29.5 tok/s (3–20 s per item) |
+| Output tokens | 9,150 | 9,495 |
+
+NVMe swap stayed 0 B; the batch ran unattended through llama-swap (colibri-big swapped in, chat model swapped out).
+
+**Blind AI judge.** A subagent got only the prompt and two unlabelled answers per item (sides randomised per item, key kept separately) and scored each answer 1–5 on fit (format, length, in-world), atmosphere, craft and usefulness for the game, with a verdict per item. Unblinded per-item results: [bench/colibri-lore-50/judge-verdicts.json](../bench/colibri-lore-50/judge-verdicts.json).
+
+| | colibri | Qwen3.6 |
+|---|---|---|
+| Wins (50 items) | **40** | 9 (+1 tie) |
+| Fit | **4.16** | 3.58 |
+| Atmosphere | **4.16** | 3.76 |
+| Craft | **4.00** | 3.40 |
+| Usefulness | **4.06** | 3.82 |
+
+By document type: logs 10–0, memos 10–0, diaries 9–1 for colibri; terminals 6–4 and items 5–4 (+1 tie) are close.
+
+- colibri wrote 3 of the judge's top 4 texts (choir-diary, archive-terminal, security-log) but also the single worst one: android-terminal looped and was cut off mid-line.
+- Qwen3.6's weak spots: an all-caps reactor log with a typo, a medbay log dated in "Stardate" instead of station cycles.
+- Both models often ignore the requested length (diaries and memos especially), use markdown bold in memos, and reuse the same names (Vance, Halloway, Kael, Aris) and phrases ("ozone and copper", "it knows"). Any batch needs a de-duplication and length pass.
+
+**Use:** colibri for longer in-world prose with a voice (logs, memos, diaries, lore passes), overnight. Qwen3.6 for short item blurbs and terminal readouts, where it is nearly as good at a tenth of the time. The judge is an AI with its own taste; the user's own blind picks (`~/llm/colibri/batch/compare.html`, built by `bin/text-compare`) are the reference when available.
+
 ## NVMe wear
 
 - Reads don't wear an SSD, only writes do. Expert streaming is read-heavy.
@@ -252,6 +283,7 @@ done
 
 - Set `healthCheckTimeout` high enough for a cold start, and raise the client timeout for slow tokens.
 - Log tok/s per item. Phase 7 acceptance test: 50 lore entries overnight.
+- Implemented as `bin/colibri-batch` (resumable, thinking off by default, one `<id>.md` per item, `summary.md`). Blind A/B page for two runs: `bin/text-compare`. Results above.
 
 ## Acceptance (from the roadmap)
 

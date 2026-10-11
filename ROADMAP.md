@@ -228,7 +228,7 @@ Then revert the client settings from the Phase 0 screenshots.
 
 ## Phase 6 — `gpu-mode` and ComfyUI
 
-**Status: Done (2026-10-11).** Results: [bench/comfyui-results.md](bench/comfyui-results.md). Krea 2 Turbo measured about 40 s per 1024² image (acceptance target about 30 s missed); FLUX.2 Klein 4B 7.5 s, Z-Image Turbo about 27 s.
+**Status: Done (2026-10-11).** Results: [bench/comfyui-results.md](bench/comfyui-results.md). Krea 2 Turbo measured about 40 s per 1024² image at 8 steps; after a blind steps/resolution sweep the default is 6 steps (29 s, target met, no visible loss; see the sweep section); FLUX.2 Klein 4B 7.5 s, Z-Image Turbo about 27 s.
 
 **Goal:** a one-command switch between LLM work and image generation. Spec: [docs/gpu-switching.md](docs/gpu-switching.md).
 

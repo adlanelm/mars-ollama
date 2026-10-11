@@ -62,4 +62,15 @@ Finding: every image (also at 896) logs a HIP OOM at VAEDecode (`trying to alloc
 
 **Contact sheet:** `xdg-open ~/llm/comfyui/output/krea-sweep/index.html` (or `file:///home/adlan/llm/comfyui/output/krea-sweep/index.html`). Blind mode is on by default (columns shuffled per row with a fixed seed, labelled A-D, "Reveal" shows the variants); a PS1 preview toggle shows 256 px / RGB555 Bayer dither / 64-colour versions (`comfyui/sweeps/ps1_preview.py`, run with `uvx --with pillow`); picks are kept in localStorage and "Export picks" downloads a JSON with the letter-to-variant mapping. Rebuild with `bin/comfy-sweep sheet`. Raw numbers: `results.json` in the same directory.
 
-Quality verdict: open; the user judges the images. No quality conclusion is drawn here.
+**Quality verdict (user, blind, 2026-10-11):** one pick per row, 24 rows (`picks.json` next to the sheet).
+
+| Variant | Picks | s/image |
+|---|---|---|
+| s8-1024 | 8 | 39 |
+| s6-1024 | 7 | 29 |
+| s8-896 | 6 | 30 |
+| s4-1024 | 3 | 20 |
+
+8 / 7 / 6 is within chance for 24 picks (random picking gives about 6 each); only 4 steps fell behind, weakly. By category: characters and props leaned 8 steps, textures 896² (3 of 4), the UI icon 6 steps (2 of 2).
+
+**Decision:** default `krea2_turbo.json` to **6 steps at 1024²**. That's no visible loss in the blind test, it meets the 30 s target, and 1024² is kept for textures and turnarounds. Use 8 steps for final hero renders. 8 steps at 896² costs the same time as 6 at 1024² and gains nothing.

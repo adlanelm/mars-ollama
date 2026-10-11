@@ -37,7 +37,7 @@ save("flux2_klein_4b", {
  "sca": {"class_type": "SamplerCustomAdvanced", "inputs": {"noise": L("noise"), "guider": L("guider"), "sampler": L("samp"), "sigmas": L("sig"), "latent_image": L("lat")}},
  **tail(L("vae"), L("sca"))})
 
-# Krea 2 Turbo fp8: 8 steps, euler/simple, cfg 1 (template without LoRA / prompt-expansion branch)
+# Krea 2 Turbo fp8: 6 steps (blind sweep 2026-10-11: no visible loss vs 8, 29 s vs 39 s; use 8 for hero renders), euler/simple, cfg 1 (template without LoRA / prompt-expansion branch)
 save("krea2_turbo", {
  "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": "krea2_turbo_fp8_scaled.safetensors", "weight_dtype": "default"}},
  "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3vl_4b_fp8_scaled.safetensors", "type": "krea2", "device": "default"}},
@@ -46,5 +46,5 @@ save("krea2_turbo", {
  "neg": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": L("pos")}},
  "lat": {"class_type": "EmptyLatentImage", "inputs": {"width": 1024, "height": 1024, "batch_size": 1}},
  "ks": {"class_type": "KSampler", "inputs": {"model": L("unet"), "positive": L("pos"), "negative": L("neg"), "latent_image": L("lat"),
-        "seed": 0, "steps": 8, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1}},
+        "seed": 0, "steps": 6, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1}},
  **tail(L("vae"), L("ks"))})

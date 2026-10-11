@@ -131,8 +131,11 @@ models:
       --model /colibri-models/qwen38-flash-next
       --host 127.0.0.1 --port ${PORT}
       --model-id colibri-big
-      --ram 18 --cap 25 --ctx 8192 --kv-slots 1
+      --ram 18 --cap 44 --ctx 8192 --kv-slots 1
       --max-queue 2 --queue-timeout 3600
+    # Tuning 2026-10-11 (docs/colibri.md "Tuning"): --cap 25 -> 44 = what `coli plan` gives for 18 GB once the
+    # dense weights live in VRAM (cap 45 measured 3.39 -> 3.85 tok/s warm, RAM available >= 10 GiB, NVMe swap 0).
+    # --kv-slots stays 1: 4 slots gave only ~+5-11% aggregate and unload the MTP head (-17% single stream).
     # No cmdStop: llama-swap v263 only documents ${PID} for cmdStop; its default SIGTERM is handled by
     # coli serve (stops the engine child). Give the engine time to exit cleanly before a forced kill.
     unloadTimeout: 30
@@ -140,10 +143,11 @@ models:
     env:
       - COLI_VULKAN=1 # engine was built with VK=1; this switches the GPU on at runtime
       - COLI_VK_DEV=0 # Vulkan0 = RX 7800 XT (Vulkan1 is the 610M iGPU)
-      - COLI_NO_OMP_TUNE=1 # recommended on multi-core hosts
-      - RAM_GB=18 # same as --ram; leaves headroom under the 28g container limit + aux models
-      - CAP=25 # coli plan: 18 GB budget -> cap 25/layer (5.8 dense + 5.9 runtime + 6.2 warm experts)
-      - RSS_GUARD_GB=22 # trims the cache if RSS crosses this (default = RAM budget)
+      - COLI_NO_OMP_TUNE=1 # no spin-wait; for qwen38 it also skips the physical-core thread count, hence the next line
+      - OMP_NUM_THREADS=8 # physical cores; the default 16 (SMT) measured 1.42 tok/s warm, 8 threads 3.39 (same tokens)
+      - RAM_GB=18 # same as --ram (used by coli plan; the qwen38 engine itself sizes its cache from --cap)
+      - CAP=44 # coli plan with Vulkan: 18 GB = 1.5 dense + 5.9 runtime + 10.6 warm experts -> cap 44/layer
+      - RSS_GUARD_GB=22 # read by the GLM engine only; no effect on qwen38
       - PYTHONDONTWRITEBYTECODE=1 # /colibri is mounted read-only
       - COLI_PROGRESS_SECS=15 # local patch colibri/patches/0001-progress-log.patch: [progress] line every 15 s while decoding (0 = off)
       # The model mount is read-write because colibri writes .coli_kv / .coli_usage / .coli_ssd into the model dir.

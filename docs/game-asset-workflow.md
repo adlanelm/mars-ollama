@@ -58,7 +58,7 @@ Roles:
 | Best quality, non-commercial only | Qwen-Image-2.1 / Turbo | Qwen research; concept use only |
 | Edits and variations | **Qwen-Image-Edit-2511** | Apache-2.0 |
 | Turnarounds | **CharacterSheet LoRAs** (TripleView/QuadView) for Krea 2 / Klein | Check HF card |
-| PS1 look | Civitai #707972 "PSX Style" LoRA (trigger "3D low-poly CGI-render") | Check page |
+| PS1 look | Unity PSX layer (B7). Optional, skipped for now: Civitai #707972 "PSX Style" LoRA (trigger "3D low-poly CGI-render") | Check page |
 | Signalis look | Train your own style LoRA later | Yours |
 | Textures and PBR | Z-Image + seamless tiling → Ubisoft CHORD (research-only); Material Maker (MIT) | Check per tool |
 | PS1 palette | Pillow script (nearest-neighbour, quantise, dither) + Pixelorama | |

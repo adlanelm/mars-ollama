@@ -39,6 +39,6 @@ Peak VRAM is `mem_info_vram_used` for the whole card (includes torch cache, desk
 - **Host RAM and disk contention matter.** Z-Image first measured 99-210 s while another host job (a 186 GB model download) saturated the disk and RAM was tight (ComfyUI RSS reached 19 GB with default caching and pinned memory). With `--disable-pinned-memory --cache-ram 6` and a quiet disk it dropped to 26-32 s. Keep other heavy I/O off while benchmarking.
 - Model repos moved: `Comfy-Org/flux2-klein-4B` redirects to `Comfy-Org/vae-text-encorder-for-flux-klein-4b`, which still holds the same files (diffusion model 7,751,105,712 bytes). `models.txt` points at the new name, so the `black-forest-labs/FLUX.2-klein-4B` fallback was not needed. `Comfy-Org/Krea2` also redirects (to `Comfy-Org/Krea-2`) and works through the redirect.
 - First `comfy-pull` run: a stalled `hf download` was restarted once; downloads resume. A rerun skips everything (idempotent). Total about 75 GB in `~/llm/comfyui/models`.
-- Not downloaded: the Krea 2 PSX style LoRA (Civitai, needs a token). Download it yourself into `~/llm/comfyui/models/loras/`.
+- PSX style LoRA (Civitai): skipped by choice (2026-10-11). The PS1 look comes from the Unity PSX layer; a LoRA would only restyle concept art. Optional later: own style LoRA.
 - Qwen-Image-Edit-2511 GGUF and its text encoder are downloaded but not speed-tested (ComfyUI-GGUF loads in the log).
 - `gpu-mode llm` freed VRAM without `--stop`; `--stop` also works and was used at the end.

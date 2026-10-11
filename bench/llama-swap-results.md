@@ -71,6 +71,6 @@ Raw outputs: `ollama-baseline.txt`, `qwen3.6-sweep.md`, `smoke-1.txt`, `smoke-gr
 | docling-proxy, standard pipeline + `picture_description_api` → granite-vision | success, 27 s, table + picture description |
 | docling-proxy, VLM pipeline → granite-docling (`response_format: doctags`) | success, 4 s; trailing `<\|end_of_text\|>` is handled |
 | opencode (`ollama/qwen3.6-35b-a3b`) | works; config updated to new ids and real context limits |
-| Page Assist | pending (user) |
+| Page Assist | skipped (not used); CORS verified above |
 
 Incidents: config hot reload (`-watch-config`) restarted models under load: a port-bind race left snowflake down, and a second reload killed it mid-request (Open WebUI embedding 502s). Hot reload removed; apply edits with `docker compose restart llama-swap`.

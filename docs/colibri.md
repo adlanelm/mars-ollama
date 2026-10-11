@@ -144,7 +144,85 @@ During the runs: NVMe reads about 1.25 GB/s, RAM available 11–14 GiB, NVMe swa
 Findings:
 - **Thinking:** Qwen3.8 in colibri defaults to `reasoning_effort: xhigh`. For batch text send `"enable_thinking": false` or `"reasoning_effort": "none"` at the top level of the request; `chat_template_kwargs` is not read.
 - **Logging:** upstream prints a summary only when a request ends (TTFT, tok/s, cache stats). The local patch adds `[progress]` lines (start, first token, every `COLI_PROGRESS_SECS`, finish). Follow with `bin/colibri-logs`.
-- Not done yet: `coli iobench` / `coli tune`, and the overnight batch (task 5).
+- Not done yet: the overnight batch (task 5). iobench / tune: see the next section.
+
+## Tuning (2026-10-11)
+
+Result: warm decode **1.42 → 3.68 tok/s** (2.6×), prefill 15.6 → 10.4 s, with the same greedy output. Two changes: `OMP_NUM_THREADS=8` and `--cap 44`. All runs used the same synthetic prompt (a derelict-station maintenance log), `temperature 0`, `"enable_thinking": false` and 120 output tokens. Each config ran twice; run 2 is warm and reuses the prompt prefix. The `.coli_usage` history was reset to the same copy before each config. Experiments ran in a throwaway container (`docker run ... coli serve`, same image, devices, volumes and `--memory 28g`) while colibri-big was unloaded in llama-swap. The final row is through llama-swap.
+
+### Disk: iobench
+
+`coli iobench` does not exist in v2.0.0. It is a separate C tool, `c/iobench.c` (`make -C c iobench`), built here in a throwaway container: `iobench <file> <MB> <reads> <threads> <direct>`. The engine reads one expert as a 3.3 MB gate+up pair plus a 1.6 MB down matrix, using buffered `pread`. `DIRECT`/`PIPE` are read by the GLM engine only. Kingston Fury Renegade 2 TB, btrfs (the shards' data extents are not compressed):
+
+| Block | 1 thread | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| 3.3 MB O_DIRECT | 4.0 GB/s | 6.8 | 7.4 | 7.4 | 7.6 |
+| 3.3 MB buffered | 2.7 GB/s | 4.9 | 7.1 | 8.5* | 8.1* |
+| 1.6 MB O_DIRECT | 2.6 GB/s | 4.7 | 6.1 | 6.8 | 6.7 |
+
+\* Partly page-cache hits (the random reads overlap within one 1.6 GB shard).
+
+The engine actually pulled 1.3–2.5 GB/s, so the SSD is not the limit.
+
+### coli tune
+
+`coli tune --model ... --ram 18 --ctx 8192 --tokens 64 --repeats 2 --no-think`, with `COLI_VULKAN=1 COLI_VK_DEV=0`.
+- For qwen38 it sweeps only `OMP_NUM_THREADS` (physical cores vs half) and a smaller RAM cache (75% / 50% of the planned cap). It never tries a bigger cache, threads above the core count, or the VRAM tier knobs. With `--cap` given, the cache sweep is skipped. With `COLI_NO_OMP_TUNE` set, the thread sweep is skipped.
+- Measured: baseline (cap 44, 8 threads) **3.90 tok/s**, hit 36%; 4 threads 3.85; cap 33 3.62; cap 22 disqualified (it changed the greedy tokens). **Baseline retained, no profile accepted.**
+- Where it saves: `$XDG_CONFIG_HOME/colibri/tuning/<fingerprint>.json` (`~/.config/...` of the container user). The fingerprint covers the CPU, the model files and the engine binary. `coli serve` applies a saved profile **only with `--auto-tier`**. llama-swap's entry does not use `--auto-tier`, and the container's `~/.config` is not persistent, so the result is written into `config.yaml` as flags/env instead (there was nothing to accept anyway).
+- `coli plan` with Vulkan visible (`COLI_VULKAN=1`): 18 GB = 1.5 dense (+4.4 on the device only) + 5.9 runtime + 10.6 warm experts → **cap 44**. The earlier cap 25 came from `--gpu none`, which charged the dense weights to RAM.
+
+### Knobs for qwen38 + Vulkan (confirmed in source)
+
+| Knob | Default | Where read | Effect / result here |
+|---|---|---|---|
+| `OMP_NUM_THREADS` | physical cores, **but** `COLI_NO_OMP_TUNE=1` skips that → 16 (SMT) | `omp_tune.h`, `coli` | CPU expert matmuls; **8 = 2.4× faster than 16** |
+| `--cap` / `CAP` | plan | engine argv | RAM expert cache, slots per layer (4.69 MiB each × 48 layers) |
+| `COLI_VK_TIER_GB` | free VRAM − reserve − dense | `vk_tier.c` | VRAM expert budget |
+| `COLI_VK_TIER_RESERVE_GB` | 1.0 | `vk_tier.c` | VRAM left for scratch/driver; 0.5 tested, not adopted |
+| `COLI_VK_TIER_RATE` | 16 | `vk_tier.c` | promotions to VRAM per token (0 skipped when warm) |
+| `COLI_VK_TIER_BALANCE`, `_EXCLUSIVE`, `_WARM`, `_MTP` | on | `vk_tier.c`, `qwen38.c` | CPU/GPU balance, no RAM+VRAM duplicates, warm start from `.coli_usage`, MTP layer on GPU |
+| `COLI_VK_TIER_STREAM`, `_ROWS`, `_SLOTS`; `COLI_VK_TIER_GEMM_ROWS` | on, rule, 64; 16 | `vk_tier.c` | cold experts uploaded per step; prompt steps only (≥16 rows) unless GEMM_ROWS is lowered |
+| `COLI_VK_DENSE`, `COLI_VK_CHAIN`, `COLI_VK_DENSE_HOST` | on (discrete) | `backend_vulkan.c`, `decide_vk.h` | dense trunk on the GPU (3.7 GiB chain, host copy released) |
+| `--kv-slots` / `KV_SLOTS` | 1 | `qwen38.c` | parallel conversations; >1 unloads the MTP head and turns the dense chain off |
+| `Q38_MTP`, `Q38_MTP_DRAFTS`, `COLI_LOOKUP` | on, 2, on | `qwen38.c` | speculative decoding: 2.16 tokens/forward measured |
+| `Q38_EXPERT_PREFETCH`, `Q38_EXPERT_PARALLEL_READS` | on | `qwen38_core.h` | fadvise prefetch, parallel expert reads |
+| `Q38_EXPERT_INT4` | auto (sidecar if present) | `qwen38_core.h` | int4-g64 experts: 2.76 instead of 4.92 MB; changes quantization (not created, +68 GB) |
+| `COLI_TIMERS` | 0 | `qwen38_core.h` | per-phase timing per request (used for the evidence below) |
+| `RAM_GB`, `RSS_GUARD_GB` | — | `coli plan` / GLM engine | **not read by the qwen38 engine** |
+
+### Before / after
+
+Decode tok/s for run 1 / run 2. Prefill is from run 1 (82 prompt tokens). Device share = the share of routed experts computed on the GPU in run 2. Peaks were sampled every 2 s. NVMe swap stayed at 0 B in every run.
+
+| Config | Decode tok/s | Prefill | Device share | RAM avail. min | Container peak | VRAM peak (of 16,368 MiB) | Verdict |
+|---|---|---|---|---|---|---|---|
+| A. old config (16 threads, cap 25) | 1.35 / 1.42 | 15.6 s | 53% | 14.4 GiB | 10.0 GiB | 16,308 MiB | baseline |
+| B. + `OMP_NUM_THREADS=8` | 3.13 / 3.39 | 11.3 s | 53% | 14.8 GiB | 8.9 GiB | 16,316 MiB | **adopted** |
+| C. B + cap 45 | 3.79 / 3.85 | 10.5 s | 52% | 10.0 GiB | 12.9 GiB | 16,198 MiB | **adopted (as cap 44)** |
+| D. C + decode streaming (`GEMM_ROWS=1 STREAM_ROWS=1`) | 2.68 / 2.68 | 9.6 s | 99% | 9.7 GiB | 12.8 GiB | 16,252 MiB | slower |
+| E. C + `COLI_VK_TIER_RESERVE_GB=0.5` | 3.73 / 4.02 | 10.5 s | 55% | 9.3 GiB | 13.1 GiB | 16,312 MiB | noise; 1 failed upload, smaller prompt chunks |
+| F. C + `COLI_VK_DENSE=0` (all VRAM for experts) | 3.31 / 3.40 | 11.8 s | 62% | 6.5 GiB | 16.7 GiB | 15,207 MiB | slower |
+| tune: cap 44 / 8 thr · 4 thr · cap 33 | 3.90 · 3.85 · 3.62 | ~10 s | — | — | — | — | cap 44 + 8 threads best |
+| **Final, via llama-swap (cap 44, 8 threads)** | **3.55 / 3.68** | **10.4 s** | 52% | 10.2 GiB | 14.3 GiB | 16,321 MiB | in `config.yaml` |
+
+Batch (C settings, distinct prompts, explicit `cache_slot` per request):
+
+| Slots × concurrent | Per stream | Aggregate (wall, incl. prefill) | Single stream in that mode | Container peak |
+|---|---|---|---|---|
+| 1 × 1, sequential (C) | 3.85 | ≈3.1–3.3 tok/s (estimated: 10.5 s prefill + 31 s decode per request) | 3.85 (MTP on) | 12.9 GiB |
+| 2 × 2 | 1.60, 1.85 | 3.21 tok/s (240 tok / 74.7 s) | 3.18 (MTP off) | 14.3 GiB |
+| 4 × 4 | 0.86–1.06 | 3.43 tok/s (475 tok / 138.6 s) | 3.18 (MTP off) | 14.7 GiB |
+
+More slots give at most ~5–11% more aggregate throughput. Prefills of new requests run one at a time and stall the others, and any `--kv-slots` > 1 unloads the MTP head (−17% for single requests). So the config stays at 1 slot. If you do use slots: the server hashes the first messages to pick a slot, so concurrent requests can land on the same one and wait. Send `"cache_slot": i` per worker.
+
+### Why the GPU looks idle
+
+Each token routes to 10 of 512 experts in each of 48 layers. The draft rows add more, so one forward uses about 1,450 experts across about 3 rows. Only about 1,850 of the 24,576 experts (7.5%) fit in the 9.5 GiB VRAM tier. They are the hottest ones, so they still cover about half of the routed work, and the GPU finishes that half in about 50 ms per forward. The other half has to be read from RAM or NVMe and computed on the CPU, which takes about 500 ms per forward. The GPU waits for that and sits idle about 90% of the time. Before the fix, 16 SMT threads made the CPU part about 10× slower (timers: 952 vs 82 ms of routed-expert compute per forward). Pushing everything onto the GPU (test D, 99% device share) is slower, because each cold expert then has to cross PCIe every step. Taking VRAM from the dense trunk (test F) moves trunk work onto the already busy CPU. The real levers are a faster CPU path and fewer bytes per expert. One example is the int4 sidecar (+68 GB on disk, 56% of the bytes per expert), but it changes the quantization and is not tested here.
+
+### Chosen settings
+
+`--cap 44`, `CAP=44`, `OMP_NUM_THREADS=8` (keep `COLI_NO_OMP_TUNE=1`), `--kv-slots 1`, VRAM reserve and streaming at their defaults. The previous config is saved as `llama-swap/config.yaml.bak-2026-10-11-pretune`. Untested headroom: cap 60 would use about 3.3 GiB more RAM (RAM available would drop to ~7 GiB).
 
 ## NVMe wear
 

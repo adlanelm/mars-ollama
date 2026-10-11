@@ -12,7 +12,7 @@ Background docs: [docs/README.md](docs/README.md).
 | 1 | `llm-pull` + model manifest; download the target models | No (disk only) | **Done** 2026-10-11 |
 | 2 | llama-swap running side by side on `:11435` | Adds a container | **Done** 2026-10-11 |
 | 3 | Validation and tuning | No | **Done** 2026-10-11 |
-| 4 | Cutover on `:11434` + client reconfiguration | **Yes** | Done 2026-10-11 (Page Assist pending) |
+| 4 | Cutover on `:11434` + client reconfiguration | **Yes** | Done 2026-10-11 (Page Assist skipped: not used) |
 | 5 | Cleanup of Ollama data | Deletes data | Pending |
 | 6 | `gpu-mode` + ComfyUI | Adds a container | Pending (`bin/gpu-mode` exists, no `comfyui` service yet) |
 | 7 | Colibri big-model tier | Adds a model entry | Pending |
@@ -193,7 +193,7 @@ Background docs: [docs/README.md](docs/README.md).
 - **Background tasks:** Open WebUI title and tag generation does not swap models. `curl localhost:11434/running` shows a single chat model.
 - **RAG:** a RAG query on an existing knowledge base returns cited chunks, and reranking is active.
 - **Docling:** converting a PDF with images produces picture descriptions.
-- **Page Assist:** chat works.
+- **Page Assist:** chat works. *(Skipped 2026-10-11: not used; CORS verified, setup kept in docs/clients.md.)*
 
 **Done (2026-10-11):** llama-swap serves `:11434` (host and in-network alias `ollama:11434`); the Ollama container was removed (`profiles: ["legacy"]`, data kept). Open WebUI chat/RAG/uploads, docling (both pipelines) and opencode verified; Page Assist pending. Results and incidents: [bench/llama-swap-results.md](bench/llama-swap-results.md#phase-4-cutover-2026-10-11). RAG rerank tuning deferred.
 

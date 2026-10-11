@@ -115,7 +115,7 @@ Roles:
 
 1. Part A (llama-swap, see [ROADMAP.md](../ROADMAP.md)).
 2. ComfyUI container with the models and LoRAs, then a test turnaround.
-3. Krita + krita-ai-diffusion.
+3. Krita + krita-ai-diffusion. *Status 2026-10-11: server side ready (plugin models in `comfyui/models.txt`, workload check passes for Klein 4B, Z-Image, Krea 2, Qwen Edit Plus); Krita-side steps in [krita.md](krita.md).*
 4. TRELLIS.2 ROCm: one prop end to end.
 5. Blender MCP + `ps1_prep.py`.
 6. Unity project with PSX, `PsxSettings`, postprocessor, unity-mcp, git-lfs.

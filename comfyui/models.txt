@@ -14,3 +14,14 @@ Comfy-Org/Krea2 vae/qwen_image_vae.safetensors vae
 # Qwen-Image-Edit-2511 (Apache-2.0): GGUF Q4_K_M fits 16 GB (fp8 is 20.5 GB); needs city96/ComfyUI-GGUF
 unsloth/Qwen-Image-Edit-2511-GGUF qwen-image-edit-2511-Q4_K_M.gguf unet
 Comfy-Org/Qwen-Image_ComfyUI split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors text_encoders
+# krita-ai-diffusion v1.53.0 (docs/krita.md): filenames/folders as in the plugin's ai_diffusion/presets/models.json
+# required for every architecture: upscalers (default + fast_2x; fast_3x/4x used by the upscale tool) and MAT inpaint pre-fill
+gemasai/4x_NMKD-Superscale-SP_178000_G 4x_NMKD-Superscale-SP_178000_G.pth upscale_models
+Acly/Omni-SR OmniSR_X2_DIV2K.safetensors upscale_models
+Acly/Omni-SR OmniSR_X3_DIV2K.safetensors upscale_models
+Acly/Omni-SR OmniSR_X4_DIV2K.safetensors upscale_models
+Acly/MAT MAT_Places512_G_fp16.safetensors inpaint
+# Klein 4B fill/expand (outpaint) LoRA; the plugin matches the "LyNiaZ53Tudg0J6sT8Xbx" filename as-is
+fal/flux-2-klein-4B-outpaint-lora LyNiaZ53Tudg0J6sT8Xbx_pytorch_lora_weights_comfy_converted.safetensors loras
+# Z-Image ControlNet union (scribble/edge/depth/pose control layers + inpaint), loaded via ModelPatchLoader
+alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1 Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors model_patches

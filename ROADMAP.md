@@ -269,7 +269,7 @@ Then revert the client settings from the Phase 0 screenshots.
 This phase lives in the game project repos. Full detail: [docs/game-asset-workflow.md](docs/game-asset-workflow.md).
 
 1. ComfyUI models and LoRAs, then a test character turnaround.
-2. Krita + krita-ai-diffusion connected to the local ComfyUI.
+2. Krita + krita-ai-diffusion connected to the local ComfyUI. *Status 2026-10-11: ComfyUI side done and verified against the plugin's v1.53.0 checks (nodes, required models, 4 workloads); remaining: user installs the plugin in Flatpak Krita 5.3.4.1 and connects per [docs/krita.md](docs/krita.md).*
 3. TRELLIS.2 (ROCm port, gfx1101): take one prop from concept to mesh.
 4. Blender MCP plus `ps1_prep.py` (decimate, UV, bake, export at 128/256px).
 5. Unity URP project: PSX shader, `PsxSettings`, AssetPostprocessor, unity-mcp, git-lfs.

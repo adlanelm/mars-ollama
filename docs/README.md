@@ -14,6 +14,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | [colibri.md](colibri.md) | Slow big-model tier: use cases, integration, disk and RAM gates |
 | [gpu-switching.md](gpu-switching.md) | `gpu-mode`: sharing one 16 GB GPU between LLMs, ComfyUI, docling and editors |
 | [game-asset-workflow.md](game-asset-workflow.md) | AI-assisted asset pipeline for the PS1/Signalis-style isometric Unity game |
+| [krita.md](krita.md) | Krita (Flatpak) + krita-ai-diffusion v1.53.0 as a custom-server client of the local ComfyUI: install, connect, styles, limits, troubleshooting |
 
 ## How do I…
 

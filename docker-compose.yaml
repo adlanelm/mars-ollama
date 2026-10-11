@@ -5,6 +5,7 @@ services:
   ollama:
     image: ollama/ollama:rocm
     container_name: ollama
+    profiles: ["legacy"] # replaced by llama-swap; kept for rollback (ROADMAP Phase 4/5)
     pull_policy: always
     mem_limit: 28g
     cpus: "12.8" # 80% of 16 logical CPUs; models set PARAMETER num_thread 13
@@ -41,26 +42,32 @@ services:
   llama-swap:
     image: ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541
     container_name: llama-swap
-    entrypoint: ["/app/llama-swap", "-config", "/config/config.yaml", "-watch-config"]
+    entrypoint: ["/app/llama-swap", "-config", "/config/config.yaml", "-listen", ":11434"] # no -watch-config: a reload restarts models mid-request (502s); apply edits with `docker compose restart llama-swap`
     mem_limit: 28g
     cpus: "12.8"
     environment:
       - GGML_VK_VISIBLE_DEVICES=0 # Vulkan0 = RX 7800 XT; Vulkan1 is the 610M iGPU
       - LLAMA_CACHE=/cache        # only used by `-hf` experiments
     ports:
-      - "11435:8080" # Phase 2: side by side with ollama; becomes 11434 at cutover
+      - "11434:11434" # same host and in-network port as Ollama had, so clients keep their URL
     volumes:
       - $HOME/llm/models:/models:ro,Z
       - $HOME/llm/llama-cache:/cache:Z
       - ./llama-swap:/config:ro,Z # a directory, not the file: editors replace the inode, a file mount would go stale
     networks:
-      - ollama
+      ollama:
+        aliases:
+          - ollama # docling-proxy and other in-network clients keep resolving http://ollama:11434
     devices:
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd
     group_add:
       - "983" # video (host gid; names don't exist in the image)
       - "987" # render
+    healthcheck: # the image probes :8080, but llama-swap listens on :11434 here
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/health || exit 1"]
+      interval: 30s
+      timeout: 5s
     restart: always
 
   #docling:

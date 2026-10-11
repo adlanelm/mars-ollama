@@ -21,7 +21,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 |---|---|
 | See available models | `curl -s localhost:11435/v1/models \| jq '.data[].id'` |
 | See what's loaded | `curl -s localhost:11435/running` (`:11434` after cutover) |
-| Download a new model (the `ollama pull` replacement) | `bin/llm-pull add <org>/<repo>-GGUF <QUANT>`, paste the printed snippet into `llama-swap/config.yaml`, then save (`-watch-config` reloads it; or `docker compose restart llama-swap`) ([model-downloads.md](model-downloads.md)) |
+| Download a new model (the `ollama pull` replacement) | `bin/llm-pull add <org>/<repo>-GGUF <QUANT>`, paste the printed snippet into `llama-swap/config.yaml`, then `docker compose restart llama-swap` ([model-downloads.md](model-downloads.md)) |
 | Try a model quickly | Add a config entry with `llama-server -hf <repo>:<quant>` ([model-downloads.md](model-downloads.md#tier-2)) |
 | Check for updated GGUFs | `bin/llm-pull outdated` |
 | Switch chat models | Just request the other model id. llama-swap unloads the current one |

@@ -4,7 +4,7 @@
 
 healthCheckTimeout: 600 # cold load of a 20 GB model from disk
 logLevel: info
-logToStdout: "proxy,upstream" # upstream = llama-server logs (fit/offload decisions) in `docker logs`
+logToStdout: "proxy,upstream,http" # upstream = llama-server logs (fit/offload decisions); http = access log
 startPort: 10001
 sendLoadingState: false # would inject loading text into reasoning_content (docling, scripts)
 includeAliasesInList: false
@@ -19,9 +19,9 @@ macros:
   # MoE models: physical cores (6-12 threads measured equal); ub 2048 = +40% prompt speed (bench/qwen3.6-sweep.md)
   moe_common: >-
     -t 8 -tb 8 -ub 2048 -b 2048
-  # CPU-resident aux models (embedders, reranker)
+  # CPU-resident embedders; -t 8: bulk indexing (document upload) is CPU-bound and rarely overlaps generation
   aux_common: >-
-    -dev none -ngl 0 -c 8192 -b 8192 -ub 8192 -t 4 -cram 0 --no-webui
+    -dev none -ngl 0 -c 8192 -b 8192 -ub 8192 -t 8 -cram 0 --no-webui
 
 models:
   # ── Chat group (GPU, one at a time) ────────────────────────────

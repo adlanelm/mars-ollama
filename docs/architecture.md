@@ -89,7 +89,7 @@ Qwen3.8 KV note: 32k is about 1.06 GiB and 64k about 2.1 GiB. The 48k entry gets
 | `~/llm/models` (mounted `/models:ro`) | GGUF files managed by `llm-pull` (about 60 GB) |
 | `~/llm/llama-cache` (mounted `/cache`, `LLAMA_CACHE=/cache`, env name confirmed) | Tier 2 `-hf` experiments, read-write |
 | `~/llm/colibri` | colibri binary and big-model dir |
-| `./llama-swap/` (the **directory**, mounted `/config:ro`; entrypoint `-config /config/config.yaml -watch-config`) | llama-swap config. A directory, because a single-file mount goes stale when an editor replaces the inode |
+| `./llama-swap/` (the **directory**, mounted `/config:ro`; entrypoint `-config /config/config.yaml -listen :11434`, no hot reload) | llama-swap config. A directory, because a single-file mount goes stale when an editor replaces the inode |
 | `./llama-swap/models.lock.yaml` | Model manifest: pinned revision (commit SHA), files, aliases. Committed to git |
 | `bin/llm-pull` | Downloader. Spec: [model-downloads.md](model-downloads.md) |
 | `bin/gpu-mode` | GPU switching. Spec: [gpu-switching.md](gpu-switching.md) |

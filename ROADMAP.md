@@ -12,7 +12,7 @@ Background docs: [docs/README.md](docs/README.md).
 | 1 | `llm-pull` + model manifest; download the target models | No (disk only) | **Done** 2026-10-11 |
 | 2 | llama-swap running side by side on `:11435` | Adds a container | **Done** 2026-10-11 |
 | 3 | Validation and tuning | No | **Done** 2026-10-11 |
-| 4 | Cutover on `:11434` + client reconfiguration | **Yes** | Pending |
+| 4 | Cutover on `:11434` + client reconfiguration | **Yes** | Done 2026-10-11 (Page Assist pending) |
 | 5 | Cleanup of Ollama data | Deletes data | Pending |
 | 6 | `gpu-mode` + ComfyUI | Adds a container | Pending (`bin/gpu-mode` exists, no `comfyui` service yet) |
 | 7 | Colibri big-model tier | Adds a model entry | Pending |
@@ -105,7 +105,7 @@ Background docs: [docs/README.md](docs/README.md).
 **Tasks**
 1. Create `llama-swap/config.yaml` (live file; explained in the doc).
 2. **Add the `llama-swap` service** to `docker-compose.yaml` with **host port `11435:8080` for now**. Use no `ollama` network alias yet, so docling-proxy still reaches the real Ollama.
-3. **Pin the image to a version tag:** `ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541`. Resolved: it bundles `llama-server` (llama.cpp build 11541). The entrypoint is overridden to `-config /config/config.yaml -watch-config` and the `llama-swap/` directory is mounted at `/config`.
+3. **Pin the image to a version tag:** `ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541`. Resolved: it bundles `llama-server` (llama.cpp build 11541). The entrypoint is overridden to `-config /config/config.yaml -listen :11434` (hot reload removed after it caused 502s; apply edits with `docker compose restart llama-swap`) and the `llama-swap/` directory is mounted at `/config`.
 4. **Check the Vulkan device order:**
    ```bash
    docker compose run --rm --entrypoint llama-server llama-swap --list-devices
@@ -194,6 +194,8 @@ Background docs: [docs/README.md](docs/README.md).
 - **RAG:** a RAG query on an existing knowledge base returns cited chunks, and reranking is active.
 - **Docling:** converting a PDF with images produces picture descriptions.
 - **Page Assist:** chat works.
+
+**Done (2026-10-11):** llama-swap serves `:11434` (host and in-network alias `ollama:11434`); the Ollama container was removed (`profiles: ["legacy"]`, data kept). Open WebUI chat/RAG/uploads, docling (both pipelines) and opencode verified; Page Assist pending. Results and incidents: [bench/llama-swap-results.md](bench/llama-swap-results.md#phase-4-cutover-2026-10-11). RAG rerank tuning deferred.
 
 **Rollback** (about 1 minute):
 ```bash

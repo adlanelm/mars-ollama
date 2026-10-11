@@ -60,3 +60,17 @@ Raw outputs: `ollama-baseline.txt`, `qwen3.6-sweep.md`, `smoke-1.txt`, `smoke-gr
 - MTP speculative decoding (Gemma 4 MTP draft) — skipped, Vulkan bug reports; revisit later.
 - ROCm image vs Vulkan comparison.
 - `-ctxcp` RAM cost per checkpoint — not isolated; total RAM stays well within budget.
+
+## Phase 4 cutover (2026-10-11)
+
+| Client | Result |
+|---|---|
+| Open WebUI (jupiter, k3s) chat | OpenAI connection `http://mars.internal:11434/v1`; chats on qwen3.8-27b and gemma4-26b, swaps work. Base URL without `/v1` lists models (`/models` works) but chat/embeddings 404 |
+| Open WebUI RAG | query embeddings 30–45 ms; rerank 200 but 14–17 s per query: 3 concurrent requests × ~60 chunks × ~1,400 tokens ≈ 280k tokens. Tune Top K / Top K Reranker / chunk size (deferred) |
+| Open WebUI document upload | ~150 chunks embedded; 71 s with `-t 4`, ~25 s expected with `-t 8` (48 chunks in 7.8 s) |
+| docling-proxy, standard pipeline + `picture_description_api` → granite-vision | success, 27 s, table + picture description |
+| docling-proxy, VLM pipeline → granite-docling (`response_format: doctags`) | success, 4 s; trailing `<\|end_of_text\|>` is handled |
+| opencode (`ollama/qwen3.6-35b-a3b`) | works; config updated to new ids and real context limits |
+| Page Assist | pending (user) |
+
+Incidents: config hot reload (`-watch-config`) restarted models under load: a port-bind race left snowflake down, and a second reload killed it mid-request (Open WebUI embedding 502s). Hot reload removed; apply edits with `docker compose restart llama-swap`.

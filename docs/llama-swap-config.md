@@ -71,7 +71,7 @@ The live file is [`docker-compose.yaml`](../docker-compose.yaml), service `llama
 | Setting | Value | Why |
 |---|---|---|
 | `image` | `ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541` | Pinned. Bundles `llama-server` (llama.cpp build 11541, Vulkan, RADV NAVI32). Resolved: llama-server is bundled at this tag |
-| `entrypoint` | `["/app/llama-swap", "-config", "/config/config.yaml", "-watch-config"]` | Overrides the image default so the config lives under `/config` and is reloaded on change |
+| `entrypoint` | `["/app/llama-swap", "-config", "/config/config.yaml", "-listen", ":11434"]` (no `-watch-config`, see below) | Overrides the image default so the config lives under `/config` and is reloaded on change |
 | volume `./llama-swap:/config:ro,Z` | the **directory**, not the file | A single-file bind mount points at an inode. Editors replace the file with a new inode, so the container keeps seeing the old, stale content. A directory mount follows the file name |
 | `GGML_VK_VISIBLE_DEVICES=0` | | Resolved: `Vulkan0` is the RX 7800 XT, `Vulkan1` the 610M iGPU. Never select 1 |
 | `LLAMA_CACHE=/cache` | | Confirmed env name; only used by `-hf` experiments |
@@ -110,7 +110,7 @@ The Qwen3.8 upgrade from the plan applies only if the monitor is moved to the iG
 1. Download it: `llm-pull add <repo> <quant>` (see [model-downloads.md](model-downloads.md)). It prints a ready snippet and pins the revision in `models.lock.yaml`.
 2. Add an entry under `models:` with `cmd: llama-server --port ${PORT} -m /models/<org>/<repo>/<file> ...`, using the macros, `aliases` and `ttl`.
 3. Add it to the `chat` group `members`, or to `aux` plus the preload list (small model).
-4. `-watch-config` reloads the file; check `curl -s localhost:11435/v1/models | jq '.data[].id'` (`:11434` after cutover).
+4. Run `docker compose restart llama-swap`, then check `curl -s localhost:11435/v1/models | jq '.data[].id'` (`:11434` after cutover).
 5. For a quick experiment, use `-hf unsloth/<Model>-GGUF:<QUANT>` in `cmd` (downloads into `/cache`). After the first load add `--offline`.
 
 ### API endpoints (port 11435 now, 11434 after cutover)
@@ -126,3 +126,10 @@ The Qwen3.8 upgrade from the plan applies only if the monitor is moved to the iG
 ## Sources
 - https://github.com/mostlygeek/llama-swap
 - [bench/llama-swap-results.md](../bench/llama-swap-results.md)
+
+### Applying config changes: restart, no hot reload
+`-watch-config` was removed from the entrypoint on 2026-10-11. A reload restarts the running models, and under live traffic that caused two failures:
+- the restarted process tried to bind its port while the old one still held it (`couldn't bind HTTP server socket`), so the model stayed down;
+- a second reload killed snowflake mid-request, and Open WebUI's queued embedding requests got 502s.
+
+Apply edits to `llama-swap/config.yaml` with `docker compose restart llama-swap`, when no client is busy (`curl -s localhost:11434/running`).

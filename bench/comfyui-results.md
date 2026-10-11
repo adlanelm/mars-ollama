@@ -42,3 +42,24 @@ Peak VRAM is `mem_info_vram_used` for the whole card (includes torch cache, desk
 - PSX style LoRA (Civitai): skipped by choice (2026-10-11). The PS1 look comes from the Unity PSX layer; a LoRA would only restyle concept art. Optional later: own style LoRA.
 - Qwen-Image-Edit-2511 GGUF and its text encoder are downloaded but not speed-tested (ComfyUI-GGUF loads in the log).
 - `gpu-mode llm` freed VRAM without `--stop`; `--stop` also works and was used at the end.
+
+## Krea 2 steps/resolution sweep (2026-10-11)
+
+Krea 2 Turbo fp8 (`krea2_turbo.json`: euler, simple, cfg 1, same model files), 12 synthetic game-asset prompts (`comfyui/sweeps/krea_prompts.txt`) x 2 seeds (1234, 5678) x 4 variants = 96 images, plus one discarded warm-up (54 s). Run with `bin/comfy-sweep run`, grouped by variant, prompt-major (the second seed of a prompt reuses the cached text conditioning; same order for every variant). GPU time about 49 min. Nothing else heavy was running (colibri unloaded by `gpu-mode comfy`).
+
+| Variant | Settings | s/image mean (min-max) | New prompt | Same prompt, next seed | Peak VRAM (card) | Peak host RAM used | Peak container RSS |
+|---|---|---|---|---|---|---|---|
+| s8-1024 (baseline) | 8 steps, 1024x1024 | **39.1** (37.2-41.4) | 40.1 | 38.2 | 15.9 GiB | 17.5 GiB | 16.4 GiB* |
+| s6-1024 | 6 steps, 1024x1024 | **29.1** (28.0-30.4) | 29.9 | 28.4 | 15.8 GiB | 18.5 GiB | 16.4 GiB* |
+| s4-1024 | 4 steps, 1024x1024 | **20.0** (19.1-21.1) | 20.7 | 19.3 | 15.8 GiB | 18.6 GiB | 9.9 GiB |
+| s8-896 | 8 steps, 896x896 | **29.9** (28.6-30.9) | 30.7 | 29.1 | 15.6 GiB | 18.1 GiB | 9.9 GiB |
+
+Wall clock per image (submit to saved file). VRAM is whole-card `mem_info_vram_used` (includes desktop and the aux reranker). Host RAM is MemTotal - MemAvailable for the whole machine. Container RSS from `docker stats` (1 s samples); *the 16.4 GiB in the first two variants is the model-load peak carried over from the start of the run, later variants show the steady state of about 10 GiB.
+
+Memory: the step count does not change VRAM or RAM (same weights, same activations per step); time scales almost linearly at about 4.8 s per step plus about 1 s fixed. 896x896 lowers activation memory and time per step (about 3.7 s vs 4.8 s at 1024), so 8 steps at 896 costs about the same as 6 steps at 1024. All variants keep the card full because ComfyUI keeps the 12.5 GB model resident.
+
+Finding: every image (also at 896) logs a HIP OOM at VAEDecode (`trying to allocate 3.4 GiB`, about 2.1 GiB free) and ComfyUI recovers (its VAE decode retries tiled on OOM); every image still succeeded. Avoiding the failed first attempt (e.g. a tiled VAE decode node) might save a little time per image (not tried).
+
+**Contact sheet:** `xdg-open ~/llm/comfyui/output/krea-sweep/index.html` (or `file:///home/adlan/llm/comfyui/output/krea-sweep/index.html`). Blind mode is on by default (columns shuffled per row with a fixed seed, labelled A-D, "Reveal" shows the variants); a PS1 preview toggle shows 256 px / RGB555 Bayer dither / 64-colour versions (`comfyui/sweeps/ps1_preview.py`, run with `uvx --with pillow`); picks are kept in localStorage and "Export picks" downloads a JSON with the letter-to-variant mapping. Rebuild with `bin/comfy-sweep sheet`. Raw numbers: `results.json` in the same directory.
+
+Quality verdict: open; the user judges the images. No quality conclusion is drawn here.

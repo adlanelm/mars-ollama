@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""comfy-sweep: run a prompt x seed x variant matrix of one API-format workflow against a running ComfyUI,
+time every image, and build a blind contact sheet. stdlib only.
+
+usage:
+  comfy-sweep run   [--workflow krea2_turbo] [--prompts comfyui/sweeps/krea_prompts.txt] [--seeds 1234,5678]
+                    [--variant NAME:steps=N[,w=W,h=H]] ... [--name krea-sweep]
+  comfy-sweep sheet [--name krea-sweep]      (re)build <output>/<name>/index.html from results.json
+
+Images land in $COMFY_OUTPUT/<name>/<variant>/<promptidx>_<seed>.png (COMFY_OUTPUT defaults to ~/llm/comfyui/output,
+the host side of the container's /opt/ComfyUI/output). One warm-up image runs first and is discarded. Jobs run grouped by
+variant, prompt-major, so the second seed of each prompt reuses the cached text conditioning (same for every variant).
+results.json is rewritten after every image; a rerun skips images that already exist.
+PS1-style previews are made by comfyui/sweeps/ps1_preview.py (needs Pillow, run via uvx)."""
+import argparse, html, json, os, pathlib, random, re, subprocess, sys, threading, time, urllib.request
+
+URL = os.environ.get("COMFY_URL", "http://localhost:8188")
+CARD = os.environ.get("GPU_CARD", "/sys/class/drm/card1/device")
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+OUT = pathlib.Path(os.environ.get("COMFY_OUTPUT", pathlib.Path.home() / "llm/comfyui/output"))
+CONTAINER = os.environ.get("COMFY_CONTAINER", "comfyui")
+DEFAULT_VARIANTS = ["s8-1024:steps=8", "s6-1024:steps=6", "s4-1024:steps=4", "s8-896:steps=8,w=896,h=896"]
+GIB = 2**30
+
+
+def call(p, data=None):
+    req = urllib.request.Request(URL + p, json.dumps(data).encode() if data is not None else None,
+                                 {"Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req))
+
+
+def vram_bytes(): return int(open(f"{CARD}/mem_info_vram_used").read())
+
+
+def host_used_bytes():
+    m = {l.split(":")[0]: int(l.split()[1]) * 1024 for l in open("/proc/meminfo")}
+    return m["MemTotal"] - m["MemAvailable"]
+
+
+UNITS = {"B": 1, "KiB": 2**10, "MiB": 2**20, "GiB": 2**30, "kB": 1e3, "MB": 1e6, "GB": 1e9}
+
+
+def container_bytes():
+    try:
+        s = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", CONTAINER],
+                           capture_output=True, text=True, timeout=10).stdout.split("/")[0].strip()
+        m = re.match(r"([\d.]+)\s*([A-Za-z]+)", s)
+        return int(float(m[1]) * UNITS[m[2]]) if m else 0
+    except Exception:
+        return 0
+
+
+class Sampler:
+    """Background peaks: VRAM (sysfs, whole card) every 0.2 s, host RAM used every 0.2 s, container RSS every ~2 s."""
+    def __init__(self):
+        self.reset(); self.stop = False
+        threading.Thread(target=self._fast, daemon=True).start()
+        threading.Thread(target=self._slow, daemon=True).start()
+    def reset(self): self.vram = self.host = self.ctr = 0
+    def _fast(self):
+        while not self.stop:
+            self.vram = max(self.vram, vram_bytes()); self.host = max(self.host, host_used_bytes()); time.sleep(0.2)
+    def _slow(self):
+        while not self.stop:
+            self.ctr = max(self.ctr, container_bytes()); time.sleep(1)
+
+
+def read_prompts(path):
+    out = []
+    for line in pathlib.Path(path).read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            pid, _, text = line.partition("|")
+            out.append({"id": pid.strip(), "text": text.strip()})
+    return out
+
+
+def parse_variant(s):
+    name, _, kv = s.partition(":")
+    v = {"name": name, "steps": None, "w": None, "h": None}
+    for part in filter(None, kv.split(",")):
+        k, _, val = part.partition("="); v[k.strip()] = int(val)
+    return v
+
+
+def build(g, prompt, seed, v, prefix):
+    g = json.loads(json.dumps(g))
+    for n in g.values():
+        ct, inp = n["class_type"], n["inputs"]
+        if ct == "CLIPTextEncode" and isinstance(inp.get("text"), str): inp["text"] = prompt
+        for k in ("seed", "noise_seed"):
+            if k in inp: inp[k] = seed
+        if v["steps"] and "steps" in inp: inp["steps"] = v["steps"]
+        if ct in ("EmptyLatentImage", "EmptySD3LatentImage", "EmptyHunyuanLatentVideo") or ct.startswith("Empty"):
+            if v["w"] and "width" in inp: inp["width"] = v["w"]
+            if v["h"] and "height" in inp: inp["height"] = v["h"]
+        if ct == "SaveImage": inp["filename_prefix"] = prefix
+    return g
+
+
+def submit(g):
+    t = time.time(); pid = call("/prompt", {"prompt": g})["prompt_id"]
+    while True:
+        h = call(f"/history/{pid}")
+        if pid in h:
+            dt = time.time() - t; st = h[pid]["status"]
+            if st["status_str"] != "success": sys.exit(f"failed: {json.dumps(st)[:800]}")
+            imgs = [i for o in h[pid]["outputs"].values() for i in o.get("images", [])]
+            return dt, imgs
+        time.sleep(0.1)
+
+
+def stats(xs):
+    return {"n": len(xs), "mean": sum(xs) / len(xs), "min": min(xs), "max": max(xs)} if xs else None
+
+
+def cmd_run(a):
+    wf = json.loads((ROOT / "comfyui/workflows" / f"{a.workflow}.json").read_text())
+    prompts = read_prompts(a.prompts); seeds = [int(s) for s in a.seeds.split(",")]
+    variants = [parse_variant(s) for s in (a.variant or DEFAULT_VARIANTS)]
+    base = OUT / a.name; base.mkdir(parents=True, exist_ok=True); rj = base / "results.json"
+    res = json.loads(rj.read_text()) if rj.exists() else {}
+    res.update({"workflow": a.workflow, "date": time.strftime("%Y-%m-%d"), "seeds": seeds, "prompts": prompts,
+                "variants": variants, "baseline": {"vram": vram_bytes(), "host_used": host_used_bytes()}})
+    res.setdefault("images", {}); res.setdefault("peaks", {})
+    total = len(prompts) * len(seeds) * len(variants); done = 0; t0 = time.time()
+    smp = Sampler()
+
+    def save(): rj.write_text(json.dumps(res, indent=1))
+
+    def one(v, pi, seed, sub, fname):
+        prefix = f"{a.name}/{sub}/{fname}"
+        dt, imgs = submit(build(wf, prompts[pi]["text"], seed, v, prefix))
+        src = OUT / imgs[0].get("subfolder", "") / imgs[0]["filename"]; dst = base / sub / f"{fname}.png"
+        src.replace(dst)
+        return dt
+
+    if any(f"{v['name']}/{pi:02d}_{s}" not in res["images"] for v in variants for pi in range(len(prompts)) for s in seeds):
+        (base / "warmup").mkdir(exist_ok=True)
+        dt = one(variants[0], 0, 1, "warmup", "warmup"); res["warmup_s"] = dt
+        print(f"warm-up {dt:.1f}s (discarded)", flush=True); save()
+    for v in variants:
+        (base / v["name"]).mkdir(exist_ok=True); smp.reset()
+        for pi in range(len(prompts)):
+            for si, seed in enumerate(seeds):
+                key = f"{v['name']}/{pi:02d}_{seed}"; done += 1
+                if key in res["images"] and (base / f"{key}.png").exists(): continue
+                dt = one(v, pi, seed, v["name"], f"{pi:02d}_{seed}")
+                res["images"][key] = {"variant": v["name"], "prompt": pi, "seed": seed, "seconds": round(dt, 2),
+                                      "cond_cached": si > 0}
+                el = time.time() - t0
+                print(f"[{done}/{total}] {key} {dt:.1f}s  vram {smp.vram/GIB:.1f}G host {smp.host/GIB:.1f}G "
+                      f"ctr {smp.ctr/GIB:.1f}G  elapsed {el/60:.1f} min", flush=True)
+                res["peaks"][v["name"]] = {"vram": max(smp.vram, res["peaks"].get(v["name"], {}).get("vram", 0)),
+                                           "host_used": max(smp.host, res["peaks"].get(v["name"], {}).get("host_used", 0)),
+                                           "container": max(smp.ctr, res["peaks"].get(v["name"], {}).get("container", 0))}
+                summarize(res); save()
+    smp.stop = True; summarize(res); save(); print_table(res)
+
+
+def summarize(res):
+    s = {}
+    for v in res["variants"]:
+        ims = [i for i in res["images"].values() if i["variant"] == v["name"]]
+        s[v["name"]] = {"all": stats([i["seconds"] for i in ims]),
+                        "first_seed": stats([i["seconds"] for i in ims if not i["cond_cached"]]),
+                        "other_seeds": stats([i["seconds"] for i in ims if i["cond_cached"]]),
+                        **res["peaks"].get(v["name"], {})}
+    res["summary"] = s
+
+
+def vdesc(v):
+    w, h = v.get("w") or 1024, v.get("h") or 1024
+    return f"{v.get('steps') or 8} steps, {w}x{h}"
+
+
+def table_rows(res):
+    rows = []
+    for v in res["variants"]:
+        s = res["summary"].get(v["name"]) or {}
+        if not s.get("all"): continue
+        a, f, o = s["all"], s.get("first_seed"), s.get("other_seeds")
+        rows.append([v["name"], vdesc(v), f"{a['mean']:.1f} ({a['min']:.1f}-{a['max']:.1f})",
+                     f"{f['mean']:.1f}" if f else "-", f"{o['mean']:.1f}" if o else "-",
+                     f"{s.get('vram', 0)/GIB:.1f}", f"{s.get('host_used', 0)/GIB:.1f}", f"{s.get('container', 0)/GIB:.1f}",
+                     str(a["n"])])
+    return rows
+
+
+HEAD = ["variant", "settings", "s/image mean (min-max)", "new prompt", "same prompt, next seed",
+        "peak VRAM GiB (card)", "peak host RAM used GiB", "peak container GiB", "images"]
+
+
+def print_table(res):
+    print("| " + " | ".join(HEAD) + " |\n|" + "---|" * len(HEAD))
+    for r in table_rows(res): print("| " + " | ".join(r) + " |")
+
+
+def cmd_sheet(a):
+    base = OUT / a.name; res = json.loads((base / "results.json").read_text())
+    summarize(res)
+    variants = [v["name"] for v in res["variants"]]
+    rng = random.Random(a.shuffle_seed); rows = []
+    for pi, p in enumerate(res["prompts"]):
+        for seed in res["seeds"]:
+            cells = {}
+            for v in variants:
+                key = f"{v}/{pi:02d}_{seed}"
+                if key in res["images"]:
+                    cells[v] = {"full": f"{key}.png", "ps1": f"{key}_ps1.png", "s": res["images"][key]["seconds"]}
+            if not cells: continue
+            order = list(cells); rng.shuffle(order)
+            rows.append({"id": f"{pi:02d}_{seed}", "pid": p["id"], "prompt": p["text"], "seed": seed,
+                         "cells": cells, "blind": order})
+    data = {"variants": variants, "vdesc": {v["name"]: vdesc(v) for v in res["variants"]}, "rows": rows,
+            "key": f"comfy-sweep-picks:{a.name}"}
+    trs = "".join("<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in r) + "</tr>" for r in table_rows(res))
+    page = PAGE.replace("__TITLE__", html.escape(f"{a.name} sheet")).replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
+    page = page.replace("__HEAD__", "".join(f"<th>{html.escape(h)}</th>" for h in HEAD)).replace("__ROWS__", trs)
+    page = page.replace("__META__", html.escape(
+        f"{res['workflow']} · {len(rows)} rows · {sum(len(r['cells']) for r in rows)} images · seeds {', '.join(map(str, res['seeds']))}"
+        f" · warm-up {res.get('warmup_s', 0):.0f} s (discarded) · run {res.get('date', '')}"))
+    (base / "index.html").write_text(page); print(base / "index.html")
+
+
+PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title><style>
+:root{--bg:#0d0e10;--panel:#17191c;--line:#2a2d32;--text:#d9dce0;--muted:#8a9099;--accent:#c8423a;--pick:#3a8f5c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,sans-serif;padding:16px}
+h1{font-size:18px;margin:0 0 4px}.meta{color:var(--muted);font-size:12px;margin-bottom:12px}
+.stats{overflow-x:auto;margin-bottom:12px}table.t{border-collapse:collapse;font-size:12px;white-space:nowrap}
+table.t th,table.t td{border:1px solid var(--line);padding:4px 8px;text-align:right}table.t th{background:var(--panel);color:var(--muted);font-weight:500}
+table.t td:first-child,table.t td:nth-child(2){text-align:left}
+.note{color:var(--muted);font-size:12px;margin:4px 0 12px;max-width:900px}
+.bar{position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 0;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,label.tg{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--muted)}#tally{color:var(--muted);font-size:12px}
+.row{margin:16px 0;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.ph{font-size:12px;color:var(--muted);margin-bottom:6px}.ph b{color:var(--text)}
+.grid{display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));gap:8px}
+@media (max-width:700px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.cell{background:var(--panel);border:2px solid transparent;border-radius:6px;padding:6px}.cell.picked{border-color:var(--pick)}
+.cell img{width:100%;aspect-ratio:1;object-fit:contain;display:block;background:#000;cursor:zoom-in;image-rendering:auto}
+body.ps1 .cell img,#lb img.ps1{image-rendering:pixelated}
+.cap{display:flex;justify-content:space-between;align-items:center;margin-top:4px;font-size:13px}
+.cap .lab{font-weight:600}.cap .v{color:var(--accent);font-size:12px}.cap label{cursor:pointer;color:var(--muted)}
+#lb{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;align-items:center;justify-content:center;z-index:10;cursor:zoom-out;flex-direction:column}
+#lb img{max-width:96vw;max-height:90vh;width:min(96vw,90vh);height:auto;object-fit:contain}#lb div{color:var(--muted);margin-top:6px;font-size:12px}
+</style></head><body>
+<h1>__TITLE__</h1><div class="meta">__META__</div>
+<div class="stats"><table class="t"><tr>__HEAD__</tr>__ROWS__</table></div>
+<div class="note">Timing is wall clock per image from submit to saved file, whole-card VRAM from sysfs (includes desktop and the aux reranker), host RAM = MemTotal - MemAvailable for the whole machine. "same prompt, next seed" reuses the cached text conditioning. In blind mode the columns are shuffled per row (fixed seed) and labelled A-D; this table does not tell you which column is which. Quality is your call.</div>
+<div class="bar"><label class="tg"><input type="checkbox" id="blind" checked> Blind</label>
+<button id="reveal">Reveal</button><label class="tg"><input type="checkbox" id="ps1"> PS1 preview (256 px, 64 colours, x2)</label>
+<button id="export">Export picks</button><button id="clear">Clear picks</button><span id="tally"></span></div>
+<div id="rows"></div><div id="lb"><img alt=""><div></div></div>
+<script>
+const D=__DATA__,L="ABCDEFGHIJ";let revealed=false,picks={};
+try{picks=JSON.parse(localStorage.getItem(D.key)||"{}")}catch(e){}
+const $=s=>document.querySelector(s),blindOn=()=>$("#blind").checked,ps1=()=>$("#ps1").checked;
+function save(){try{localStorage.setItem(D.key,JSON.stringify(picks))}catch(e){}tally()}
+function order(r){return blindOn()?r.blind:D.variants.filter(v=>r.cells[v])}
+function render(){const box=$("#rows");box.innerHTML="";document.body.classList.toggle("ps1",ps1());
+ for(const r of D.rows){const o=order(r),d=document.createElement("div");d.className="row";
+  d.innerHTML=`<div class="ph"><b>${r.pid}</b> · seed ${r.seed} — ${r.prompt.replace(/</g,"&lt;")}</div>`;
+  const g=document.createElement("div");g.className="grid";g.style.setProperty("--n",o.length);
+  o.forEach((v,i)=>{const c=r.cells[v],lab=blindOn()?L[r.blind.indexOf(v)]:v,showV=!blindOn()||revealed;
+   const el=document.createElement("div");el.className="cell"+(picks[r.id]===v?" picked":"");
+   el.innerHTML=`<img loading="lazy" src="${ps1()?c.ps1:c.full}" alt="${lab}"><div class="cap"><span><span class="lab">${lab}</span>${blindOn()&&revealed?` <span class="v">${v}</span>`:""}${showV?` <span class="v">${D.vdesc[v]} · ${c.s.toFixed(1)} s</span>`:""}</span><label><input type="radio" name="p${r.id}" ${picks[r.id]===v?"checked":""}> pick</label></div>`;
+   el.querySelector("img").onclick=()=>{const lb=$("#lb"),im=lb.querySelector("img");im.src=ps1()?c.ps1:c.full;im.className=ps1()?"ps1":"";
+    lb.querySelector("div").textContent=`${r.pid} · seed ${r.seed} · ${lab}${showV&&blindOn()?" = "+v:""}`;lb.style.display="flex"};
+   el.querySelector("input").onchange=()=>{picks[r.id]=v;save();render()};g.appendChild(el)});
+  d.appendChild(g);box.appendChild(d)}tally()}
+function tally(){const n=Object.keys(picks).length;let t=`${n}/${D.rows.length} rows picked`;
+ if(revealed||!blindOn()){const c={};Object.values(picks).forEach(v=>c[v]=(c[v]||0)+1);t+=" · "+D.variants.map(v=>`${v}: ${c[v]||0}`).join(", ")}$("#tally").textContent=t}
+$("#blind").onchange=render;$("#ps1").onchange=render;
+$("#reveal").onclick=()=>{revealed=!revealed;$("#reveal").textContent=revealed?"Hide":"Reveal";render()};
+$("#lb").onclick=()=>$("#lb").style.display="none";document.onkeydown=e=>{if(e.key==="Escape")$("#lb").style.display="none"};
+$("#clear").onclick=()=>{if(confirm("Clear all picks?")){picks={};save();render()}};
+$("#export").onclick=()=>{const rows=D.rows.map(r=>({row:r.id,prompt_id:r.pid,seed:r.seed,
+  pick_letter:picks[r.id]?L[r.blind.indexOf(picks[r.id])]:null,pick_variant:picks[r.id]||null,
+  mapping:Object.fromEntries(r.blind.map((v,i)=>[L[i],v]))}));
+ const counts={};D.variants.forEach(v=>counts[v]=0);rows.forEach(x=>{if(x.pick_variant)counts[x.pick_variant]++});
+ const csv=["row,prompt_id,seed,pick_letter,pick_variant,"+r0(),...rows.map(x=>[x.row,x.prompt_id,x.seed,x.pick_letter||"",x.pick_variant||"",...Object.values(x.mapping)].join(","))].join("\n");
+ function r0(){return D.rows[0].blind.map((_,i)=>"col_"+L[i]).join(",")}
+ const blob=new Blob([JSON.stringify({exported:new Date().toISOString(),variants:D.vdesc,counts,rows,csv},null,1)],{type:"application/json"});
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="picks.json";a.click()};
+render();
+</script></body></html>"""
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    r = sp.add_parser("run"); r.add_argument("--workflow", default="krea2_turbo")
+    r.add_argument("--prompts", default=str(ROOT / "comfyui/sweeps/krea_prompts.txt"))
+    r.add_argument("--seeds", default="1234,5678"); r.add_argument("--variant", action="append")
+    r.add_argument("--name", default="krea-sweep")
+    s = sp.add_parser("sheet"); s.add_argument("--name", default="krea-sweep"); s.add_argument("--shuffle-seed", type=int, default=20261011)
+    a = ap.parse_args(); (cmd_run if a.cmd == "run" else cmd_sheet)(a)
+
+
+if __name__ == "__main__":
+    main()

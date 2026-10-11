@@ -97,6 +97,32 @@ services:
       - ${HOME}/llm/comfyui/user:/opt/ComfyUI/user
     restart: "no" # gpu-mode starts and stops it
 
+  # TRELLIS.2 image -> textured .glb (docs/trellis.md). Separate image/tag so the Krita ComfyUI stays untouched.
+  # Exclusive GPU use: `bin/gpu-mode llm --stop` first; `docker compose --profile trellis up -d comfyui-trellis`.
+  comfyui-trellis:
+    profiles: ["trellis"]
+    build: ./trellis
+    image: comfyui-trellis2-rocm:0.39.0-b3b9e95
+    container_name: comfyui-trellis
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "983" # video
+      - "987" # render
+    ipc: host
+    security_opt:
+      - seccomp=unconfined
+    ports:
+      - "127.0.0.1:8189:8188"
+    volumes:
+      - ${HOME}/llm/trellis/models/Trellis2:/opt/ComfyUI/models/Trellis2
+      - ${HOME}/llm/trellis/in:/opt/ComfyUI/input
+      - ${HOME}/llm/trellis/out:/opt/ComfyUI/output
+      - ${HOME}/llm/trellis/user:/opt/ComfyUI/user
+      - ${HOME}/llm/trellis/cache:/cache # u2net (rembg), Triton JIT cache, HF cache
+    restart: "no"
+
   #docling:
   #  image: ghcr.io/docling-project/docling-serve-rocm:main
   #  container_name: docling

@@ -65,7 +65,7 @@ Roles:
 
 ## B3. Image → 3D
 
-1. **TRELLIS.2** (MIT) at 512³ via the ROCm ports (`toastmanAu/trellis-2-rocm-comfyui`, `steelxt/comfyui-trellis2-gguf-rocm`), with arch set to gfx1101, in docker.
+1. **TRELLIS.2** (MIT) at 512³ via the ROCm ports (`toastmanAu/trellis-2-rocm-comfyui`, `steelxt/comfyui-trellis2-gguf-rocm`), with arch set to gfx1101, in docker. *Status 2026-10-11: works — image → textured .glb in ~67 s warm / 133 s cold at 512, 4.7 GiB VRAM peak, in `comfyui-trellis2-rocm:0.39.0-b3b9e95` (profile `trellis`, :8189). Licence flag: the texture bake uses nvdiffrast (NVIDIA non-commercial). See [trellis.md](trellis.md).*
 2. **Watch Pixal3D** (MIT, low-VRAM mode).
 3. **Low-poly artist meshes:** FastMesh, DeepMesh or MeshAnything V2 on a rented CUDA GPU.
 4. **Fallback:** HF Spaces.
@@ -116,7 +116,7 @@ Roles:
 1. Part A (llama-swap, see [ROADMAP.md](../ROADMAP.md)).
 2. ComfyUI container with the models and LoRAs, then a test turnaround.
 3. Krita + krita-ai-diffusion. *Status 2026-10-11: server side ready (plugin models in `comfyui/models.txt`, workload check passes for Klein 4B, Z-Image, Krea 2, Qwen Edit Plus); Krita-side steps in [krita.md](krita.md).*
-4. TRELLIS.2 ROCm: one prop end to end.
+4. TRELLIS.2 ROCm: one prop end to end. *Done 2026-10-11, see [trellis.md](trellis.md).*
 5. Blender MCP + `ps1_prep.py`.
 6. Unity project with PSX, `PsxSettings`, postprocessor, unity-mcp, git-lfs.
 7. **Vertical slice:** 1 room tileset, 3 props, 1 humanoid, 1 creature, SFX, a music loop.

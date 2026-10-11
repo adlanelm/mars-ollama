@@ -4,6 +4,8 @@ How to paint with [krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusio
 
 Server side status (checked 2026-10-11): all required custom nodes are present, and the plugin's workload check passes for **Flux 2 Klein 4B, Z-Image, Krea 2 and Qwen Edit Plus** (Qwen-Image-Edit-2511). A test graph with MAT inpaint, OmniSR upscale and `ETN_SaveImageCache` ran successfully on the GPU.
 
+User test in Krita (Flatpak 5.3.4.1, plugin 1.53.0, 2026-10-11): connected as custom server; generate with Klein, generate with Krea 2 (6 steps), inpaint with Klein, and Upscale workspace (4x NMKD Superscale, 2x, refine off) all worked. Times in the ComfyUI log: 24–54 s per generation, 123 s for the first Klein job (model load plus a VAE decode that asked for 31.6 GB and fell back to tiled decoding), 86 s for the upscale; both long ones point to a canvas well above 1024². Use a 1024×1024 document (or selection) for normal work.
+
 ## 1. Install Krita
 
 The plugin needs Krita **5.2 or newer**. Plugin 1.x is the line for Krita 5.x; 2.x will target Krita 6 ([installation docs](https://github.com/Acly/krita-ai-diffusion/blob/v1.53.0/docs/src/content/docs/installation.mdx)). So Krita **5.3.x works with v1.53.0**.

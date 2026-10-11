@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""colibri-batch: run a prompt file through a slow model (default colibri-big) one item at a time.
+
+  colibri-batch PROMPTS OUTDIR [--model colibri-big] [--max-tokens 600] [--thinking] [--system FILE]
+
+PROMPTS: one item per line, `id|prompt` (blank lines and lines starting with # are skipped).
+OUTDIR:  <id>.json (full response) and <id>.md (text) per item, plus summary.jsonl and summary.md.
+Items whose <id>.json exists are skipped, so an interrupted run can simply be restarted.
+Thinking is off by default (colibri reads top-level `enable_thinking`; Qwen3.8 otherwise thinks at xhigh).
+Live progress: bin/colibri-logs. Spec: docs/colibri.md "Batch-job pattern".
+"""
+import argparse, json, pathlib, sys, time, urllib.error, urllib.request
+
+ap = argparse.ArgumentParser()
+ap.add_argument("prompts"); ap.add_argument("outdir")
+ap.add_argument("--url", default="http://localhost:11434/v1/chat/completions")
+ap.add_argument("--model", default="colibri-big")
+ap.add_argument("--max-tokens", type=int, default=600)
+ap.add_argument("--temperature", type=float, default=0.8)
+ap.add_argument("--thinking", action="store_true", help="let the model think first (slower, more tokens)")
+ap.add_argument("--system", help="file with a system prompt shared by all items")
+ap.add_argument("--timeout", type=int, default=5400, help="seconds per item, incl. a cold model load")
+a = ap.parse_args()
+
+out = pathlib.Path(a.outdir).expanduser(); out.mkdir(parents=True, exist_ok=True)
+system = pathlib.Path(a.system).read_text().strip() if a.system else None
+items = []
+for line in pathlib.Path(a.prompts).read_text().splitlines():
+    if line.strip() and not line.lstrip().startswith("#"):
+        pid, _, prompt = line.partition("|")
+        items.append((pid.strip(), prompt.strip()))
+
+def log(msg):
+    print(time.strftime("%H:%M:%S"), msg, flush=True)
+
+start = time.time(); done = failed = 0
+for n, (pid, prompt) in enumerate(items, 1):
+    target = out / f"{pid}.json"
+    if target.exists():
+        continue
+    msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    body = {"model": a.model, "messages": msgs, "max_tokens": a.max_tokens,
+            "temperature": a.temperature, "enable_thinking": a.thinking}
+    req = urllib.request.Request(a.url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=a.timeout) as r:
+            resp = json.load(r)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        failed += 1
+        log(f"[{n}/{len(items)}] {pid} FAILED after {time.time() - t0:.0f}s: {e}")
+        with open(out / "summary.jsonl", "a") as f:
+            f.write(json.dumps({"id": pid, "error": str(e), "seconds": round(time.time() - t0, 1)}) + "\n")
+        continue
+    sec = time.time() - t0
+    msg = resp["choices"][0]["message"]
+    text = msg.get("content") or ""
+    toks = (resp.get("usage") or {}).get("completion_tokens", 0)
+    target.write_text(json.dumps(resp, ensure_ascii=False, indent=1))
+    (out / f"{pid}.md").write_text(f"<!-- {pid} | {a.model} | {toks} tok | {sec:.0f} s -->\n\n{text.strip()}\n")
+    rec = {"id": pid, "seconds": round(sec, 1), "completion_tokens": toks, "tok_s": round(toks / sec, 2) if sec else 0,
+           "finish": resp["choices"][0].get("finish_reason"), "chars": len(text), "empty": not text.strip()}
+    with open(out / "summary.jsonl", "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    done += 1
+    log(f"[{n}/{len(items)}] {pid}: {toks} tok in {sec:.0f}s ({rec['tok_s']} tok/s, {rec['finish']}){' EMPTY' if rec['empty'] else ''}")
+
+# Summary over everything in summary.jsonl (also earlier, resumed runs)
+recs = [json.loads(l) for l in (out / "summary.jsonl").read_text().splitlines()] if (out / "summary.jsonl").exists() else []
+ok = [r for r in recs if "error" not in r]
+tot_s = sum(r["seconds"] for r in ok); tot_t = sum(r["completion_tokens"] for r in ok)
+lines = ["# colibri-batch summary", "",
+         f"- model `{a.model}`, prompts `{a.prompts}`, max_tokens {a.max_tokens}, thinking {'on' if a.thinking else 'off'}",
+         f"- items ok {len(ok)} / errors {len(recs) - len(ok)} / empty answers {sum(r['empty'] for r in ok)} / cut at max_tokens {sum(r['finish'] == 'length' for r in ok)}",
+         f"- tokens {tot_t} in {tot_s / 3600:.2f} h of requests: {tot_t / tot_s if tot_s else 0:.2f} tok/s overall",
+         f"- per item: min {min((r['seconds'] for r in ok), default=0):.0f} s, max {max((r['seconds'] for r in ok), default=0):.0f} s",
+         f"- this run: {done} done, {failed} failed, wall {(time.time() - start) / 60:.0f} min"]
+(out / "summary.md").write_text("\n".join(lines) + "\n")
+print("\n".join(lines))
+sys.exit(1 if failed else 0)

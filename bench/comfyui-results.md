@@ -74,3 +74,19 @@ Finding: every image (also at 896) logs a HIP OOM at VAEDecode (`trying to alloc
 8 / 7 / 6 is within chance for 24 picks (random picking gives about 6 each); only 4 steps fell behind, weakly. By category: characters and props leaned 8 steps, textures 896² (3 of 4), the UI icon 6 steps (2 of 2).
 
 **Decision:** default `krea2_turbo.json` to **6 steps at 1024²**. That's no visible loss in the blind test, it meets the 30 s target, and 1024² is kept for textures and turnarounds. Use 8 steps for final hero renders. 8 steps at 896² costs the same time as 6 at 1024² and gains nothing.
+
+## Tiled VAE decode (2026-10-11)
+
+Question: does `VAEDecodeTiled` remove the OOM-then-retry at the end of every Krea 2 Turbo image, and is it faster? Setup: `krea2_turbo.json` (6 steps, 1024², euler/simple, cfg 1). 6 synthetic prompts (char-android, creature-flesh, prop-terminal, tex-floorplate, env-corridor, ui-icon from `krea_prompts.txt`), seed 1234. One discarded warm-up per variant. Run with `bin/comfy-sweep run --name krea-tiled --variant plain:steps=6,tile=0 | tiled-512:steps=6,tile=512,overlap=64 | tiled-768:steps=6,tile=768,overlap=64`. GPU time was about 13 min. Docling and granite-vision were idle during the runs; an earlier attempt was stopped for a PDF import and its numbers were discarded.
+
+| Variant | s/image mean (min-max) | OOM lines in log (7 images incl. warm-up) | Peak VRAM (card) | Pixel diff vs plain, mean / max (0-255) |
+|---|---|---|---|---|
+| plain `VAEDecode` | **30.1** (28.7-31.9) | 7 (every image) | 15.8 GiB | - |
+| tiled 512 / overlap 64 | 31.2 (29.4-32.5) | **0** | 15.8 GiB | 0.13 / 46 (99th percentile 1) |
+| tiled 768 / overlap 64 | 30.5 (28.1-32.3) | 7 (every image) | 15.8 GiB | 0.11 / 35 (99th percentile 1) |
+
+- Tile 512 removes the OOM. Tile 768 still tries to allocate too much and falls back exactly like plain.
+- The output is the same in practice. ComfyUI's fallback after the OOM is itself a tiled decode, so the plain images were already tiled-decoded. The difference is mostly 0-1 levels. A diff image amplified 8x only shows a faint grid along the different overlap bands (around 450-520 px and 900 px). No seams are visible in the tiled-512 images (checked tex-floorplate and env-corridor at x/y = 512).
+- Speed: the failed first attempt costs almost nothing. Tiled 512 is about 1 s/image slower (the ranges overlap; n = 6). Peak VRAM is the same: the card stays full because the 12.5 GB model stays resident.
+
+**Decision:** keep plain `VAEDecode` as the default. Tiled 512 is not faster, and the OOM line is only a harmless log warning. The generator has `KREA_VAE_TILE` (0 = plain, N = `VAEDecodeTiled` with tile size N, overlap 64). `comfy-sweep` variants accept `tile=T[,overlap=O]` (`tile=0` = plain). Switch to 512 if the OOM path ever starts failing, for example with less free VRAM or larger images. Outputs and `results.json` are in `~/llm/comfyui/output/krea-tiled/`.

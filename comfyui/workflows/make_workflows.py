@@ -5,8 +5,16 @@ out = pathlib.Path(__file__).parent
 PROMPT = "low-poly rusty maintenance robot, isometric view, 1999 video game render"
 def save(name, g): (out / f"{name}.json").write_text(json.dumps(g, indent=1) + "\n")
 def L(n, i=0): return [n, i]
-def tail(vae, samples):
-    return {"dec": {"class_type": "VAEDecode", "inputs": {"samples": samples, "vae": vae}},
+# Krea 2 VAE decode: 0 = plain VAEDecode (current default); N = VAEDecodeTiled with tile_size N, overlap 64.
+# Plain decode OOMs at 1024^2 on 16 GB (3.4 GiB alloc, ~2.1 GiB free) and ComfyUI retries tiled. Tiled 512 removes the OOM
+# but measured ~1 s/image slower (31.2 vs 30.1 s) with identical output, so plain stays (bench/comfyui-results.md,
+# "Tiled VAE decode"); 768 still OOMs. Per-run override without regenerating: comfy-sweep --variant NAME:tile=512.
+KREA_VAE_TILE = 0
+def tail(vae, samples, tile=0):
+    dec = ({"class_type": "VAEDecodeTiled", "inputs": {"samples": samples, "vae": vae, "tile_size": tile, "overlap": 64,
+            "temporal_size": 64, "temporal_overlap": 8}} if tile else
+           {"class_type": "VAEDecode", "inputs": {"samples": samples, "vae": vae}})
+    return {"dec": dec,
             "save": {"class_type": "SaveImage", "inputs": {"images": L("dec"), "filename_prefix": "bench"}}}
 
 # Z-Image Turbo: 8 steps, res_multistep/simple, cfg 1, AuraFlow shift 3
@@ -20,7 +28,7 @@ save("z_image_turbo", {
  "ms": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": L("unet"), "shift": 3}},
  "ks": {"class_type": "KSampler", "inputs": {"model": L("ms"), "positive": L("pos"), "negative": L("neg"), "latent_image": L("lat"),
         "seed": 0, "steps": 8, "cfg": 1, "sampler_name": "res_multistep", "scheduler": "simple", "denoise": 1}},
- **tail(L("vae"), L("ks"))})
+ **tail(L("vae"), L("ks"), KREA_VAE_TILE)})
 
 # FLUX.2 Klein 4B distilled: 4 steps, euler, CFGGuider 1, Flux2Scheduler
 save("flux2_klein_4b", {
@@ -47,4 +55,4 @@ save("krea2_turbo", {
  "lat": {"class_type": "EmptyLatentImage", "inputs": {"width": 1024, "height": 1024, "batch_size": 1}},
  "ks": {"class_type": "KSampler", "inputs": {"model": L("unet"), "positive": L("pos"), "negative": L("neg"), "latent_image": L("lat"),
         "seed": 0, "steps": 6, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1}},
- **tail(L("vae"), L("ks"))})
+ **tail(L("vae"), L("ks"), KREA_VAE_TILE)})

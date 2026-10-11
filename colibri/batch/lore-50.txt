@@ -1,0 +1,52 @@
+# 50 synthetic lore prompts for the Phase 7 colibri batch test (PS1 / Signalis-style derelict station game).
+# Format: id|prompt. Run: bin/colibri-batch colibri/batch/lore-50.txt ~/llm/colibri/batch/lore-50
+reactor-log|Write a terse maintenance log entry (80-120 words) about the failing fusion reactor on Deck 3. In-world, dated in station cycles, no explanation outside the document.
+reactor-memo|Write an official internal memo from station administration (100-150 words) about the failing fusion reactor on Deck 3. Cold bureaucratic tone, includes a reference number.
+reactor-diary|Write a private diary page by a worried crew member (120-180 words) about the failing fusion reactor on Deck 3. Fragmented sentences, growing unease, no names of real people.
+reactor-item|Write an inventory item description for a video game (40-70 words) for an object found near the failing fusion reactor on Deck 3. Format: item name on the first line, then the description.
+reactor-terminal|Write a computer terminal readout (60-100 words) concerning the failing fusion reactor on Deck 3. Monospace-style status lines, error codes, one cryptic line at the end.
+cryo-log|Write a terse maintenance log entry (80-120 words) about the cryo-sleep bay where three pods are empty. In-world, dated in station cycles, no explanation outside the document.
+cryo-memo|Write an official internal memo from station administration (100-150 words) about the cryo-sleep bay where three pods are empty. Cold bureaucratic tone, includes a reference number.
+cryo-diary|Write a private diary page by a worried crew member (120-180 words) about the cryo-sleep bay where three pods are empty. Fragmented sentences, growing unease, no names of real people.
+cryo-item|Write an inventory item description for a video game (40-70 words) for an object found near the cryo-sleep bay where three pods are empty. Format: item name on the first line, then the description.
+cryo-terminal|Write a computer terminal readout (60-100 words) concerning the cryo-sleep bay where three pods are empty. Monospace-style status lines, error codes, one cryptic line at the end.
+android-log|Write a terse maintenance log entry (80-120 words) about a maintenance android that keeps repeating an old work order. In-world, dated in station cycles, no explanation outside the document.
+android-memo|Write an official internal memo from station administration (100-150 words) about a maintenance android that keeps repeating an old work order. Cold bureaucratic tone, includes a reference number.
+android-diary|Write a private diary page by a worried crew member (120-180 words) about a maintenance android that keeps repeating an old work order. Fragmented sentences, growing unease, no names of real people.
+android-item|Write an inventory item description for a video game (40-70 words) for an object found near a maintenance android that keeps repeating an old work order. Format: item name on the first line, then the description.
+android-terminal|Write a computer terminal readout (60-100 words) concerning a maintenance android that keeps repeating an old work order. Monospace-style status lines, error codes, one cryptic line at the end.
+security-log|Write a terse maintenance log entry (80-120 words) about the station's security officer who sealed the lower decks. In-world, dated in station cycles, no explanation outside the document.
+security-memo|Write an official internal memo from station administration (100-150 words) about the station's security officer who sealed the lower decks. Cold bureaucratic tone, includes a reference number.
+security-diary|Write a private diary page by a worried crew member (120-180 words) about the station's security officer who sealed the lower decks. Fragmented sentences, growing unease, no names of real people.
+security-item|Write an inventory item description for a video game (40-70 words) for an object found near the station's security officer who sealed the lower decks. Format: item name on the first line, then the description.
+security-terminal|Write a computer terminal readout (60-100 words) concerning the station's security officer who sealed the lower decks. Monospace-style status lines, error codes, one cryptic line at the end.
+signal-log|Write a terse maintenance log entry (80-120 words) about an unknown radio signal looping on an old frequency. In-world, dated in station cycles, no explanation outside the document.
+signal-memo|Write an official internal memo from station administration (100-150 words) about an unknown radio signal looping on an old frequency. Cold bureaucratic tone, includes a reference number.
+signal-diary|Write a private diary page by a worried crew member (120-180 words) about an unknown radio signal looping on an old frequency. Fragmented sentences, growing unease, no names of real people.
+signal-item|Write an inventory item description for a video game (40-70 words) for an object found near an unknown radio signal looping on an old frequency. Format: item name on the first line, then the description.
+signal-terminal|Write a computer terminal readout (60-100 words) concerning an unknown radio signal looping on an old frequency. Monospace-style status lines, error codes, one cryptic line at the end.
+garden-log|Write a terse maintenance log entry (80-120 words) about the hydroponics garden overgrown with pale fungus. In-world, dated in station cycles, no explanation outside the document.
+garden-memo|Write an official internal memo from station administration (100-150 words) about the hydroponics garden overgrown with pale fungus. Cold bureaucratic tone, includes a reference number.
+garden-diary|Write a private diary page by a worried crew member (120-180 words) about the hydroponics garden overgrown with pale fungus. Fragmented sentences, growing unease, no names of real people.
+garden-item|Write an inventory item description for a video game (40-70 words) for an object found near the hydroponics garden overgrown with pale fungus. Format: item name on the first line, then the description.
+garden-terminal|Write a computer terminal readout (60-100 words) concerning the hydroponics garden overgrown with pale fungus. Monospace-style status lines, error codes, one cryptic line at the end.
+medbay-log|Write a terse maintenance log entry (80-120 words) about the medical bay and its rationed sedatives. In-world, dated in station cycles, no explanation outside the document.
+medbay-memo|Write an official internal memo from station administration (100-150 words) about the medical bay and its rationed sedatives. Cold bureaucratic tone, includes a reference number.
+medbay-diary|Write a private diary page by a worried crew member (120-180 words) about the medical bay and its rationed sedatives. Fragmented sentences, growing unease, no names of real people.
+medbay-item|Write an inventory item description for a video game (40-70 words) for an object found near the medical bay and its rationed sedatives. Format: item name on the first line, then the description.
+medbay-terminal|Write a computer terminal readout (60-100 words) concerning the medical bay and its rationed sedatives. Monospace-style status lines, error codes, one cryptic line at the end.
+archive-log|Write a terse maintenance log entry (80-120 words) about the station archive with corrupted personnel records. In-world, dated in station cycles, no explanation outside the document.
+archive-memo|Write an official internal memo from station administration (100-150 words) about the station archive with corrupted personnel records. Cold bureaucratic tone, includes a reference number.
+archive-diary|Write a private diary page by a worried crew member (120-180 words) about the station archive with corrupted personnel records. Fragmented sentences, growing unease, no names of real people.
+archive-item|Write an inventory item description for a video game (40-70 words) for an object found near the station archive with corrupted personnel records. Format: item name on the first line, then the description.
+archive-terminal|Write a computer terminal readout (60-100 words) concerning the station archive with corrupted personnel records. Monospace-style status lines, error codes, one cryptic line at the end.
+shuttle-log|Write a terse maintenance log entry (80-120 words) about the last shuttle docked at the airlock, fuel drained. In-world, dated in station cycles, no explanation outside the document.
+shuttle-memo|Write an official internal memo from station administration (100-150 words) about the last shuttle docked at the airlock, fuel drained. Cold bureaucratic tone, includes a reference number.
+shuttle-diary|Write a private diary page by a worried crew member (120-180 words) about the last shuttle docked at the airlock, fuel drained. Fragmented sentences, growing unease, no names of real people.
+shuttle-item|Write an inventory item description for a video game (40-70 words) for an object found near the last shuttle docked at the airlock, fuel drained. Format: item name on the first line, then the description.
+shuttle-terminal|Write a computer terminal readout (60-100 words) concerning the last shuttle docked at the airlock, fuel drained. Monospace-style status lines, error codes, one cryptic line at the end.
+choir-log|Write a terse maintenance log entry (80-120 words) about a rumour among the crew about voices singing in the vents. In-world, dated in station cycles, no explanation outside the document.
+choir-memo|Write an official internal memo from station administration (100-150 words) about a rumour among the crew about voices singing in the vents. Cold bureaucratic tone, includes a reference number.
+choir-diary|Write a private diary page by a worried crew member (120-180 words) about a rumour among the crew about voices singing in the vents. Fragmented sentences, growing unease, no names of real people.
+choir-item|Write an inventory item description for a video game (40-70 words) for an object found near a rumour among the crew about voices singing in the vents. Format: item name on the first line, then the description.
+choir-terminal|Write a computer terminal readout (60-100 words) concerning a rumour among the crew about voices singing in the vents. Monospace-style status lines, error codes, one cryptic line at the end.

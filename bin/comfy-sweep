@@ -4,13 +4,14 @@ time every image, and build a blind contact sheet. stdlib only.
 
 usage:
   comfy-sweep run   [--workflow krea2_turbo] [--prompts comfyui/sweeps/krea_prompts.txt] [--seeds 1234,5678]
-                    [--variant NAME:steps=N[,w=W,h=H]] ... [--name krea-sweep]
+                    [--variant NAME:steps=N[,w=W,h=H][,tile=T,overlap=O]] ... [--name krea-sweep]
   comfy-sweep sheet [--name krea-sweep]      (re)build <output>/<name>/index.html from results.json
 
 Images land in $COMFY_OUTPUT/<name>/<variant>/<promptidx>_<seed>.png (COMFY_OUTPUT defaults to ~/llm/comfyui/output,
 the host side of the container's /opt/ComfyUI/output). One warm-up image runs first and is discarded. Jobs run grouped by
 variant, prompt-major, so the second seed of each prompt reuses the cached text conditioning (same for every variant).
 results.json is rewritten after every image; a rerun skips images that already exist.
+tile=T swaps the decode for VAEDecodeTiled (tile_size T, overlap O, default 64); tile=0 forces the plain VAEDecode.
 PS1-style previews are made by comfyui/sweeps/ps1_preview.py (needs Pillow, run via uvx)."""
 import argparse, html, json, os, pathlib, random, re, subprocess, sys, threading, time, urllib.request
 
@@ -95,6 +96,13 @@ def build(g, prompt, seed, v, prefix):
             if v["w"] and "width" in inp: inp["width"] = v["w"]
             if v["h"] and "height" in inp: inp["height"] = v["h"]
         if ct == "SaveImage": inp["filename_prefix"] = prefix
+        if ct in ("VAEDecode", "VAEDecodeTiled") and v.get("tile") is not None:   # tile=0: plain VAEDecode
+            if v["tile"]:
+                n["class_type"] = "VAEDecodeTiled"
+                n["inputs"] = {"samples": inp["samples"], "vae": inp["vae"], "tile_size": v["tile"],
+                               "overlap": v.get("overlap", 64), "temporal_size": 64, "temporal_overlap": 8}
+            else:
+                n["class_type"] = "VAEDecode"; n["inputs"] = {"samples": inp["samples"], "vae": inp["vae"]}
     return g
 
 

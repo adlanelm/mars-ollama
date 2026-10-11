@@ -1,6 +1,6 @@
 # TRELLIS.2 on the RX 7800 XT (image → vertex-coloured .glb)
 
-**Status 2026-10-12: works, licence-clean.** One concept image becomes a vertex-coloured `.glb` (about 48k triangles) in about 63 s warm (153 s cold, including a one-off BiRefNet download) at the 512 pipeline, with a 4.1 GiB VRAM peak. It runs in a separate ComfyUI image (`comfyui-trellis2-rocm:0.39.0-b3b9e95-clean`, compose service `comfyui-trellis`, profile `trellis`, port `127.0.0.1:8189`). The Krita image `comfyui-rocm:0.39.0` is unchanged.
+**Status 2026-10-12: works, licence-clean.** One concept image becomes a vertex-coloured `.glb` (about 48k triangles) in about 63 s warm (153 s cold in the measurement run, which still downloaded BiRefNet on first use; it is now pre-fetched by `fetch-weights.py`) at the 512 pipeline, with a 4.1 GiB VRAM peak. It runs in a separate ComfyUI image (`comfyui-trellis2-rocm:0.39.0-b3b9e95-clean`, compose service `comfyui-trellis`, profile `trellis`, port `127.0.0.1:8189`). The Krita image `comfyui-rocm:0.39.0` is unchanged.
 
 The image contains **no non-commercial code**: nvdiffrast, nvdiffrec and MeshLib are neither built nor installed ([licenses.md](licenses.md) P0-a/P0-b). So there is no UV texture bake and no MeshLib hole fill. Colour is sampled per vertex from the voxel attribute grid, and the PS1 texture is baked later in Blender (P0-c). The first version (2026-10-11, image `…-b3b9e95` without `-clean`) used nvdiffrast for a 2048² PBR bake. Its outputs `prop-terminal_0000{1,2}_` are prototype-only. Its numbers are kept below for comparison.
 
@@ -41,7 +41,7 @@ All extensions are compiled for **gfx1101** (`PYTORCH_ROCM_ARCH=gfx1101`), so no
    - Aero-Ex pins `transformers==5.2.0`, which conflicts with the base image's huggingface_hub 2.2 and tokenizers 0.23.3, so the image goes back to the base's **5.19.0**.
    - Adds the rembg runtime deps onnxruntime 1.31.0 and pymatting 1.1.16.
    - Adds `libusb-1.0-0` for open3d.
-4. Patches the preprocess node: rembg 2.0.85's default `remove()` model is **bria-rmbg (RMBG-2.0, CC BY-NC 4.0)**. The node now uses `new_session($REMBG_MODEL)`, default **`birefnet-general`** (BiRefNet, MIT code and weights, ~973 MB ONNX). `isnet-general-use` is not used: DIS licenses its code, not its weights.
+4. Patches the preprocess node: rembg 2.0.85's default `remove()` model is **bria-rmbg (RMBG-2.0, CC BY-NC 4.0)**. The node now uses `new_session($REMBG_MODEL)`, default **`birefnet-general`** (BiRefNet, MIT code and weights, ~973 MB ONNX), pre-fetched by `fetch-weights.py` (pinned sha256) into the `/cache` mount rather than downloaded at run time. `isnet-general-use` is not used: DIS licenses its code, not its weights.
 5. Puts `licence-stubs/` on `sys.path` (a `.pth` file), because `nodes.py` and o_voxel import nvdiffrast and MeshLib at module load. Then it runs `licence-check.py`, which fails the build if any NC package or file is in the image or a stub doesn't raise. To re-check a built image: `docker run --rm --entrypoint python comfyui-trellis2-rocm:0.39.0-b3b9e95-clean /opt/licence-check.py`.
 6. Launches plain `main.py`. The old `trellis_main.py` only existed to create an nvdiffrast GL context early (toast issue #5).
 
@@ -70,9 +70,9 @@ The remaining Python packages from Aero-Ex's `requirements.txt` (gguf, pymeshlab
 cd ~/devel/mars-ollama
 bin/gpu-mode llm --stop                       # stop the Krita ComfyUI, free VRAM (one GPU user at a time)
 docker compose build comfyui-trellis          # once (~8 min)
-# weights, once (~11 GB at Q8_0; Q4_K_M ~6 GB), pinned revisions, into ~/llm/trellis/models/Trellis2
-docker run --rm --user 1000:1000 -e HF_HOME=/models/.hf -v ~/llm/trellis/models:/models -v $PWD/trellis:/w:ro \
-  --entrypoint python comfyui-rocm:0.39.0 /w/fetch-weights.py Q8_0
+# weights, once (~11 GB at Q8_0; Q4_K_M ~6 GB) at pinned revisions into ~/llm/trellis/models/Trellis2, plus BiRefNet (sha256-pinned) into ~/llm/trellis/cache
+docker run --rm --user 1000:1000 -e HF_HOME=/models/.hf -v ~/llm/trellis/models:/models -v ~/llm/trellis/cache:/cache \
+  -v $PWD/trellis:/w:ro --entrypoint python comfyui-rocm:0.39.0 /w/fetch-weights.py Q8_0
 cp concept.png ~/llm/trellis/in/
 docker compose --profile trellis up -d comfyui-trellis      # UI/API on http://localhost:8189
 trellis/run_workflow.py --image concept.png [--seed N]      # host python3, stdlib only; prints stage timings
@@ -105,7 +105,7 @@ Volumes:
 
 | | cold (1st run after start, seed 1234) | warm (seed 42) |
 |---|---|---|
-| load + rembg + generate | 141.7 s (includes the one-off ~973 MB BiRefNet download) | 54.1 s |
+| load + rembg + generate | 141.7 s (measured when BiRefNet still downloaded on first use, ~973 MB) | 54.1 s |
 | remesh + simplify + vertex colours | 10.9 s | 8.9 s |
 | **total** | **152.7 s** | **63.0 s** |
 

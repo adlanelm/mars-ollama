@@ -54,7 +54,8 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
 USER comfy
 # rembg >= 2.0.6x defaults to bria-rmbg (BRIA RMBG-2.0, CC BY-NC 4.0): force a permissive model instead.
-# birefnet-general (BiRefNet, MIT code + weights; ONNX from rembg's release, ~973 MB, cached in /cache/u2net).
+# birefnet-general (BiRefNet, MIT code + weights; ONNX ~973 MB). Not downloaded at run time: trellis/fetch-weights.py pre-fetches it
+# (pinned sha256) into /cache/u2net, which rembg uses as is.
 # isnet-general-use is not used: DIS licenses its code, not the weights (docs/licenses.md).
 RUN cd /opt/ComfyUI/custom_nodes/ComfyUI-Trellis2-GGUF \
  && python - <<'PY'

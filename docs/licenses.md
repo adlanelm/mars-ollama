@@ -23,7 +23,7 @@ Verdict scale: **OK** · **OK-cond** (OK with the conditions noted) · **NOT OK*
 
 - **Commercial release is possible**, so the asset path follows the policy above without exceptions.
 - **Krea 2 is accepted** under the Krea 2 Community licence. Expected revenue stays well under the USD 1M threshold. The conditions still apply: human review of outputs, AI disclosure where required, the acceptable use policy and the indemnity. Tag outputs `krea2-community`.
-- **AI outputs are prototypes and concept reference only.** Shipped assets are drawn and modelled by the user with conventional tools (Krita brushes, Blender modelling and texture painting, etc.), keeping the concept but not the AI pixels or geometry. Using Krita's AI plugin or TRELLIS on a shipped asset counts as AI generation, not as drawing by hand. That lowers the risk, but it does **not** make non-commercial tools acceptable: nvdiffrast, MeshLib and MAT forbid even evaluation use "for direct or indirect monetary gain", which covers prototyping a game that may be sold. NOT OK components are removed, not just avoided.
+- **AI assets are placeholders until a commercial decision.** While the game is a hobby project, assets from the licence-clean AI pipeline (TRELLIS meshes, Krea/Klein/Z-Image textures) can go into the Unity project directly. Once the user decides to go commercial, every AI asset is redone by hand with conventional tools (Krita brushes, Blender modelling and texture painting), keeping the concept but not the AI pixels or geometry. Keep provenance (`.prov.json`, see below) so those assets can be found. Using Krita's AI plugin or TRELLIS on the redone asset counts as AI generation, not as drawing by hand.
 
 ## Registry
 

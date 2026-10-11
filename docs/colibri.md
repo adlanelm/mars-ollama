@@ -40,9 +40,7 @@ Download to `~/llm/colibri/models/`.
 
 colibri is built from source (v2.0.0, `make qwen38 VK=1`) inside a throwaway container of the llama-swap image, so nothing is installed on the host. The output tree is bind-mounted into llama-swap; no docker socket is needed. `coli` is a Python launcher (llama-swap's image ships python3.14) that spawns the C engine `c/qwen38`.
 
-Ready-to-merge pieces, **not applied**:
-- [../llama-swap/colibri.snippet.yaml](../llama-swap/colibri.snippet.yaml): the `colibri-big` model entry (also add it to the `chat` group members, and raise the top-level `healthCheckTimeout`).
-- [colibri-compose.patch.md](colibri-compose.patch.md): the two volume lines.
+Applied (2026-10-11): the `colibri-big` entry and its `chat` group membership in [../llama-swap/config.yaml](../llama-swap/config.yaml), and two volumes on the `llama-swap` service in [../docker-compose.yaml](../docker-compose.yaml): `$HOME/llm/colibri/bin:/colibri:ro,Z` and `$HOME/llm/colibri/models:/colibri-models:Z` (read-write: colibri writes `.coli_kv`, `.coli_usage`, `.coli_ssd` there). `healthCheckTimeout` stayed at 600.
 
 Paths in the container: launcher `/colibri/c/coli`, engine `/colibri/c/qwen38`, shaders `/colibri/c/shaders/` (found beside the binary), model `/colibri-models/qwen38-flash-next`.
 
@@ -129,7 +127,7 @@ docker run --rm --entrypoint bash -v $PWD/colibri:/src:ro,Z -v ~/llm/colibri/bin
 
 ## GPU test (2026-10-11)
 
-Applied: compose volumes and the `colibri-big` entry (chat group) in `llama-swap/config.yaml`; `llama-swap/colibri.snippet.yaml` and `docs/colibri-compose.patch.md` are kept as reference. `healthCheckTimeout` stayed at 600: the server is healthy 7 s after start (resident weights 11 GB RSS), experts load lazily.
+Applied: compose volumes and the `colibri-big` entry (chat group) in `llama-swap/config.yaml` (see Integration). `healthCheckTimeout` stayed at 600: the server is healthy 7 s after start (resident weights 11 GB RSS), experts load lazily.
 
 Placement (from the log): Vulkan on the RX 7800 XT, dense chain 48/48 layers on the device (3.7 GiB), VRAM expert tier 9.6 GiB (1,897 experts), RAM cache `--ram 18 --cap 25`. The engine banner says "| CPU" regardless; the `[VK]` lines are what counts.
 

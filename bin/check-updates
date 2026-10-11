@@ -47,9 +47,11 @@ check_trellis() { local n=$1 i=0 pin repo   # NAME_COMMIT=<sha>  # org/repo (tre
   sha_row "${n}9" "trellis/Dockerfile toastmanAu" "$pin" "https://github.com/$repo" &
   trellis_base "${n}8"; wait; }
 
+comfy_tag() { sed -nE 's|^ *image: (comfyui-rocm:.*)|\1|p' docker-compose.yaml | head -1; }   # comfyui-rocm:* tag in compose
+
 trellis_base() { local n=$1 base cur   # informational: trellis FROM tag vs the comfyui tag in compose; behind is fine, missing is not
   base=$(sed -nE 's/^ARG COMFY_BASE=(.*)/\1/p' trellis/Dockerfile)
-  cur=$(sed -nE 's|^ *image: (comfyui-rocm:.*)|\1|p' docker-compose.yaml | head -1)
+  cur=$(comfy_tag)
   if ! docker image inspect "$base" >/dev/null 2>&1; then row "$n" "trellis base (trellis/Dockerfile)" "$base" "$cur" "missing base"
   elif [[ $base == "$cur" ]]; then row "$n" "trellis base (trellis/Dockerfile)" "$base" "$cur" current
   else row "$n" "trellis base (trellis/Dockerfile)" "$base" "$cur" "behind (ok)"; fi; }
@@ -65,7 +67,8 @@ check_image() { local n=$1 tag new   # compose tag vNNN-vulkan-bNNNNN; the vNNN 
   if [[ ${tag%%-*} == "$new" ]]; then row "$n" "docker-compose.yaml llama-swap" "$tag" "$new-vulkan-*" current
   else row "$n" "docker-compose.yaml llama-swap" "$tag" "$new-vulkan-*" OUTDATED; fi; }
 
-check_torch() { local n=$1 img=comfyui-rocm:0.39.2 have new idx   # image's torch (+rocm local tag) vs download.pytorch.org
+check_torch() { local n=$1 img have new idx   # image's torch (+rocm local tag) vs download.pytorch.org
+  img=$(comfy_tag)
   have=$(docker run --rm --entrypoint pip "$img" show torch 2>/dev/null | sed -nE 's/^Version: (.*)/\1/p')
   [[ -n $have ]] || { err "$n" "torch in $img"; return; }
   idx=${TORCH_INDEX:-https://download.pytorch.org/whl/rocm7.2/torch/}

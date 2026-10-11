@@ -1,7 +1,7 @@
 # TRELLIS.2 (image -> textured 3D mesh) for the RX 7800 XT (gfx1101), as ComfyUI custom nodes.
 # Derived from comfyui-rocm:0.39.0 (torch 2.14.1+rocm7.2, ComfyUI v0.39.0); that image stays untouched.
-# Recipe: egore/comfyui-trellis2-gguf-rocm install script @0afa00c9 (as validated on RDNA3 by
-# toastmanAu/trellis-2-rocm-comfyui @2c93cb94), with every git clone pinned (pin-install.sh) and gfx1101 targets.
+# Install: our own install.sh (every git clone pinned, gfx1101 targets); the recipe follows the one validated on RDNA3
+# by toastmanAu/trellis-2-rocm-comfyui @2c93cb94.
 # Spec and numbers: docs/trellis.md. Weights are NOT baked in: models/Trellis2 is a volume (~/llm/trellis/models).
 # Licence-clean (docs/licenses.md): nvdiffrast, nvdiffrec renderutils and MeshLib (all non-commercial) are not built or
 # installed; licence-stubs/ satisfies their module-level imports and raises on use. Colour is baked on vertices.
@@ -32,14 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg ca-c
 USER comfy
 ENV ROCM_HOME=/opt/rocm HIP_HOME=/opt/rocm CUDA_HOME=/opt/rocm FORCE_CUDA=1 \
     PYTORCH_ROCM_ARCH=gfx1101 HCC_AMDGPU_TARGET=gfx1101 AMDGPU_TARGETS=gfx1101 GPU_ARCHS=gfx1101 MAX_JOBS=8
-ARG EGORE_COMMIT=0afa00c9
 ARG TOAST_COMMIT=2c93cb946a08
-COPY --chown=comfy pin-install.sh /opt/pin-install.sh
-# The script cds to its own dir and expects ./ComfyUI and python3 (= /opt/venv via PATH): put it in /opt.
-RUN curl -fsSL -o /opt/install-trellis2.sh \
-      https://raw.githubusercontent.com/egore/comfyui-trellis2-gguf-rocm/${EGORE_COMMIT}/install-trellis2-gguf-rocm.sh \
- && bash /opt/pin-install.sh /opt/install-trellis2.sh \
- && bash /opt/install-trellis2.sh \
+# Installs into /opt/ComfyUI with python3 (= /opt/venv via PATH).
+COPY --chown=comfy install.sh /opt/trellis-install.sh
+RUN bash /opt/trellis-install.sh \
  && rm -rf /opt/ComfyUI/models/facebook ~/.cache/pip \
  # the node pack vendors prebuilt nvdiffrast/nvdiffrec_render wheels and an installer that would pip-install them
  && rm -rf /opt/ComfyUI/custom_nodes/ComfyUI-Trellis2-GGUF/wheels /opt/ComfyUI/custom_nodes/ComfyUI-Trellis2-GGUF/install.py

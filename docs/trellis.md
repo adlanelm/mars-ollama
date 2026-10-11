@@ -31,12 +31,11 @@ All extensions are compiled for **gfx1101** (`PYTORCH_ROCM_ARCH=gfx1101`), so no
 `trellis/Dockerfile` builds on `comfyui-rocm:0.39.0` (torch 2.14.1+rocm7.2, HIP 7.2.53211, ComfyUI v0.39.0):
 
 1. Installs the ROCm 7.2 HIP toolchain from repo.radeon.com: hipcc, hip-dev, rocm-llvm, rocprim/hipcub/rocthrust. Only the **headers** of hipblas/hipblaslt/hipsolver/hipsparse/rocblas are taken, via `dpkg -x`, because the libraries already ship in the torch wheel. It also installs Mesa GL/EGL (MIT; kept for layer caching, and open3d/cv2 load libGL), Eigen 3.4 and sparsehash.
-2. Downloads egore's `install-trellis2-gguf-rocm.sh` @`0afa00c9` and rewrites it with `trellis/pin-install.sh`. Every edit must match exactly once, or the build fails. The rewrite:
-   - targets gfx1101
-   - skips weight downloads
-   - pins every clone (table below)
-   - replaces `-std=c++17` with `-std=c++20` (torch 2.14 headers require C++20); exactly 3 extension builds (CuMesh, FlexGEMM, o-voxel)
-   - deletes the nvdiffrast/nvdiffrec build block and the GL-rasterizer patch, and drops `meshlib` from Aero-Ex's `requirements.txt`
+2. Runs `trellis/install.sh`, our own install script (written for P1-b; it replaces egore's unlicensed `install-trellis2-gguf-rocm.sh`, which used to be downloaded at build time and rewritten by `pin-install.sh`). It does the same steps:
+   - clones Aero-Ex's node pack and installs its `requirements.txt` one package at a time with `--no-deps`, with utils3d pinned and `meshlib` removed
+   - builds CuMesh (hipified: `rocprim::tuple`, host-callable `Vec3f()`, nvcc-only flags removed, Ubuntu Eigen for cubvh), FlexGEMM (TF32 off on HIP) and o-voxel (node pack's `flexible_dual_grid.py` copied in) with hipcc for **gfx1101**
+   - bumps `-std=c++17` to `-std=c++20` in their `setup.py` files (torch 2.14 headers require C++20)
+   - pins every clone (table below), downloads no weights, and never clones, builds or installs nvdiffrast, nvdiffrec or MeshLib
    The node pack's vendored nvdiffrast wheels and its `install.py` are deleted too.
 3. Fixes the Python side:
    - Aero-Ex pins `transformers==5.2.0`, which conflicts with the base image's huggingface_hub 2.2 and tokenizers 0.23.3, so the image goes back to the base's **5.19.0**.
@@ -52,12 +51,12 @@ Build time is about 8 min (the CuMesh compile takes about 2 min). The clean imag
 
 | Component | Pin |
 |---|---|
-| egore/comfyui-trellis2-gguf-rocm (install script) | `0afa00c9` |
+| egore/comfyui-trellis2-gguf-rocm (install script) | `0afa00c9`: reference only, not fetched (`trellis/install.sh` replaces it) |
 | toastmanAu/trellis-2-rocm-comfyui (patch 06) | `2c93cb946a08` |
 | Aero-Ex/ComfyUI-Trellis2-GGUF | `b3b9e951874c5fb5c936566c93b908299be08b2c` |
 | visualbruno/CuMesh | `d10e54c30ddd03d11472c1431693f985501c7966` (+ cubvh with Ubuntu Eigen 3.4.0) |
 | JeffreyXiang/FlexGEMM | `6dd94a859c26ee8246888502eada3dd8ad85532e` |
-| microsoft/TRELLIS.2 (o-voxel) | `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. GitLab was overloaded during the build, so the Eigen submodule fell back to Ubuntu Eigen 3.4.0 (the fallback is in `pin-install.sh`) |
+| microsoft/TRELLIS.2 (o-voxel) | `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. GitLab was overloaded during the build, so the Eigen submodule fell back to Ubuntu Eigen 3.4.0 (the fallback is in `install.sh`) |
 | EasternJournalist/utils3d | `83bfa5bda008803f6521ce9547f94023b8afeddd` |
 | HF Aero-Ex/Trellis2-GGUF | `edf81aef93af0823ac8721da3c9cd3c52d539f87` |
 | HF Aero-Ex/Dinov3 | `33aa61361f167fadf08fa88f312717ba5f482c42` |
@@ -114,6 +113,7 @@ Volumes:
 - **Result**: `prop-terminal_00003_.glb` (seed 1234): 24,843 vertices / 48,027 triangles, about 1 MB, `COLOR_0` RGBA per vertex, no UVs or textures, not watertight. Seed 42 (`_00005_`): 26,267 / 47,974.
 - **Quality** (`_00003_.preview.png` next to the old `_00001_.preview.png`, same seed): same geometry and palette. The CRT, green screen, keyboard, vents and disk slot all read clearly. The warning stickers come out as blotchy colour patches, because colour resolution is now one colour per vertex. At the 128/256 px PS1 texture that Blender bakes from this mesh, the difference doesn't show.
 - No `LicenceRemovedError` in the container log, so no stub was reached.
+- **Smoke test after the rebuild from our own `trellis/install.sh`** (2026-10-12, seed 7, container force-recreated, first run after start): load + rembg + generate 117.2 s, remesh + UV + bake 10.1 s, total 127.3 s (workflow run 129 s wall). `prop-terminal_00006_.glb`: 27,175 vertices / 47,197 triangles, `vertex_colors=yes`, no UVs, not watertight. 0 `LicenceRemovedError` or `Traceback` lines in the container log. (Slower than the 63 s warm run above; this was the first run in a freshly recreated container, so the cause was not isolated.)
 
 ## Measured, first image with nvdiffrast bake (2026-10-11, prop-terminal concept `krea-sweep/s6-1024/05_1234.png`)
 
@@ -149,7 +149,7 @@ Volumes:
 | `Aero-Ex/Trellis2-GGUF` (quantised TRELLIS.2 weights) | none declared on HF | derived from MIT weights; treat as MIT, but the repo states nothing |
 | DINOv3 ViT-L (`Aero-Ex/Dinov3`, an ungated re-upload of `facebook/dinov3-vitl16-pretrain-lvd1689m`) | **Meta DINOv3 License** (custom, gated by Meta on HF) | not OSI. Read Meta's terms before commercial use [verify]. TRELLIS.2 needs it as the image encoder |
 | Aero-Ex node pack, CuMesh, FlexGEMM | MIT | |
-| egore install script | **no licence file** | fetched at build time, not vendored |
+| egore install script | **no licence file** | no longer used: replaced by our own `trellis/install.sh` (P1-b) |
 | steelxt fork | no licence file | not used |
 | toastmanAu guide/patches | MIT | |
 | nvdiffrast (v0.3.5 + v0.4.0), nvdiffrec renderutils | NVIDIA Source Code License: **non-commercial only** | **removed** from the clean image (stubs only); vertex colours + Blender bake instead |

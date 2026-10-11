@@ -50,7 +50,7 @@ Styles are under **Configure > Styles**. The plugin ships styles whose model lis
 |---|---|---|
 | Fast iteration, sketch-to-image, edits ("make it rusty", style or pose from a reference) | **Flux 2 Klein** / **General Editing** (`flux-2-klein-4b.safetensors`) | 4 steps (default). About 8 s per 1024² image. Fill/Expand uses the Klein outpaint LoRA automatically |
 | Quality concepts, textures, turnarounds | **Krea 2 Turbo** (`krea2_turbo_fp8_scaled.safetensors`) | Change the style's steps from 8 to **6** (about 29 s at 1024², no visible loss in our blind test, see [../bench/comfyui-results.md](../bench/comfyui-results.md)). Use 8 for hero renders (about 39 s) |
-| Alternative t2i with control layers (scribble, line, depth, pose) | **Z-Image Turbo** (`z_image_turbo_bf16.safetensors`) | 9 steps (default). About 26-32 s. Control layers use the Z-Image ControlNet union model patch |
+| Alternative t2i with control layers (scribble, line, depth, pose; see the [licence rules](#licence-rules-for-control-layers-2026-10-12) for which are allowed on shipped assets) | **Z-Image Turbo** (`z_image_turbo_bf16.safetensors`) | 9 steps (default). About 26-32 s. Control layers use the Z-Image ControlNet union model patch |
 | Instruction edits | **Qwen Edit**: create a new style and pick `qwen-image-edit-2511-Q4_K_M.gguf` | Experimental in the plugin. Not speed-tested here; expect slow runs (7B text encoder plus a 13 GB GGUF swap on 16 GB) |
 
 **PS1 look:** there is no PS1 LoRA yet, so steer with the prompt, for example "low-poly 1999 PlayStation game render, low resolution texture, vertex lighting, dithered, isometric view". Add these terms to the style's *Style Prompt* (`{prompt}, low-poly PS1 ...`) so they stick. The real PS1 downscale and dither happens later in the pipeline ([game-asset-workflow.md](game-asset-workflow.md)), not in Krita. Work at about 1024², because these models do poorly at native 256 px.
@@ -63,7 +63,7 @@ Not installed on purpose: SD 1.5 and SDXL (with their IP-Adapter, CLIP vision an
 - Krea 2 fp8 is upcast on RDNA3 (no fp8 matmul) and uses the whole card. Close other GPU apps.
 - Live painting mode: use Klein, since the others are too slow for it.
 - Regions, attention guidance and LCM are SD/SDXL-only features and are not available with these models.
-- ControlNet preprocessors (scribble, line art, depth, pose) download their annotator weights from Hugging Face into the container on first use. The container is not a volume, so they download again after the container is recreated.
+- ControlNet preprocessors (scribble, line art, depth, pose) download their annotator weights from Hugging Face into the container on first use. This describes what the plugin does, not what is allowed: several of them are non-commercial, see [Licence rules for control layers](#licence-rules-for-control-layers-2026-10-12). The container is not a volume, so they download again after the container is recreated.
 - Upscale: the "Upscale" workspace works with the installed OmniSR 2x/3x/4x upscalers (OmniSR 4x is the default since NMKD was removed on 2026-10-12). "Refine after upscale" with Z-Image would use the tile model patch, which is not installed.
 
 ## 6. Troubleshooting
@@ -73,6 +73,24 @@ Not installed on purpose: SD 1.5 and SDXL (with their IP-Adapter, CLIP vision an
 - **Style shows a warning or no model**: open the style and pick a checkpoint that exists on the server, or click Configure > Connection > refresh after adding models.
 - **Out of memory or very slow**: check `bin/gpu-mode status` for leftover LLMs and switch to Klein. Generate at 1024² or below.
 - **Flatpak can't connect but `curl localhost:8188/system_stats` works on the host**: run `flatpak info --show-permissions org.kde.krita`. Only if `network` is missing, run `flatpak override --user --share=network org.kde.krita`.
+
+## Licence rules for control layers (2026-10-12)
+
+Assets that ship with the game may only use the control sources below. Details are in [licenses.md](licenses.md) section 2 (P1-d, P2-d).
+
+| Control | "From image" preprocessor | OK for shipped assets? | Do this instead |
+|---|---|---|---|
+| Depth | Depth Anything V2 Base (CC BY-NC 4.0) | **No** | Render a depth pass in Blender and use it as the control image |
+| Scribble | PiDiNet (research-only licence) | **No** | Hand-drawn scribble, Blender Freestyle lines, or Krita *Filter → Edge Detection* |
+| Normal | BAE / ScanNet weights (no weight licence) | **No** (treat as no) | Render a normal pass in Blender, or draw it by hand |
+| Soft edge | AnyLine MTEED (OpenRAIL++, [TheMistoAI/MistoLine](https://huggingface.co/TheMistoAI/MistoLine)) | **OK, conditional** | Usable; the OpenRAIL use restrictions must be passed on |
+| Line art | informative-drawings `sk_model` (MIT) | **OK [verify]** | Usable; re-verify against upstream before release |
+| Segmentation | OneFormer COCO (MIT, dataset caveat) | **OK, conditional** | Krita's own Segment button (from prompt regions, no model) is fine |
+| Pose | DWPose (`yolox_l.onnx` + `dw-ll_ucoco_384.onnx`): CMU OpenPose NC licence on the preprocessor code, COCO-WholeBody (non-commercial) training data | **No** | Pose a rig in Blender and render the OpenPose skeleton, or draw the pose by hand |
+| Canny | OpenCV, no weights | **OK** | Use as is |
+
+- **Inpaint** (Remove object, Fill = Inpaint): LaMa `big-lama.pt` (Apache-2.0), OK. MAT (CC BY-NC) must not come back into `models/inpaint`.
+- **Upscale**: OmniSR 2x/3x/4x (OK). NMKD Superscale is removed.
 
 ## Reference: what the plugin checks (v1.53.0)
 

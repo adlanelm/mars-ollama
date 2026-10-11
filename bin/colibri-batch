@@ -40,7 +40,9 @@ for n, (pid, prompt) in enumerate(items, 1):
         continue
     msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
     body = {"model": a.model, "messages": msgs, "max_tokens": a.max_tokens,
-            "temperature": a.temperature, "enable_thinking": a.thinking}
+            "temperature": a.temperature, "enable_thinking": a.thinking,
+            # llama.cpp (llama-swap chat models) reads thinking from chat_template_kwargs; colibri ignores it
+            "chat_template_kwargs": {"enable_thinking": a.thinking}}
     req = urllib.request.Request(a.url, json.dumps(body).encode(), {"Content-Type": "application/json"})
     t0 = time.time()
     try:

@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""text-compare: build a self-contained blind A/B comparison HTML page for two colibri-batch output dirs.
+
+  text-compare PROMPTS DIR_X DIR_Y OUT_HTML [--label-x NAME] [--label-y NAME] [--seed N]
+
+PROMPTS: `id|prompt` lines (blank and # lines skipped). DIR_X/DIR_Y: colibri-batch output dirs
+(<id>.md + summary.jsonl). Which side is A or B is shuffled per prompt (seeded RNG, default 7).
+Texts are rendered server-side with HTML escaping; stats/mapping live in an inline JSON blob.
+"""
+import argparse, html, json, pathlib, random, re
+
+ap = argparse.ArgumentParser()
+ap.add_argument("prompts"); ap.add_argument("dir_x"); ap.add_argument("dir_y"); ap.add_argument("out")
+ap.add_argument("--label-x"); ap.add_argument("--label-y")
+ap.add_argument("--seed", type=int, default=7)
+a = ap.parse_args()
+
+P = lambda s: pathlib.Path(s).expanduser()
+dx, dy = P(a.dir_x), P(a.dir_y)
+lx = a.label_x or dx.resolve().name
+ly = a.label_y or dy.resolve().name
+
+items = []
+for line in P(a.prompts).read_text(encoding="utf-8").splitlines():
+    if line.strip() and not line.lstrip().startswith("#"):
+        pid, _, prompt = line.partition("|")
+        items.append((pid.strip(), prompt.strip()))
+
+def load_summary(d):
+    recs = {}
+    f = d / "summary.jsonl"
+    if f.exists():
+        for l in f.read_text(encoding="utf-8").splitlines():
+            if l.strip():
+                try:
+                    r = json.loads(l)
+                except json.JSONDecodeError:
+                    continue
+                if "id" in r:
+                    recs[r["id"]] = r  # later records win (reruns)
+    return recs
+
+def load_text(d, pid):
+    f = d / f"{pid}.md"
+    if not f.is_file():
+        return None
+    t = f.read_text(encoding="utf-8")
+    if t.startswith("<!--"):
+        end = t.find("-->")
+        if end != -1:
+            t = t[end + 3:]
+    return t.strip()
+
+sx, sy = load_summary(dx), load_summary(dy)
+rng = random.Random(a.seed)
+esc = html.escape
+
+def side_stats(s):
+    if not s or "error" in s:
+        return {"tokens": None, "seconds": None, "tok_s": None, "finish": None, "empty": False, "cut": False}
+    return {"tokens": s.get("completion_tokens"), "seconds": s.get("seconds"), "tok_s": s.get("tok_s"),
+            "finish": s.get("finish"), "empty": bool(s.get("empty")), "cut": s.get("finish") == "length"}
+
+cards, meta, missing = [], [], []
+for pid, prompt in items:
+    tx, ty = load_text(dx, pid), load_text(dy, pid)
+    if tx is None or ty is None:
+        missing.append((pid, tx is None, ty is None))
+        continue
+    flip = rng.random() < 0.5  # one draw per compared item, so output is reproducible
+    mapping = {"A": "y", "B": "x"} if flip else {"A": "x", "B": "y"}
+    texts = {"x": tx, "y": ty}
+    stats = {"x": side_stats(sx.get(pid)), "y": side_stats(sy.get(pid))}
+    meta.append({"id": pid, "mapping": mapping, "stats": stats})
+    i = len(meta) - 1
+    def col(letter):
+        t = texts[mapping[letter]]
+        body = esc(t) if t else '<span class="empty">(empty)</span>'
+        return (f'<div class="col"><h4>{letter}<span class="rev" id="rv{i}{letter}"></span></h4>'
+                f'<div class="txt">{body}</div></div>')
+    cards.append(
+        f'<section class="card" data-i="{i}" data-id="{esc(pid, quote=True)}"><h3>{esc(pid)}</h3>'
+        f'<p class="prompt">{esc(prompt)}</p><div class="cols">{col("A")}{col("B")}</div>'
+        f'<div class="pick"><label><input type="radio" name="p{i}" value="A"> A better</label>'
+        f'<label><input type="radio" name="p{i}" value="B"> B better</label>'
+        f'<label><input type="radio" name="p{i}" value="tie"> tie</label>'
+        f'<input type="text" class="note" maxlength="300" placeholder="note (optional)"></div></section>')
+
+prefixes = sorted({m["id"].split("-")[0] for m in meta})
+suffixes = sorted({m["id"].split("-", 1)[1] for m in meta if "-" in m["id"]})
+opts = '<option value="">all</option>' + "".join(
+    f'<option value="p:{esc(p, quote=True)}">prefix: {esc(p)}</option>' for p in prefixes) + "".join(
+    f'<option value="s:{esc(s, quote=True)}">suffix: {esc(s)}</option>' for s in suffixes)
+miss_html = ""
+if missing:
+    def where(mx, my):
+        return " and ".join(n for n, m in (("X", mx), ("Y", my)) if m)
+    rows = "".join(f"<li>{esc(p)} (missing in {where(x, y)})</li>" for p, x, y in missing)
+    miss_html = f'<section class="card"><h3>Missing (not compared)</h3><ul>{rows}</ul></section>'
+
+data = {"seed": a.seed, "labels": {"x": lx, "y": ly}, "items": meta,
+        "key": f"text-compare:{pathlib.Path(a.out).name}:{a.seed}"}
+# make JSON safe inside <script>
+blob = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026") \
+    .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+
+PAGE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blind A/B text comparison</title>
+<style>
+:root{--bg:#14161a;--panel:#1d2026;--line:#2c313a;--fg:#d8dce3;--dim:#8a93a1;--acc:#6ea8fe;--ok:#5fcf8a;--warn:#e6b450}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:#101216;border-bottom:1px solid var(--line);padding:8px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+header b{font-size:16px}button,select{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px 10px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}#prog{color:var(--acc)}
+main{max-width:1300px;margin:0 auto;padding:12px 16px 60px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:14px 0}
+.card.done{border-left:3px solid var(--ok)}.card h3{margin:0 0 4px;font-size:15px;color:var(--acc)}
+.prompt{margin:0 0 10px;color:var(--dim);font-style:italic}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:800px){.cols{grid-template-columns:1fr}}
+.col{background:#16181d;border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-width:0}
+.col h4{margin:0 0 6px;font-size:13px;color:var(--dim)}.txt{white-space:pre-wrap;overflow-wrap:anywhere;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13.5px}
+.rev{font-weight:400;margin-left:8px;color:var(--warn)}.empty{color:var(--dim)}
+.pick{margin-top:10px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}.pick label{cursor:pointer}
+.note{flex:1;min-width:160px;background:#16181d;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px 8px;font:inherit}
+table{border-collapse:collapse;margin:12px 0}td,th{border:1px solid var(--line);padding:5px 10px;text-align:right}th:first-child,td:first-child{text-align:left}
+#summary{display:none}.revealed #summary{display:block}.hidden{display:none}
+</style></head><body>
+<header><b>Blind A/B</b><span id="prog"></span>
+<select id="filter" title="filter by id">__OPTS__</select>
+<button id="revealBtn">Reveal</button><button id="exportBtn">Export picks</button></header>
+<main>
+<div id="summary"><h3>Summary</h3><table id="stab"></table></div>
+__CARDS__
+__MISSING__
+</main>
+<script type="application/json" id="data">__BLOB__</script>
+<script>
+(function(){
+var D=JSON.parse(document.getElementById('data').textContent);
+var items=D.items, labels=D.labels, KEY=D.key, state={}, revealed=false;
+function ls(f){try{return f()}catch(e){return null}}
+var saved=ls(function(){return JSON.parse(localStorage.getItem(KEY)||'{}')});
+if(saved&&typeof saved==='object')state=saved;
+function save(){ls(function(){localStorage.setItem(KEY,JSON.stringify(state))})}
+var cards=[].slice.call(document.querySelectorAll('.card[data-i]'));
+function progress(){var n=0;items.forEach(function(m){var s=state[m.id];if(s&&s.pick)n++});
+ document.getElementById('prog').textContent='judged '+n+' of '+items.length;
+ cards.forEach(function(c){var s=state[c.dataset.id];c.classList.toggle('done',!!(s&&s.pick))})}
+cards.forEach(function(c){
+ var id=c.dataset.id, s=state[id]||{};
+ [].forEach.call(c.querySelectorAll('input[type=radio]'),function(r){
+  if(s.pick===r.value)r.checked=true;
+  r.addEventListener('change',function(){state[id]=state[id]||{};state[id].pick=r.value;save();progress()})});
+ var note=c.querySelector('.note');note.value=s.note||'';
+ note.addEventListener('input',function(){state[id]=state[id]||{};state[id].note=note.value;save()});
+});
+document.getElementById('filter').addEventListener('change',function(){
+ var v=this.value;cards.forEach(function(c){var id=c.dataset.id,show=true;
+  if(v.slice(0,2)==='p:')show=id.split('-')[0]===v.slice(2);
+  else if(v.slice(0,2)==='s:'){var k=id.indexOf('-');show=k>=0&&id.slice(k+1)===v.slice(2)}
+  c.classList.toggle('hidden',!show)})});
+function f(n,d){return n==null?'?':Number(n).toFixed(d)}
+function revealInfo(){
+ items.forEach(function(m,i){['A','B'].forEach(function(L){var k=m.mapping[L],s=m.stats[k],e=document.getElementById('rv'+i+L);
+  e.textContent=labels[k]+' | '+(s.tokens==null?'?':s.tokens)+' tok | '+f(s.seconds,1)+' s | '+f(s.tok_s,2)+' tok/s | '+(s.finish||'?')+(s.cut?' | cut at max tokens':'')+(s.empty?' | EMPTY':'')})})}
+function summary(){
+ var t=document.getElementById('stab');t.textContent='';
+ var hr=t.insertRow();['','tokens total','mean s/item','mean tok/s','cut at max','empty'].forEach(function(h){var c=document.createElement('th');c.textContent=h;hr.appendChild(c)});
+ ['x','y'].forEach(function(k){var tok=0,sec=0,ts=0,n=0,cut=0,emp=0;
+  items.forEach(function(m){var s=m.stats[k];if(s.tokens==null)return;n++;tok+=s.tokens;sec+=s.seconds||0;ts+=s.tok_s||0;if(s.cut)cut++;if(s.empty)emp++});
+  var r=t.insertRow();[labels[k],tok,n?(sec/n).toFixed(1):'-',n?(ts/n).toFixed(2):'-',cut,emp].forEach(function(v){r.insertCell().textContent=v})})}
+document.getElementById('revealBtn').addEventListener('click',function(){
+ revealed=!revealed;document.body.classList.toggle('revealed',revealed);this.textContent=revealed?'Hide':'Reveal';
+ if(revealed){revealInfo();summary()}else{items.forEach(function(m,i){['A','B'].forEach(function(L){document.getElementById('rv'+i+L).textContent=''})})}});
+document.getElementById('exportBtn').addEventListener('click',function(){
+ var counts={x:0,y:0,tie:0,unjudged:0};
+ var rows=items.map(function(m){var s=state[m.id]||{},p=s.pick||null,w=null;
+  if(p==='A'||p==='B'){w=labels[m.mapping[p]];counts[m.mapping[p]]++}else if(p==='tie')counts.tie++;else counts.unjudged++;
+  return {id:m.id,pick:p,note:s.note||'',mapping:m.mapping,winner_label:p==='tie'?'tie':w}});
+ var out={exported:new Date().toISOString(),seed:D.seed,labels:labels,rows:rows,counts:counts};
+ var b=new Blob([JSON.stringify(out,null,2)],{type:'application/json'}),u=URL.createObjectURL(b),a=document.createElement('a');
+ a.href=u;a.download='text-picks.json';document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(u)},1000)});
+progress();
+})();
+</script></body></html>
+"""
+page = (PAGE.replace("__OPTS__", opts).replace("__CARDS__", "\n".join(cards))
+        .replace("__MISSING__", miss_html).replace("__BLOB__", blob))
+P(a.out).write_text(page, encoding="utf-8")
+print(f"wrote {a.out}: {len(meta)} compared, {len(missing)} missing, labels x={lx!r} y={ly!r}, seed {a.seed}")

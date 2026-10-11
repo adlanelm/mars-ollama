@@ -1,4 +1,5 @@
 # ComfyUI model set (bin/comfy-pull). Format: <hf repo> <path in repo> <ComfyUI models subfolder>
+# or: url <https url> <ComfyUI models subfolder> <sha256>. Licences: docs/licenses.md (nothing non-commercial here)
 # Sizes/licences checked 2026-10-11 via the HF API. Fits a 16 GB GPU; see docs/game-asset-workflow.md.
 # FLUX.2 [klein] 4B (Apache-2.0): fast t2i + multi-reference edit. Comfy-Org/flux2-klein-4B now 307-redirects to this repo (same files)
 Comfy-Org/vae-text-encorder-for-flux-klein-4b split_files/diffusion_models/flux-2-klein-4b.safetensors diffusion_models
@@ -15,12 +16,15 @@ Comfy-Org/Krea2 vae/qwen_image_vae.safetensors vae
 unsloth/Qwen-Image-Edit-2511-GGUF qwen-image-edit-2511-Q4_K_M.gguf unet
 Comfy-Org/Qwen-Image_ComfyUI split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors text_encoders
 # krita-ai-diffusion v1.53.0 (docs/krita.md): filenames/folders as in the plugin's ai_diffusion/presets/models.json
-# required for every architecture: upscalers (default + fast_2x; fast_3x/4x used by the upscale tool) and MAT inpaint pre-fill
-gemasai/4x_NMKD-Superscale-SP_178000_G 4x_NMKD-Superscale-SP_178000_G.pth upscale_models
+# required for every architecture: upscalers and the inpaint pre-fill model.
+# Upscale: OmniSR 2x/3x/4x (Apache-2.0). 4x NMKD Superscale is deliberately absent (no licence on its HF host), so the
+# plugin falls back to OmniSR_X4 as its default upscaler (comfy_client.py _find_upscalers).
 Acly/Omni-SR OmniSR_X2_DIV2K.safetensors upscale_models
 Acly/Omni-SR OmniSR_X3_DIV2K.safetensors upscale_models
 Acly/Omni-SR OmniSR_X4_DIV2K.safetensors upscale_models
-Acly/MAT MAT_Places512_G_fp16.safetensors inpaint
+# Inpaint pre-fill: LaMa big-lama.pt (Apache-2.0, advimman/lama), TorchScript file as linked by comfyui-inpaint-nodes.
+# MAT (CC BY-NC 4.0) must NOT be in models/inpaint: the plugin searches MAT_Places512_G_fp16 before big-lama.pt.
+url https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt inpaint 344c77bbcb158f17dd143070d1e789f38a66c04202311ae3a258ef66667a9ea9
 # Klein 4B fill/expand (outpaint) LoRA; the plugin matches the "LyNiaZ53Tudg0J6sT8Xbx" filename as-is
 fal/flux-2-klein-4B-outpaint-lora LyNiaZ53Tudg0J6sT8Xbx_pytorch_lora_weights_comfy_converted.safetensors loras
 # Z-Image ControlNet union (scribble/edge/depth/pose control layers + inpaint), loaded via ModelPatchLoader

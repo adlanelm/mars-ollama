@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # comfy-pull: download the ComfyUI model set in comfyui/models.txt into ~/llm/comfyui/models/<folder>/.
-# Idempotent: files already present with the HF size are skipped.
+# Idempotent: files already present with the HF size (or the pinned sha256, for url lines) are skipped.
+# Line formats: "<hf repo> <path in repo> <folder>"  or  "url <https url> <folder> <sha256>" (non-HF files, pinned by hash).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 DEST=${COMFY_MODELS:-$HOME/llm/comfyui/models}
@@ -15,7 +16,20 @@ hf_size() {
 }
 
 # redirect from a file (not a pipe) so errors under set -e abort the script
-while read -r repo path folder; do
+# url_pull <url> <folder> <sha256>: plain HTTPS download, verified against the pinned sha256
+url_pull() {
+  local url=$1 folder=$2 sha=$3 name=${1##*/} out
+  out=$DEST/$folder/$name
+  if [[ -f $out ]] && sha256sum -c --status <<<"$sha  $out"; then echo "ok        $folder/$name"; return; fi
+  echo "download  $folder/$name ($url)"
+  mkdir -p "$STAGE" "$DEST/$folder"
+  curl -fsSL --retry 3 -o "$STAGE/$name" "$url"
+  sha256sum -c --status <<<"$sha  $STAGE/$name" || { echo "error     sha256 mismatch for $name" >&2; exit 3; }
+  mv "$STAGE/$name" "$out"
+}
+
+while read -r repo path folder sha; do
+  if [[ $repo == url ]]; then url_pull "$path" "$folder" "$sha"; continue; fi
   name=${path##*/}; out=$DEST/$folder/$name
   size=$(hf_size "$repo" "$path") || { echo "error     cannot resolve $repo/$path" >&2; exit 2; }
   if [[ -f $out && $(stat -c %s "$out") == "$size" ]]; then echo "ok        $folder/$name"; continue; fi

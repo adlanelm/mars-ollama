@@ -2,7 +2,7 @@
 
 How to paint with [krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) **v1.53.0** on top of this repo's ComfyUI container (`comfyui` service, `bin/gpu-mode comfy`, port `127.0.0.1:8188`). Krita is a desktop app that you install yourself. The plugin connects to ComfyUI as a **Custom Server**, so it never installs or downloads anything on its own.
 
-Server side status (checked 2026-10-11): all required custom nodes are present, and the plugin's workload check passes for **Flux 2 Klein 4B, Z-Image, Krea 2 and Qwen Edit Plus** (Qwen-Image-Edit-2511). A test graph with MAT inpaint, OmniSR upscale and `ETN_SaveImageCache` ran successfully on the GPU.
+Server side status (checked 2026-10-11): all required custom nodes are present, and the plugin's workload check passes for **Flux 2 Klein 4B, Z-Image, Krea 2 and Qwen Edit Plus** (Qwen-Image-Edit-2511). A test graph with MAT inpaint, OmniSR upscale and `ETN_SaveImageCache` ran successfully on the GPU. **Changed 2026-10-12 (licence, [licenses.md](licenses.md) P1-c/P2-b):** MAT (CC BY-NC) and 4x NMKD (unclear licence) were removed; the inpaint pre-fill is LaMa `big-lama.pt` (Apache-2.0) and the default upscaler is OmniSR 4x. ComfyUI lists both.
 
 User test in Krita (Flatpak 5.3.4.1, plugin 1.53.0, 2026-10-11): connected as custom server; generate with Klein, generate with Krea 2 (6 steps), inpaint with Klein, and Upscale workspace (4x NMKD Superscale, 2x, refine off) all worked. Times in the ComfyUI log: 24–54 s per generation, 123 s for the first Klein job (model load plus a VAE decode that asked for 31.6 GB and fell back to tiled decoding), 86 s for the upscale; both long ones point to a canvas well above 1024². Use a 1024×1024 document (or selection) for normal work.
 
@@ -64,12 +64,12 @@ Not installed on purpose: SD 1.5 and SDXL (with their IP-Adapter, CLIP vision an
 - Live painting mode: use Klein, since the others are too slow for it.
 - Regions, attention guidance and LCM are SD/SDXL-only features and are not available with these models.
 - ControlNet preprocessors (scribble, line art, depth, pose) download their annotator weights from Hugging Face into the container on first use. The container is not a volume, so they download again after the container is recreated.
-- Upscale: the "Upscale" workspace works with the installed 4x NMKD and OmniSR 2x/3x/4x upscalers. "Refine after upscale" with Z-Image would use the tile model patch, which is not installed.
+- Upscale: the "Upscale" workspace works with the installed OmniSR 2x/3x/4x upscalers (OmniSR 4x is the default since NMKD was removed on 2026-10-12). "Refine after upscale" with Z-Image would use the tile model patch, which is not installed.
 
 ## 6. Troubleshooting
 
 - **"Connection refused"**: ComfyUI is not running. Run `bin/gpu-mode comfy` and wait about 10 s (`bin/gpu-mode status` shows `COMFY running`).
-- **"Missing custom nodes" or "No supported workload"**: the connection panel lists what is missing per base model. Server side, see the container logs: `docker logs comfyui | tail -50`. Client side, see `client.log` (link in Configure > Connection). It lists every search pattern and every file found. Model filenames must contain the plugin's search pattern, for example `MAT_Places512_G_fp16`, `4x_NMKD-Superscale`, `OmniSR_X2`, `qwen_3_4b`, `flux2` (VAE) or `qwen_image` (VAE). Models come from `comfyui/models.txt` and `bin/comfy-pull`. Don't rename the files.
+- **"Missing custom nodes" or "No supported workload"**: the connection panel lists what is missing per base model. Server side, see the container logs: `docker logs comfyui | tail -50`. Client side, see `client.log` (link in Configure > Connection). It lists every search pattern and every file found. Model filenames must contain the plugin's search pattern, for example `big-lama`, `OmniSR_X4`, `OmniSR_X2`, `qwen_3_4b`, `flux2` (VAE) or `qwen_image` (VAE). Models come from `comfyui/models.txt` and `bin/comfy-pull`. Don't rename the files.
 - **Style shows a warning or no model**: open the style and pick a checkpoint that exists on the server, or click Configure > Connection > refresh after adding models.
 - **Out of memory or very slow**: check `bin/gpu-mode status` for leftover LLMs and switch to Klein. Generate at 1024² or below.
 - **Flatpak can't connect but `curl localhost:8188/system_stats` works on the host**: run `flatpak info --show-permissions org.kde.krita`. Only if `network` is missing, run `flatpak override --user --share=network org.kde.krita`.
@@ -80,6 +80,6 @@ Sources: `ai_diffusion/backend/resources.py` (architectures, `required_custom_no
 
 - **Custom nodes (required):** comfyui_controlnet_aux, ComfyUI_IPAdapter_plus, comfyui-tooling-nodes and comfyui-inpaint-nodes. ComfyUI-GGUF is optional. All are baked into `comfyui/Dockerfile` at the plugin's commits.
 - **ComfyUI version:** the plugin pins `4da9e2d` (= ComfyUI v0.33.3) only for its managed local install. For a custom server it checks node classes, not the version, so our v0.39.0 is fine.
-- **Required for every workload:** the default upscaler (`4x_NMKD-Superscale-SP_178000_G.pth`, with an OmniSR 4x fallback), `OmniSR_X2_DIV2K` and the inpaint pre-fill model (`MAT_Places512_G_fp16` or LaMa).
+- **Required for every workload:** the default upscaler (`4x_NMKD-Superscale-SP_178000_G.pth`, else OmniSR 4x; here OmniSR 4x, since NMKD is deliberately absent), `OmniSR_X2_DIV2K` and the inpaint pre-fill model (`MAT_Places512_G_fp16`, else LaMa `big-lama.pt`; here LaMa: MAT is CC BY-NC and must not be put back in `models/inpaint`, because the plugin would pick it first).
 - **Per workload:** a diffusion model the tooling nodes identify as that architecture, plus its text encoder and VAE. Klein 4B needs `qwen_3_4b` and a `flux2` VAE. Z-Image needs `qwen_3_4b` and `ae.safetensors`. Krea 2 needs `qwen3vl_4b` and `qwen_image` VAE. Qwen Edit (Plus for 2509/2511) needs `qwen_2.5_vl_7b` and a `qwen` VAE.
 - **Discovery:** model lists come from `/object_info` loader inputs (`VAELoader`, `DualCLIPLoader`, `UpscaleModelLoader`, `INPAINT_LoadInpaintModel`, `ModelPatchLoader`, `LoraLoader`, ...). Architectures come from `/api/etn/model_info/{checkpoints,diffusion_models,unet_gguf}`. Matching is by filename substring, and files in a `krita` subfolder win ties.

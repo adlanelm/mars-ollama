@@ -1,0 +1,193 @@
+# Licence registry: AI asset pipeline
+
+Audit date **2026-10-11**. It covers every model, tool and dependency that can put content into the shipped game, or whose code or weights might be redistributed. Each licence was read from the licence text at the revision listed: the LICENSE file, the HF card `license:` field and its linked text, or the licence PDF. The repo name alone was never taken as evidence. **[verify]** marks a point that could not be confirmed from a primary source. This is a hobbyist's engineering audit, not legal advice. Get a lawyer's review before a commercial release.
+
+Related: [game-asset-workflow.md](game-asset-workflow.md) · [trellis.md](trellis.md) · [krita.md](krita.md) · [colibri.md](colibri.md) · `~/unity_projects/psx-iso/art-src/README.md`
+
+## Policy
+
+The author is an EU resident and may sell the game later.
+
+| Category | Rule |
+|---|---|
+| Outputs ship in the game (images, textures, meshes, text, audio) | The licence must allow commercial use of outputs. Accepted: permissive OSS (MIT, Apache-2.0, BSD, CC0, CC-BY, WTFPL), or a model licence that explicitly permits commercial use. Record any thresholds or conditions. |
+| Code or weights redistributed with the game (shaders, runtime libs) | Must be permissive, and the notice must be kept in the game's credits/NOTICE file. |
+| Local-only tools whose output is not covered by their licence (GPL editors: Krita, Blender, LMMS; GPL ComfyUI nodes; AGPL FreeMoCap) | **OK** as long as they are not redistributed. Output of a GPL program is not a derivative of it. |
+| Non-commercial / research-only (CC BY-NC, NVIDIA Source Code License-NC, S-Lab, MeshLib NC, Ubisoft ML licence, SMPL) | **NOT OK** for anything that ships. Concept or prototype only, and the output must be tagged `non-commercial`. Note that NC licences restrict the *use* of the tool for monetary gain, so even "only the bake step" or "only the hole filler" taints the asset. |
+| No licence / unclear / custom | **[verify]** until resolved. With no licence, default copyright applies (all rights reserved). |
+| Region exclusions | Never use. Tencent Hunyuan3D / HY-* exclude the EU. |
+
+Verdict scale: **OK** · **OK-cond** (OK with the conditions noted) · **NOT OK** · **[verify]**.
+
+## Registry
+
+### 1. Image generation (ComfyUI, `comfyui/models.txt`)
+
+| Component | Used for | Licence (source @ revision) | Commercial use of outputs | Redistribution | Verdict | Action |
+|---|---|---|---|---|---|---|
+| FLUX.2 [klein] 4B `flux-2-klein-4b.safetensors` | t2i, edits, Krita default | Apache-2.0: [BFL LICENSE.md](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/blob/e7b7dc27f91deacad38e78976d1f2b499d76a294/LICENSE.md) @`e7b7dc27`. File from `Comfy-Org/vae-text-encorder-for-flux-klein-4b` @`5f526678` (card: apache-2.0) | Yes | Yes (Apache notice) | **OK** | none |
+| `qwen_3_4b.safetensors` (encoder for Klein + Z-Image) | text encoder | Apache-2.0: [Qwen/Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B) @`1cfa9a72`. Same file (sha256 `6c671498…`) in the Klein and Z-Image Comfy-Org repos | Yes | Yes | **OK** | none |
+| `flux2-vae.safetensors` | VAE | Apache-2.0 (Comfy-Org Klein repo card @`5f526678`) | Yes | Yes | **OK** | none |
+| Z-Image Turbo `z_image_turbo_bf16` | t2i + control layers | Apache-2.0: [card](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) @`f332072a` (tag only, no LICENSE file in HF repo); [GitHub LICENSE](https://github.com/Tongyi-MAI/Z-Image/blob/26f23eda626ffadda020b04ff79488e1d72004cd/LICENSE) @`26f23eda` is Apache-2.0. Repack `Comfy-Org/z_image_turbo` @`6fc90a3b` | Yes | Yes | **OK** | none |
+| Z-Image `ae.safetensors` | VAE | `Comfy-Org/z_image_turbo` @`6fc90a3b` card says apache-2.0. The file (sha256 `afc8e282…`) appears to be the FLUX.1 autoencoder; FLUX.1-schnell (apache-2.0, @`741f7c3c`) is gated, so the hash was not compared | Yes | Yes | **OK [verify]** | Optionally confirm the hash against FLUX.1-schnell after accepting its gate |
+| **Krea 2 Turbo fp8** `krea2_turbo_fp8_scaled` | main t2i (concepts, textures) | **Krea 2 Community License v1 (2026-06-22)**: [LICENSE.pdf](https://huggingface.co/Comfy-Org/Krea-2/blob/eb1eddd3983a54678545a9b2c178c5853b30f7be/LICENSE.pdf) in `Comfy-Org/Krea-2` @`eb1eddd3` (PDF sha256 `b82a2805…`), plus [AUP](https://www.krea.ai/krea-2-use-policy) incorporated by §4.4. `Comfy-Org/Krea2` now 307-redirects to `Comfy-Org/Krea-2` | **Yes, conditionally**: §2.3 only while company-wide trailing-12-month revenue is **< USD 1M**; §5.3 you own outputs | Weights: only with the licence, a "Krea" name prefix and a NOTICE file (§3). Not needed, since weights don't ship | **OK-cond** | Conditions: (a) revenue < $1M, else an enterprise licence; (b) **§9.2 Krea may terminate for convenience on 30 days' notice**, after which the model must not be used (output ownership §5 survives); (c) §4.2 content filtering: human review counts (§4.2(c)); (d) §4.3 AI disclosure where law or the platform requires it (Steam's AI disclosure); (e) AUP: no third-party IP or likeness, don't pass outputs off as human-made "in a manner intended to deceive"; (f) §8 indemnity runs to Krea. Tag outputs `krea2-community`. |
+| `qwen3vl_4b_fp8_scaled` (Krea 2 encoder) | text encoder | Ships inside `Comfy-Org/Krea-2` (Krea licence link). Derived from Qwen3-VL-4B (apache-2.0, [Qwen/Qwen3-VL-4B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct) @`ebb281ec`); identity not hash-checked | Yes (as part of Krea) | n/a | **OK-cond** (same as Krea) | none |
+| `qwen_image_vae.safetensors` | VAE for Krea 2 and Qwen Edit | Byte-identical (sha256 `a70580f0…`) to `Comfy-Org/Qwen-Image_ComfyUI` @`1f12b17b` (apache-2.0, Qwen-Image VAE) | Yes | Yes | **OK** | none |
+| Qwen-Image-Edit-2511 `Q4_K_M.gguf` | instruction edits | Apache-2.0: [Qwen/Qwen-Image-Edit-2511](https://huggingface.co/Qwen/Qwen-Image-Edit-2511) @`6f3ccc0b` (card plus README "Qwen-Image is licensed under Apache 2.0"). Quant: `unsloth/Qwen-Image-Edit-2511-GGUF` @`0d33d969` declares apache-2.0, base_model set | Yes | Yes | **OK** | none |
+| `qwen_2.5_vl_7b_fp8_scaled` | Qwen Edit encoder | Apache-2.0: [Qwen/Qwen2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) @`cc594898`. Repack `Comfy-Org/Qwen-Image_ComfyUI` @`1f12b17b` | Yes | Yes | **OK** | none |
+
+### 2. Krita helper models and ComfyUI nodes
+
+| Component | Used for | Licence (source @ revision) | Commercial use of outputs | Redistribution | Verdict | Action |
+|---|---|---|---|---|---|---|
+| **MAT** `MAT_Places512_G_fp16` | inpaint pre-fill. Only used by **Remove object** mode or Fill = "Inpaint" (`workflow.py:897`, `detect_inpaint`) | **CC BY-NC 4.0**: [Acly/MAT](https://huggingface.co/Acly/MAT) @`f8cc47fc`; upstream [fenglinglwb/MAT LICENSE](https://github.com/fenglinglwb/MAT/blob/d273d891ecdad2e1df106516423a75bc45b2d800/LICENSE) @`d273d891` | **No** | No | **NOT OK** | Replace with **LaMa `big-lama.pt`** (plugin accepts it, `resources.py:811`). See plan P1-c |
+| 4x NMKD Superscale SP_178000_G | default upscaler | HF rehost [gemasai/…](https://huggingface.co/gemasai/4x_NMKD-Superscale-SP_178000_G) @`ecf220ff` has **no licence**. File sha256 `1d1b0078…` matches [OpenModelDB 4x-NMKD-Superscale](https://github.com/OpenModelDB/open-model-database/blob/782aac088bd83dd3fc438a42eb0c3868dc559110/data/models/4x-NMKD-Superscale.json) @`782aac08`, which lists **WTFPL** (author nmkd, 2020). The author's own statement was not found | Yes if WTFPL | Yes if WTFPL | **OK [verify]** | Keep, or delete it so the plugin falls back to OmniSR 4x (`comfy_client.py:815-817`). See P2-b |
+| OmniSR X2/X3/X4 DIV2K | fast upscalers | Apache-2.0: [Acly/Omni-SR](https://huggingface.co/Acly/Omni-SR) @`b28a7caa`; upstream README "released under the Apache 2.0 license" ([Francis0625/Omni-SR](https://github.com/Francis0625/Omni-SR/tree/cd9901e3e9055b44ec22e6b2c408a08d31ea3dd4) @`cd9901e3`, no LICENSE file) | Yes | Yes | **OK** | none |
+| Klein outpaint LoRA `LyNiaZ53Tudg0J6sT8Xbx_…` | Fill/Expand with Klein | Apache-2.0: [fal/flux-2-klein-4B-outpaint-lora](https://huggingface.co/fal/flux-2-klein-4B-outpaint-lora) @`b11770ac` (card), base FLUX.2-klein-4B (Apache) | Yes | Yes | **OK** | none |
+| Z-Image-Turbo-Fun-Controlnet-Union-2.1 (lite 2601 8 steps) | control layers / inpaint for Z-Image | Apache-2.0: [alibaba-pai/…-Union-2.1](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1) @`5155fc56` | Yes | Yes | **OK** | none |
+| controlnet_aux **Depth** (plugin hardcodes `depth_anything_v2_vitb.pth`, `workflow.py:1290`) | "generate depth from image" | **CC BY-NC 4.0**: [depth-anything/Depth-Anything-V2-Base](https://huggingface.co/depth-anything/Depth-Anything-V2-Base) @`a4e71a6c` | **No** | No | **NOT OK** | Don't use the depth preprocessor. Supply depth from Blender (Z pass), or use V2-**Small** (apache-2.0, @`03876f86`) via a local plugin patch. See P1-d |
+| controlnet_aux **Pose** (DWPose `dw-ll_ucoco_384` + `yolox_l.onnx`) | pose from image | Apache-2.0: [yzd-v/DWPose](https://huggingface.co/yzd-v/DWPose) @`1a714410`, [hr16/yolox-onnx](https://huggingface.co/hr16/yolox-onnx) @`a124b32c`, [hr16/DWPose-TorchScript-BatchSize5](https://huggingface.co/hr16/DWPose-TorchScript-BatchSize5) @`359d662a` | Yes | Yes | **OK** | none (`yolo_nas_l_fp16` is only used in the plugin's managed "runtime" mode, not with our custom server) |
+| controlnet_aux **Soft edge** (AnyLine MTEED) | soft-edge from image | OpenRAIL++: [TheMistoAI/MistoLine](https://huggingface.co/TheMistoAI/MistoLine) @`1d9d0b3d` | Yes, with OpenRAIL use restrictions | Yes, with restrictions passed on | **OK-cond** | none |
+| controlnet_aux **Scribble / Line art / Normal / Segmentation** (PiDiNet, `sk_model`, BAE `scannet.pt`, OneFormer COCO) | control from image | [lllyasviel/Annotators](https://huggingface.co/lllyasviel/Annotators) @`982e7eda`: `license: other`, **no licence text**; each file comes from a different upstream | unknown | unknown | **[verify]** | Until checked, draw control layers by hand (the preprocessor only runs on "generate from image"). Canny has no weights: **OK** |
+| ComfyUI v0.39.0 | server | GPL-3.0 ([LICENSE](https://github.com/Comfy-Org/ComfyUI/blob/v0.39.0/LICENSE) @`b0b74356`) | Yes (output not covered) | Local only | **OK** (local tool) | Don't ship |
+| ComfyUI-GGUF @`01f8845b` | GGUF loader | Apache-2.0 | Yes | Yes | **OK** | none |
+| comfyui-tooling-nodes @`ca011164`, comfyui-inpaint-nodes @`12937559`, ComfyUI_IPAdapter_plus @`b188a6cb` | Krita plugin nodes | GPL-3.0 | Yes (output not covered) | Local only | **OK** (local tool) | No IP-Adapter / CLIP-vision models are installed (krita.md) |
+| comfyui_controlnet_aux @`e8b689a5` | preprocessor code | Apache-2.0 (LICENSE.txt). The weights are the rows above | Per weight | Yes | **OK** (code) | none |
+| krita-ai-diffusion v1.53.0 @`0217cd21`, Krita 5.3.4.1 | painting | GPL-3.0 | Yes | Local only | **OK** (local tool) | none |
+
+### 3. Image → 3D (TRELLIS.2 image `comfyui-trellis2-rocm:0.39.0-b3b9e95`)
+
+| Component | Used for | Licence (source @ revision) | Commercial use of outputs | Redistribution | Verdict | Action |
+|---|---|---|---|---|---|---|
+| TRELLIS.2 code (o-voxel built from it) | generator, o-voxel | MIT: [microsoft/TRELLIS.2 LICENSE](https://github.com/microsoft/TRELLIS.2/blob/75fbf0183001ed9876c8dbb35de6b68552ee08bd/LICENSE) @`75fbf018`. The README says nvdiffrast/nvdiffrec "governed by its own License" | Yes | Yes | **OK** | none |
+| TRELLIS.2-4B weights | generator | MIT: [microsoft/TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) @`af44b45f` (card: "released under the MIT License"). The stage-1 decoder `ss_dec_conv3d_16l8_fp16` comes from [microsoft/TRELLIS-image-large](https://huggingface.co/microsoft/TRELLIS-image-large) @`25e0d31f` (MIT) | Yes | Yes | **OK** | none |
+| `Aero-Ex/Trellis2-GGUF` @`edf81aef` (what we download) | quantised weights | **No licence, no README**. All 10 safetensors are **byte-identical** to Microsoft's MIT files (LFS sha256 compared). The GGUFs are quantisations of those weights and can't be hash-checked | Yes (MIT-derived) | Not ours to redistribute anyway | **OK-cond** | Record as "MIT (Microsoft), quantised by Aero-Ex". Optionally switch to the official weights (P2-a) |
+| `Aero-Ex/ComfyUI-Trellis2-GGUF` @`b3b9e951` | node pack | MIT (LICENSE is Microsoft's MIT text) | Yes | Yes | **OK** (code), but it **imports nvdiffrast and meshlib at module load** (`nodes.py:45-48`) | Stub those imports in the clean image (P0-b) |
+| **DINOv3 ViT-L/16** | image conditioning encoder | **Meta DINOv3 License** ([facebookresearch/dinov3 LICENSE.md](https://github.com/facebookresearch/dinov3/blob/6876159a11b4df116f30f667f8c9888617df0751/LICENSE.md) @`6876159a`, "Last Updated: August 19, 2025"). HF [facebook/dinov3-vitl16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m) @`ea8dc286`, gated (manual), `license: dinov3-license` | **Yes**. No non-commercial clause and no output restriction. Limits: trade controls; no ITAR/military/weapons/nuclear/espionage use (§1.b.v); comply with law; don't reverse-engineer (§1.b.iv). Meta may amend the terms unilaterally (§8) and terminate on breach (§6) | Only with a copy of the Agreement (§1.b.i) | **OK-cond** | **`Aero-Ex/Dinov3` @`33aa6136` is an ungated re-upload with no Agreement**, which breaches §1.b.i on their side. Fetch from Meta's gated repo instead (P1-a). It can't be swapped for another encoder without retraining TRELLIS.2 (the flow models are conditioned on DINOv3 features) |
+| **nvdiffrast** v0.4.0 (`253ac4fc`) + v0.3.5 (`20c4135f`), hipified | **texture bake**: UV-space `dr.rasterize` + `dr.interpolate` (`nodes.py:1988` in PostProcessAndUnWrapAndRasterizer; `o_voxel/postprocess.py:230`). Also `trellis_main.py` creates a GL context at start. **Not used by generation** (flow models, decoders, flexible dual grid) | **NVIDIA Source Code License (1-Way Commercial) §3.3**: "may be used or intended for use non-commercially … 'non-commercially' means for research or evaluation purposes only and **not for any direct or indirect monetary gain**" ([LICENSE.txt @v0.4.0](https://github.com/NVlabs/nvdiffrast/blob/253ac4fcea7de5f396371124af597e6cc957bfae/LICENSE.txt)) | **No** | No | **NOT OK** | Bake without it (P0-a/b/c) |
+| **nvdiffrec renderutils** (`JeffreyXiang/nvdiffrec` @`b296927c`) | only imported in `pbr_mesh_renderer.py` (preview rendering), not in our workflow | NVIDIA Source Code License for nvdiffrec §3.3 (same NC clause) | No | No | **NOT OK** | Drop it from the image (P0-b) |
+| **MeshLib** (`meshlib` / `meshlib-core` 3.1.4.297) | **hole filling**: `fill_holes: true` in our workflow calls `mrmeshpy.fillHole` (`nodes.py:1789-1830`). Also the optional "Meshlib" simplify and the FillHolesWithMeshlib node | **"NON-COMMERCIAL & education LICENSE AGREEMENT"**: "solely for non-commercial, evaluation or educational purposes", terminable on notice ([LICENSE @v3.1.4.297](https://github.com/MeshInspector/MeshLib/blob/8e821cd007891259914777e2a162b90a1e1964d6/LICENSE) `8e821cd0`; PyPI `LicenseRef-MeshLib`) | **No** | No | **NOT OK** | `fill_holes: false`, or CuMesh `fill_holes()` (MIT), or Blender (P0-a) |
+| CuMesh (`visualbruno/CuMesh` @`d10e54c3`, bundles xatlas) | remesh, simplify, UV unwrap | MIT | Yes | Yes | **OK** | none |
+| FlexGEMM @`6dd94a85`, utils3d @`83bfa5bd` | sparse conv, utils | MIT | Yes | Yes | **OK** | none |
+| xatlas ([jpcy/xatlas](https://github.com/jpcy/xatlas/blob/f700c7790aaa030e794b52ba7791a05c085faf0c/LICENSE) @`f700c779`; py `xatlas` 0.0.11) | UV unwrap | MIT | Yes | Yes | **OK** | none |
+| pymeshlab 2025.7.post1 | imported by the node pack | GPL-3.0 (PyPI) | Yes (output not covered) | Local only | **OK** (local) | none |
+| open3d 0.20.0 / trimesh | optional smoothing / mesh I/O | MIT | Yes | Yes | **OK** | none |
+| rembg 2.0.85 | background removal | MIT ([LICENSE.txt](https://github.com/danielgatis/rembg/blob/cd8f3665dda6c246b5baecb85fda6a2acd644c2a/LICENSE.txt) @`cd8f3665`) | Yes | Yes | **OK** | none |
+| `isnet-general-use.onnx` (rembg default here) | background removal | [xuebinqin/DIS](https://github.com/xuebinqin/DIS/tree/b6764e20381f6f42a70f83fa3324181529ed1403) @`b6764e20`: LICENSE.md is Apache-2.0, but the README says "Our **code and evaluation metric** use Apache License 2.0" and puts the DIS5K data under separate terms. The weights are **not explicitly licensed** | probably | probably | **OK [verify]** | Prefer `REMBG_MODEL=birefnet-general` (BiRefNet MIT: [GitHub](https://github.com/ZhengPeng7/BiRefNet/blob/c4d649666cc171486329413dc2b61f0137158b6a/LICENSE) @`c4d64966`, [HF](https://huggingface.co/ZhengPeng7/BiRefNet) @`e2bf8e44`), or give the node an RGBA from Krita with `remove_background: false` (P2-c) |
+| BRIA RMBG-2.0 (`pipeline.json` default) | none; patched out | CC BY-NC 4.0 | No | No | **NOT OK** (avoided) | Keep the Dockerfile patch |
+| egore install script (`egore/comfyui-trellis2-gguf-rocm` @`0afa00c92dd9`) | build recipe, fetched at build time | **No LICENSE file** (all rights reserved by default) | n/a (build only) | Must not be redistributed (also applies to an image published with it) | **[verify]** / replace | Own pinned install script (P1-b) |
+| toastmanAu patch 06 @`2c93cb94` | node bugfix | MIT | n/a | Yes | **OK** | none |
+
+### 4. LLMs for game text (`llama-swap/models.lock.yaml`, colibri)
+
+| Component | Used for | Licence (source @ revision) | Commercial use of outputs | Redistribution | Verdict | Action |
+|---|---|---|---|---|---|---|
+| Qwen3.8-27B (`unsloth/Qwen3.8-27B-GGUF` @`4ca72078`, UD-Q3_K_XL) | coding, VLM critique, text | Apache-2.0: [Qwen/Qwen3.8-27B LICENSE](https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/LICENSE) @`1d4bf0f2`. The unsloth repo declares apache-2.0 and its base_model | Yes | Yes | **OK** | none |
+| Qwen3.6-35B-A3B (`unsloth/…-GGUF` @`a483e9e6`) | long-context text | Apache-2.0: [LICENSE](https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/LICENSE) @`995ad96e`. unsloth declares apache-2.0 | Yes | Yes | **OK** | none |
+| Gemma 4 26B-A4B it QAT (`unsloth/gemma-4-26B-A4B-it-qat-GGUF` @`7b92b5b2`) | text | **Apache-2.0**: `google/gemma-4-26B-A4B-it` @`4d7ae498` links [ai.google.dev/gemma/docs/gemma_4_license](https://ai.google.dev/gemma/docs/gemma_4_license), which (fetched 2026-10-11) is the plain Apache-2.0 text. Unlike Gemma 1–3, that licence does not incorporate the Prohibited Use Policy, although the docs site still lists a "Prohibited use" page | Yes | Yes | **OK** ([verify] whether Google treats the PUP as binding for Gemma 4; irrelevant for game text) | none |
+| Qwen3.8-Flash-Next-FP8 (colibri, `Qwen/Qwen3.8-Flash-Next-FP8` @`236dfdf2`) | overnight lore batches | **Qwen Community License 1.0**: [LICENSE](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/LICENSE) @`de4b8e4d`. MIT-style grant including "sell"; conditions: keep the notice; show the model name in the UI only above 100M MAU or USD 20M **monthly** revenue; a separate licence is needed only for "Model as a Service" or "AI Work Assistant" businesses | Yes | Yes, with notice | **OK-cond** (conditions don't apply to a game) | none |
+| colibri engine | inference | Apache-2.0 (JustVugg/colibri @`bf244291`) | n/a | Yes | **OK** | none |
+| GGUF quantiser repos (unsloth) | quantisation | Every unsloth repo used declares the same licence as its base and sets `base_model`. Quantisation does not change the licence | n/a | n/a | **OK** | none |
+
+The docling / embedding / reranker models in the lock file (granite, bge, snowflake) do not produce game content and are out of scope.
+
+### 5. Planned, not installed (from game-asset-workflow.md)
+
+| Component | Licence (source @ revision) | Verdict | Note / alternative |
+|---|---|---|---|
+| Stable Audio 3 Small-SFX ([stabilityai/stable-audio-3-small-sfx](https://huggingface.co/stabilityai/stable-audio-3-small-sfx) @`05ca3857`) | Stability AI Community License (gated). Text read from a mirror, **[verify]** after accepting the gate | **OK-cond** | Free below USD 1M annual revenue; **register** at stability.ai/community-license for commercial use; you own outputs; AUP; bundles T5Gemma (Gemma terms) [verify]. Alternative: jsfxr (Unlicense), own Foley |
+| ACE-Step 1.5 (GH `ace-step/ACE-Step-1.5` @`ca1e85fe`, HF @`19671f40`) | MIT code + weights | **OK** | The authors say training data is licensed/royalty-free [verify]; check generated music for similarity to existing tracks |
+| Material Maker (`RodZill4/material-maker` @`174f15ed`) | MIT | **OK** | Bundled material library not audited [verify] |
+| **Ubisoft CHORD** (GH @`675a29d1`, HF @`2b61fc12`) | Ubisoft ML License, research-only, copyleft | **NOT OK** | Material Maker, or CC0 PBR sets (ambientCG, Poly Haven) |
+| CharacterSheet LoRAs (`Alissonerdx/CharacterSheet` @`3dc42951`) | Civitai model licence (commercial flags set) on top of the base model's licence | Krea 2 variants **OK-cond** (Krea terms); **Klein 9B variants NOT OK** (FLUX.2-klein-9B is `flux-non-commercial-license`) | Use the Krea 2 variants, or train your own on Klein 4B (Apache) |
+| SkinTokens (GH @`273b691d`, HF @`79736cad`) | MIT | **OK-cond** | Training data includes Objaverse-derived sets with mixed licences [verify]; no SMPL |
+| UniRig (GH @`6793c664`, HF @`36842e2b`) | MIT | **OK-cond** | Same Objaverse/VRoid data caveat [verify] |
+| **GVHMR** (`zju3dv/GVHMR` @`ee960bb6`) | Custom ZJU licence: research / non-profit only. Needs **SMPL/SMPL-X** (non-commercial; explicitly bans "production of other artifacts for commercial purposes") | **NOT OK** | FreeMoCap, hand keying, CC0 animation libraries |
+| FreeMoCap (`freemocap/freemocap` @`75c8acc2`) | AGPL-3.0 (local tool; motion output not covered) | **OK-cond** | Don't ship its code. Licences of the RTMPose/YOLOX and MediaPipe weights not read [verify] |
+| Pixal3D (`TencentARC/Pixal3D` @`f7cf3842`, HF @`b0cb2e1b`) | MIT code + weights. The default pipeline uses RMBG-2.0 (NC) and nvdiffrast/nvdiffrec (NC), and references DINOv3 | **NOT OK as shipped**; OK-cond after the same swaps as TRELLIS.2 | It runs through the same Aero-Ex node, so the P0 clean path covers it too. No EU exclusion found in its MIT licence [verify the NOTICE] |
+| **FastMesh** (GH @`8e971227`) | S-Lab License 1.0 (non-commercial) | **NOT OK** | DeepMesh, or Blender retopo |
+| DeepMesh (GH @`940d23ee` Apache-2.0, HF @`a19a1bff` MIT) | permissive | **OK-cond** | Dependencies (Michelangelo encoder etc.) not audited [verify] |
+| **MeshAnything V2** (GH @`461d3b6e`) | S-Lab License 1.0 (NC) in the repo. The HF "MIT" tag conflicts with it; the Michelangelo encoder is LGPL-3.0 | **NOT OK** | DeepMesh |
+| Kenney assets | CC0 (kenney.nl/support) | **OK** | none |
+| Quaternius assets | **Quaternius Asset License v1.0** (updated 2026-08-28), not CC0: free commercial use, no credit required, **no redistribution as stand-alone assets or packs** (§3a) | **OK-cond** | Packs downloaded before 2026-08-28 may be CC0 [verify per pack]; don't commit raw packs to a public repo |
+| retropsx-urp (`Natteens/retropsx-urp` @`7102c255`) | MIT | **OK** | Ships in the game: keep the notice in credits |
+| URP-PSX-Unity6 (`Clufin/URP-PSX-Unity6` @`a581eda4`) | MIT | **OK** | Ships in the game: keep the notice |
+| unity-mcp (`CoplayDev/unity-mcp` @`142ea0af`), blender-mcp (`ahujasid/blender-mcp` @`7a0373ec`) | MIT | **OK** (local tools) | v10.3 tag not confirmed [verify] |
+| jsfxr (`chr15m/jsfxr` @`b7b6aa27`) | Unlicense | **OK** | none |
+| Vital synth | Proprietary EULA: rendered audio may be used commercially | **OK-cond** | Never ship Vital presets or wavetables, and don't distribute content made from "unaltered" factory content [verify the full EULA] |
+| LMMS (`LMMS/lmms` @`a2f57e70`) | GPL-2.0 (local tool) | **OK** | Bundled samples not audited: use your own [verify] |
+| Pixelorama (@`e205f476`) | MIT | **OK** | none |
+| Tencent Hunyuan3D / HY-Motion | Licence excludes the EU | **NOT OK** | Already excluded |
+
+## Assets already produced (status 2026-10-11)
+
+| Asset | Chain | Verdict | What to do |
+|---|---|---|---|
+| `~/llm/comfyui/output/krea-sweep/**` (incl. `s6-1024/05_1234.png`, the terminal concept) | Krea 2 Turbo → PNG | **OK-cond** (Krea: < $1M, terminable) | Tag `krea2-community` when copied to `art-src/` |
+| `~/llm/trellis/out/trellis2/prop-terminal_0000{1,2}_.glb` (+ preview PNG) | Krea concept → rembg isnet → TRELLIS.2 GGUF + DINOv3 (Aero-Ex re-upload) → **MeshLib `fillHole`** → **nvdiffrast UV bake** | **NOT OK, prototype only**: two non-commercial tools touched the geometry and the texture | Don't import into `Assets/`. Regenerate through the clean path (P0), about 67 s per asset; same seed, same concept |
+| Krita session results | Klein generate/inpaint, Krea generate, NMKD upscale | Likely **OK** / OK-cond. Klein *Fill* uses blur pre-fill, not MAT; `client.log` shows no MAT or depth-preprocessor job | **[verify]** in your own `.kra` files that you didn't use *Remove object* (MAT) or *depth from image* (DA-V2-Base). Tag any that did as `non-commercial` |
+| Colibri Phase-7 lore batch | Qwen3.8-Flash-Next | **OK** | Tag `qwen-community` |
+| Unity `Assets/`, `art-src/` | none: no AI assets yet (only `psx_checker.png`, own shaders) | clean | Start tagging from the first import |
+
+## Replacement plan (prioritised)
+
+**P0: before any 3D asset goes into `Assets/`.** This is the only NOT OK component actually in use for game assets.
+
+| # | Change | Effort | Cost / quality impact |
+|---|---|---|---|
+| P0-a | **Workflow**: in `trellis2_512_api.json`, set node 5 to `fill_holes: false` and `bake_on_vertices: true` (`simplify_method: Cumesh` is already set). The node then skips MeshLib and nvdiffrast entirely and writes a mesh with per-vertex RGBA sampled from the voxel attribute grid (`nodes.py:1838ff`, BVH + `grid_sample_3d`, both MIT). Lower `target_face_num` to about 50k so the vertex density stays useful | 5 min | Loses the 2048² baseColor and metallicRoughness UV textures. Colour resolution is roughly one colour per vertex (about 25–125k vertices), which is more than a 128/256 px PS1 texture can show anyway. Metal/roughness are not used by the PSX shader. Holes stay open: fill them in Blender (`Select Non-Manifold` → `Fill`) or use CuMesh `fill_holes()` (MIT, one-line node patch) |
+| P0-b | **Clean image**: build a variant without nvdiffrast, nvdiffrec and meshlib. Drop those builds and `meshlib-core` from the install, add stubs (`nvdiffrast/torch.py`, `meshlib/mrmeshpy.py`, `mrmeshnumpy.py` that raise on attribute use) because `nodes.py` and the pipelines import them at module load, and drop `trellis_main.py` (its only job is the nvdiffrast GL context) | 1–2 h + 8 min build | Smaller image, no EGL/Mesa workaround. Nodes that need those libs (UV bake, MeshLib simplify/fill, PBR preview renderer) fail loudly instead of tainting outputs |
+| P0-c | **Blender bake** in `ps1_prep.py`: decimate the high-poly vertex-colour mesh to 300–3k tris, Smart UV, then Cycles *Bake → Diffuse (Color only)* or *Emit* from the high-poly color attribute, **selected-to-active**, into a 1024² image, and derive the 128/256 px texture from it | 1–2 h | Blender is GPL; its output is unencumbered. This is the same step already planned for PS1 re-UV, so there's no extra runtime per asset (a few seconds of bake) |
+| P0-d (optional) | **Pure-PyTorch UV rasterizer** to restore 2048² PBR textures in the node. Replace `dr.rasterize(ctx, uvs, faces)` + `dr.interpolate` with a per-triangle bounding-box barycentric fill in UV space: UV charts from xatlas don't overlap, so no depth test is needed. Alternatively use moderngl (MIT) on EGL | 0.5–1 day | Same quality as now, GPU via ROCm torch. Only worth it if non-PS1 or higher-res textures are wanted |
+
+**P1: provenance and the remaining NOT OK items in Krita.**
+
+| # | Change | Effort | Cost / quality impact |
+|---|---|---|---|
+| P1-a | **DINOv3 from Meta**: accept the gate on `facebook/dinov3-vitl16-pretrain-lvd1689m`, pin `@ea8dc286`, fetch with an HF token in `fetch-weights.py`, keep `LICENSE.md` next to it. Compare its sha256 with the Aero-Ex file (`dcb2e451…`) | 15 min | None (it should be the same weights) |
+| P1-b | **Replace the egore script** with our own `trellis/install.sh`. `pin-install.sh` already lists every step and pin; turn that into explicit commands and leave out the NC packages (P0-b) | 2–4 h | No more fetch-at-build of an unlicensed script; reproducible |
+| P1-c | **MAT → LaMa**: add `big-lama.pt` (Apache-2.0, [advimman/lama](https://github.com/advimman/lama/blob/786f5936b27fb3dacd2b1ad799e4de968ea697e7/LICENSE) @`786f5936`; file from the [Sanster/models release `add_big_lama`](https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt), 205,669,692 bytes; pin sha256 on first download) to `models/inpaint`, and **delete `MAT_Places512_G_fp16`**, since MAT is listed first in the plugin's search patterns. Update `comfyui/models.txt` (the GitHub URL isn't an HF repo, so `comfy-pull` needs a URL line or a manual step) | 15 min | Only affects *Remove object* / Fill = Inpaint pre-fill, which the diffusion pass then repaints. LaMa is about 200 MB and fast; MAT is a bit better on very large holes (subjective) |
+| P1-d | **Depth control**: don't use "depth from image" (DA-V2-Base, NC). Render a depth pass in Blender and use it as the control image, or patch the local plugin (`workflow.py:1290`) to `depth_anything_v2_vits.pth` (V2-Small, Apache-2.0) | 0–30 min | Small model: coarser depth; Blender depth: exact |
+
+**P2: tidy-ups and [verify] items.**
+
+| # | Change | Effort | Cost / quality impact |
+|---|---|---|---|
+| P2-a | **Official TRELLIS weights** instead of Aero-Ex GGUF (optional; the hash check shows the Aero-Ex safetensors are Microsoft's). Either keep Q8_0 GGUF tagged "MIT (Microsoft) quantised by Aero-Ex", or use `microsoft/TRELLIS.2-4B` bf16 safetensors (16.2 GB vs about 11 GB at Q8_0) plus `TRELLIS-image-large` ss_dec. The node only exposes GGUF formats in its dropdown, but `model_manager.py` has a safetensors/precision branch, so it needs a one-line patch adding e.g. `"safetensors (BF16)"`. VRAM: each 1.3B DiT is 2.6 GB bf16 and `low_vram` loads them one at a time, so the peak should stay well under 16 GB **[verify by test]** | 1 h | +5 GB disk, likely slightly slower than Q8 GGUF on this card [verify] |
+| P2-b | **NMKD Superscale**: keep (WTFPL via a hash-matched OpenModelDB entry), or delete it so the plugin uses OmniSR 4x (Apache) as default. Real-ESRGAN x4plus (BSD-3, [Comfy-Org/Real-ESRGAN_repackaged](https://huggingface.co/Comfy-Org/Real-ESRGAN_repackaged) @`5fd49b7b`) can be added and picked by hand in the Upscale workspace (the list shows every file in `upscale_models`) | 5 min | OmniSR: faster, less denoising than NMKD |
+| P2-c | **Background removal**: `REMBG_MODEL=birefnet-general` (MIT) in compose, or alpha from Krita with `remove_background: false` | 5 min | BiRefNet is larger (~900 MB ONNX) and slower on CPU, with better edges |
+| P2-d | **Annotators [verify]**: read the upstream licences of PiDiNet, informative-drawings (`sk_model`), BAE normal and OneFormer before using the scribble, line-art, normal or segmentation "from image" preprocessors on shipped assets | 30 min | none |
+
+## How to tag outputs (provenance)
+
+Every file under `art-src/` (concept PNG, raw `.glb`, `.blend`, texture, audio, text batch) gets a sidecar `<file>.prov.json`. When an asset is derived from another, list the parents. The asset's verdict is the **worst verdict in its chain**.
+
+```json
+{
+  "asset": "art-src/props/terminal/terminal_raw.glb",
+  "created": "2026-10-12T10:31:00+02:00",
+  "tool_chain": [
+    {"step": "concept", "model": "krea2_turbo_fp8_scaled", "repo": "Comfy-Org/Krea-2@eb1eddd3",
+     "licence": "krea2-community-v1", "verdict": "OK-cond", "seed": 1234, "steps": 6,
+     "workflow": "art-src/workflows/krea2_turbo.json", "prompt_file": "art-src/prompts/terminal.md"},
+    {"step": "bg-removal", "model": "birefnet-general", "licence": "MIT", "verdict": "OK"},
+    {"step": "image-to-3d", "model": "TRELLIS.2-4B Q8_0", "repo": "Aero-Ex/Trellis2-GGUF@edf81aef",
+     "licence": "MIT (Microsoft)", "verdict": "OK-cond", "seed": 1234,
+     "encoder": "facebook/dinov3-vitl16-pretrain-lvd1689m@ea8dc286 (DINOv3 License)",
+     "image": "comfyui-trellis2-rocm:<tag>", "workflow": "trellis/workflows/trellis2_512_api.json",
+     "postprocess": {"fill_holes": false, "bake_on_vertices": true, "nvdiffrast": false, "meshlib": false}}
+  ],
+  "parents": ["art-src/concepts/terminal_05_1234.png"],
+  "verdict": "OK-cond",
+  "conditions": ["krea2: revenue < USD 1M, terminable on 30 days notice", "AI disclosure (Steam)"],
+  "human_edits": "none"
+}
+```
+
+Rules:
+
+- `verdict` is one of `OK`, `OK-cond`, `NOT-OK`, `verify`. Only `OK` and `OK-cond` may be imported into Unity `Assets/`. An `AssetPostprocessor` or pre-commit check can refuse any asset whose sidecar is missing or says `NOT-OK`.
+- Record the image tag and the workflow path, so a re-run reproduces the asset. Krita assets: note the style (model), seed if shown, and mode (generate / fill / remove object / upscale).
+- Keep `human_edits` honest (repaint %, Blender retopo). It matters for the AI disclosure and for any later "replace if Krea terminates" sweep (filter `licence == krea2-community-v1`).
+- The simple `licence:/model:/seed:` lines in `art-src/README.md` remain acceptable for concepts. Use the JSON sidecar from the first mesh onward.
+- Shipping notices: keep a `THIRD_PARTY_NOTICES.txt` in the game for redistributed code (PSX shaders MIT, any runtime libs). Model licences don't need to ship, since no weights ship.

@@ -2,7 +2,7 @@
 """ps1_preview: PS1-style preview for every <name>.png under a directory -> <name>_ps1.png next to it.
 Box-downscale to 256x256, 4x4 ordered (Bayer) dither to 15-bit RGB555 like the PS1 GPU, quantize to 64 colours
 (no further dither), upscale x2 nearest. Needs Pillow; run without host installs:
-  uvx --with pillow python comfyui/sweeps/ps1_preview.py ~/llm/comfyui/output/krea-sweep [--size 256 --colors 64 --scale 2]"""
+  uvx --with pillow==12.3.0 python comfyui/sweeps/ps1_preview.py ~/llm/comfyui/output/krea-sweep [--size 256 --colors 64 --scale 2]"""
 import argparse, pathlib
 from PIL import Image
 

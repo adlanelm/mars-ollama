@@ -1,6 +1,6 @@
 """Phase 3: cosine similarity between Ollama baseline vectors and llama-swap /v1/embeddings.
 
-Run: uv run --with numpy python -I bench/compare-embeddings.py [base_url]
+Run: uv run --with numpy==2.5.4 python -I bench/compare-embeddings.py [base_url]
 Pass threshold: >= 0.999 for every text.
 """
 import json, sys, urllib.request

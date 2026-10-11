@@ -9,6 +9,8 @@ MODELS=${LLM_MODELS:-$HOME/llm/models}
 OLLAMA=${LLM_OLLAMA:-$HOME/llm/ollama/data/models}
 STAMP=$MODELS/.llm-pull-verified   # cache: path, size, mtime, sha256 of verified files
 HF_API=https://huggingface.co/api/models
+# exact pins for the tools fetched at run time via uv (bump deliberately; transitive deps are resolved by uv)
+HF_HUB='huggingface_hub[hf_xet]==2.2.0'; PYYAML=6.0.3; GGUF=0.19.0
 
 if command -v uvx >/dev/null 2>&1 && command -v uv >/dev/null 2>&1; then UVX=(uvx); UV=(uv)
 else UVX=(mise x uv@0.12.24 -- uvx); UV=(mise x uv@0.12.24 -- uv); fi
@@ -17,11 +19,11 @@ TMP=$(mktemp -d); trap 'rm -rf "${TMP:?}"' EXIT
 die() { local c=$1; shift; echo "llm-pull: $*" >&2; exit "$c"; }
 say() { printf '%s\n' "$*"; }
 gb()  { awk -v b="${1:-0}" 'BEGIN{printf "%.2f GB", b/1e9}'; }
-hf()  { "${UVX[@]}" --from "huggingface_hub[hf_xet]" hf "$@"; }
+hf()  { "${UVX[@]}" --from "$HF_HUB" hf "$@"; }
 rmf() { rm -f -- "${MODELS:?}/${1:?}"; }   # remove a file given relative to $MODELS
 
 # ---- manifest: YAML on disk, JSON in memory (PyYAML via uv, jq for edits) ----
-py() { "${UV[@]}" run -q --with pyyaml --python 3.12 python -I -c '
+py() { "${UV[@]}" run -q --with "pyyaml==$PYYAML" --python 3.12 python -I -c '
 import sys, json, yaml
 if sys.argv[1] == "load":
     print(json.dumps(yaml.safe_load(open(sys.argv[2])) or {}))
@@ -151,7 +153,7 @@ cmd_import() { local ref= id= AL=()
       docker exec ollama cat "/root/.ollama/models/blobs/sha256-$hex" > "$dest.part" || { rmf "$rel.part"; die 1 "cannot read blob via docker exec; is the ollama container running?"; }; fi
     [[ $(sha256sum "$dest.part" | cut -d' ' -f1) == "$hex" ]] || { rmf "$rel.part"; die 3 "sha256 mismatch for blob $hex (deleted)"; }
     # Ollama's converter stores some tokenizer charsmaps as base64 char arrays that llama.cpp rejects; fix in a copy
-    local fr=0; "${UV[@]}" run -q --with gguf --python 3.12 python -I "$ROOT/tools/fix-gguf-charsmap.py" "$dest.part" "$dest.fixed" >&2 || fr=$?
+    local fr=0; "${UV[@]}" run -q --with "gguf==$GGUF" --python 3.12 python -I "$ROOT/tools/fix-gguf-charsmap.py" "$dest.part" "$dest.fixed" >&2 || fr=$?
     if [[ $fr == 0 ]]; then mv "$dest.fixed" "$dest"; rmf "$rel.part"; fixup=charsmap-b64-to-uint8; say "fixup     tokenizer charsmap -> UINT8 array (tensors unchanged)"
     elif [[ $fr == 10 ]]; then mv "$dest.part" "$dest"; else rmf "$rel.part"; rmf "$rel.fixed"; die 1 "charsmap fixup failed"; fi
     want_sha=$(sha256sum "$dest" | cut -d' ' -f1); want_size=$(stat -c %s "$dest"); verify "$dest" "$want_sha" "$want_size"

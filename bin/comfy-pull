@@ -1,41 +1,135 @@
 #!/usr/bin/env bash
 # comfy-pull: download the ComfyUI model set in comfyui/models.txt into ~/llm/comfyui/models/<folder>/.
-# Idempotent: files already present with the HF size (or the pinned sha256, for url lines) are skipped.
-# Line formats: "<hf repo> <path in repo> <folder>"  or  "url <https url> <folder> <sha256>" (non-HF files, pinned by hash).
+# Usage: comfy-pull [pull]   download what is missing or does not match its pin (default)
+#        comfy-pull verify   read-only sha256 check of the files on disk (never deletes)
+#        comfy-pull outdated report pinned HF files whose repo main moved AND whose file oid changed
+# Idempotent: files already present with the pinned sha256 are skipped (hash cached in $DEST/.comfy-pull-verified).
+# Line formats (comfyui/models.txt):
+#   "<hf repo> <path in repo> <folder> <revision> <sha256>"  pinned HF file; sha256 = lfs.oid at that revision
+#   "<hf repo> <path in repo> <folder>"                      legacy, unpinned: verified by size against main
+#   "url <https url> <folder> <sha256>"                      non-HF file, pinned by hash
+# Exit codes (as bin/llm-pull): 0 ok, 1 error, 2 network/HF, 3 sha256 mismatch, 4 outdated
 set -euo pipefail
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 DEST=${COMFY_MODELS:-$HOME/llm/comfyui/models}
 STAGE=$DEST/.hf-stage
+STAMP=$DEST/.comfy-pull-verified   # cache: path, size, mtime, sha256 of verified files
+HF_API=https://huggingface.co/api/models
+HF_HUB='huggingface_hub[hf_xet]==2.2.0'
 
-# hf_size <repo> <path>: size in bytes from the HF tree API (follows redirects); non-zero exit if missing
-hf_size() {
-  local repo=$1 file=$2 dir=${2%/*} url json
-  [[ $dir == "$file" ]] && url="https://huggingface.co/api/models/$repo/tree/main" || url="https://huggingface.co/api/models/$repo/tree/main/$dir"
-  json=$(curl -sfL "$url") || return 1
-  jq -er --arg p "$file" '.[] | select(.path == $p) | .size' <<<"$json"
+die() { local c=$1; shift; echo "comfy-pull: $*" >&2; exit "$c"; }
+
+# tree <repo> <rev> <dir|''>: HF tree listing as JSON (follows redirects); exit 2 on network/HF errors
+tree() {
+  local url="$HF_API/$1/tree/$2${3:+/$3}"
+  curl -sfL "$url" || die 2 "cannot resolve $url"
 }
+# hf_size <repo> <path>: size in bytes at main (legacy unpinned lines)
+hf_size() {
+  local dir=${2%/*}; [[ $dir == "$2" ]] && dir=
+  jq -er --arg p "$2" '.[] | select(.path == $p) | .size' <<<"$(tree "$1" main "$dir")"
+}
+# hf_oid <repo> <rev> <path>: lfs.oid (sha256) of a file at a revision; empty if gone
+hf_oid() {
+  local dir=${3%/*}; [[ $dir == "$3" ]] && dir=
+  jq -r --arg p "$3" '[.[] | select(.path == $p) | .lfs.oid // empty][0] // empty' <<<"$(tree "$1" "$2" "$dir")"
+}
+hf() { uvx --from "$HF_HUB" hf "$@"; }
+
+# have <file> <sha256>: true if the file matches; hash cached by size+mtime so re-runs are fast
+have() {
+  local f=$1 sha=$2 line h
+  [[ -f $f ]] || return 1
+  line=$(printf '%s\t%s\t%s' "$f" "$(stat -c '%s %Y' "$f")" "$sha")
+  grep -qxF -- "$line" "$STAMP" 2>/dev/null && return 0
+  h=$(sha256sum "$f" | cut -d' ' -f1); [[ $h == "$sha" ]] || return 1
+  { [[ -f $STAMP ]] && awk -F'\t' -v p="$f" '$1!=p' "$STAMP"; printf '%s\n' "$line"; } > "$STAMP.tmp" || true
+  mv "$STAMP.tmp" "$STAMP"
+}
+# fetched <file> <sha256> <name>: verify a freshly downloaded file, exit 3 on mismatch
+fetched() { sha256sum -c --status <<<"$2  $1" || { echo "error     sha256 mismatch for $3" >&2; exit 3; }; }
 
 # redirect from a file (not a pipe) so errors under set -e abort the script
 # url_pull <url> <folder> <sha256>: plain HTTPS download, verified against the pinned sha256
 url_pull() {
   local url=$1 folder=$2 sha=$3 name=${1##*/} out
   out=$DEST/$folder/$name
-  if [[ -f $out ]] && sha256sum -c --status <<<"$sha  $out"; then echo "ok        $folder/$name"; return; fi
+  if have "$out" "$sha"; then echo "ok        $folder/$name"; return; fi
   echo "download  $folder/$name ($url)"
   mkdir -p "$STAGE" "$DEST/$folder"
-  curl -fsSL --retry 3 -o "$STAGE/$name" "$url"
-  sha256sum -c --status <<<"$sha  $STAGE/$name" || { echo "error     sha256 mismatch for $name" >&2; exit 3; }
+  curl -fsSL --retry 3 -o "$STAGE/$name" "$url" || die 2 "download failed: $url"
+  fetched "$STAGE/$name" "$sha" "$name"
   mv "$STAGE/$name" "$out"
 }
 
-while read -r repo path folder sha; do
-  if [[ $repo == url ]]; then url_pull "$path" "$folder" "$sha"; continue; fi
-  name=${path##*/}; out=$DEST/$folder/$name
-  size=$(hf_size "$repo" "$path") || { echo "error     cannot resolve $repo/$path" >&2; exit 2; }
-  if [[ -f $out && $(stat -c %s "$out") == "$size" ]]; then echo "ok        $folder/$name"; continue; fi
-  echo "download  $folder/$name ($(awk -v b="$size" 'BEGIN{printf "%.2f GB", b/1e9}'))"
-  uvx --from "huggingface_hub[hf_xet]" hf download "$repo" "$path" --local-dir "$STAGE/$repo" >/dev/null
-  [[ $(stat -c %s "$STAGE/$repo/$path") == "$size" ]] || { echo "error     size mismatch for $name" >&2; exit 3; }
-  mkdir -p "$DEST/$folder"; mv "$STAGE/$repo/$path" "$out"
-done < <(grep -vE '^\s*(#|$)' "$ROOT/comfyui/models.txt")
-rm -rf "$STAGE"
+# hf_pull <repo> <path> <folder> <rev> <sha256>: HF file at a pinned revision, verified against lfs.oid
+hf_pull() {
+  local repo=$1 path=$2 folder=$3 rev=$4 sha=$5 name=${2##*/} out
+  out=$DEST/$folder/$name
+  if have "$out" "$sha"; then echo "ok        $folder/$name"; return; fi
+  echo "download  $folder/$name ($repo @ ${rev:0:12})"
+  mkdir -p "$STAGE" "$DEST/$folder"
+  hf download "$repo" "$path" --revision "$rev" --local-dir "$STAGE/$repo" >/dev/null || die 2 "hf download failed: $repo/$path"
+  fetched "$STAGE/$repo/$path" "$sha" "$name"
+  mv "$STAGE/$repo/$path" "$out"
+}
+
+# legacy_pull <repo> <path> <folder>: unpinned, size-checked against main
+legacy_pull() {
+  local repo=$1 path=$2 folder=$3 name=${2##*/} out size
+  out=$DEST/$folder/$name
+  size=$(hf_size "$repo" "$path") || die 2 "cannot resolve $repo/$path"
+  if [[ -f $out && $(stat -c %s "$out") == "$size" ]]; then echo "ok        $folder/$name (size only, unpinned)"; return; fi
+  echo "download  $folder/$name ($(awk -v b="$size" 'BEGIN{printf "%.2f GB", b/1e9}'), unpinned)"
+  mkdir -p "$STAGE" "$DEST/$folder"
+  hf download "$repo" "$path" --local-dir "$STAGE/$repo" >/dev/null || die 2 "hf download failed: $repo/$path"
+  [[ $(stat -c %s "$STAGE/$repo/$path") == "$size" ]] || die 3 "size mismatch for $name"
+  mv "$STAGE/$repo/$path" "$out"
+}
+
+models() { grep -vE '^\s*(#|$)' "$ROOT/comfyui/models.txt"; }
+
+cmd_pull() {
+  local repo path folder rev sha
+  while read -r repo path folder rev sha; do
+    if [[ $repo == url ]]; then url_pull "$path" "$folder" "$rev"      # url lines: sha is the 4th field
+    elif [[ -n $sha ]]; then hf_pull "$repo" "$path" "$folder" "$rev" "$sha"
+    else legacy_pull "$repo" "$path" "$folder"; fi
+  done < <(models)
+  rm -rf "$STAGE"
+}
+
+# read-only: report every file that is missing or does not match its pinned sha256 (exit 3 if any)
+cmd_verify() {
+  local repo path folder rev sha out bad=0 n=0
+  while read -r repo path folder rev sha; do
+    [[ $repo != url ]] || sha=$rev; path=${path##*/}
+    out=$DEST/$folder/$path; n=$((n+1))
+    if [[ -z $sha ]]; then echo "unpinned  $folder/$path"
+    elif [[ ! -f $out ]]; then echo "MISSING   $folder/$path"; bad=1
+    elif have "$out" "$sha"; then echo "ok        $folder/$path"
+    else echo "MISMATCH  $folder/$path (expected sha256 $sha)"; bad=1; fi
+  done < <(models)
+  [[ $bad == 0 ]] || return 3
+}
+
+# outdated: a line is outdated when the repo's main moved AND the file's oid at main differs from the pin
+cmd_outdated() {
+  local repo path folder rev sha head new rc=0
+  while read -r repo path folder rev sha; do
+    [[ $repo != url && -n $sha ]] || continue
+    head=$(curl -sfL "$HF_API/$repo" | jq -er .sha) || die 2 "cannot resolve $repo"
+    if [[ $head == "$rev" ]]; then printf '%-62s %.12s  current\n' "$repo/${path##*/}" "$rev"; continue; fi
+    new=$(hf_oid "$repo" "$head" "$path")
+    if [[ -z $new ]]; then printf '%-62s %.12s  HEAD %.12s  OUTDATED (file gone at HEAD)\n' "$repo/${path##*/}" "$rev" "$head"; rc=4
+    elif [[ $new != "$sha" ]]; then printf '%-62s %.12s  HEAD %.12s  OUTDATED (oid %.12s -> %.12s)\n' "$repo/${path##*/}" "$rev" "$head" "$sha" "$new"; rc=4
+    else printf '%-62s %.12s  HEAD %.12s  repo moved, file unchanged\n' "$repo/${path##*/}" "$rev" "$head"; fi
+  done < <(models)
+  return $rc
+}
+
+case ${1:-pull} in
+  pull) cmd_pull;; verify) cmd_verify;; outdated) cmd_outdated;;
+  -h|--help|help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \?//';;
+  *) die 1 "usage: comfy-pull [pull|verify|outdated]";;
+esac

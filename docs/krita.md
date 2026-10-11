@@ -19,8 +19,10 @@ Flatpak notes:
 ## 2. Install the plugin
 
 1. Download `krita_ai_diffusion-1.53.0.zip` from <https://github.com/Acly/krita-ai-diffusion/releases/tag/v1.53.0>. Pick the plugin zip, not the source archive.
+   Check it before installing: `sha256sum krita_ai_diffusion-1.53.0.zip` must print `05b4e4072faecbcfa441a8829c97492cfe35974c92e407d0197db4e78ec91cbe` (3,140,257 bytes; the release asset digest from the GitHub API, confirmed by hashing the download).
 2. In Krita, go to **Tools > Scripts > Import Python Plugin from File...**, select the zip and answer **Yes** to enable it. This works the same in the Flatpak, which unpacks it into the `pykrita` folder above.
 3. Restart Krita.
+   Krita itself is the Flathub build `org.kde.krita` 5.3.4.1 at Flatpak commit `3e661cda91808730da4d854b9fde688846305550808c75a9361b13d86b545eb6` (`flatpak info org.kde.krita`); to pin it, `flatpak update --commit=<commit> org.kde.krita` (add `sudo` for a system install).
 4. Open the docker with **Settings > Dockers > AI Image Generation**. Create or open a document first, because the docker is inactive without a canvas.
 
 ## 3. Connect to ComfyUI (every session)

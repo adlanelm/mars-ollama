@@ -12,7 +12,7 @@ the host side of the container's /opt/ComfyUI/output). One warm-up image runs fi
 variant, prompt-major, so the second seed of each prompt reuses the cached text conditioning (same for every variant).
 results.json is rewritten after every image; a rerun skips images that already exist.
 tile=T swaps the decode for VAEDecodeTiled (tile_size T, overlap O, default 64); tile=0 forces the plain VAEDecode.
-PS1-style previews are made by comfyui/sweeps/ps1_preview.py (needs Pillow, run via uvx)."""
+PS1-style previews are made by comfyui/sweeps/ps1_preview.py (needs Pillow, pinned: uvx --with pillow==12.3.0, see the usage line in that file)."""
 import argparse, html, json, os, pathlib, random, re, subprocess, sys, threading, time, urllib.request
 
 URL = os.environ.get("COMFY_URL", "http://localhost:8188")

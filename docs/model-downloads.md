@@ -23,9 +23,10 @@ Why Tier 1 beats download-on-load:
 
 ```bash
 sudo pacman -S uv
-uvx --from "huggingface_hub[hf_xet]" hf version
+uvx --from "huggingface_hub[hf_xet]==2.2.0" hf version
 ```
 
+- The `hf` CLI is pinned to `huggingface_hub[hf_xet]==2.2.0`. The pin lives in `HF_HUB` at the top of `bin/llm-pull`; change it there, not in these examples.
 - `llm-pull` uses the system `uv`/`uvx` when both exist, and falls back to `mise x uv@0.12.24 -- uv`.
 - uv provides its own Python 3.12, so the host's Python 3.14 doesn't matter.
 - Xet makes resumable, deduplicated downloads. Resolved: `hf download --revision` works with Xet, and the HF tree API returns `.lfs.oid` for the files used here.
@@ -126,7 +127,7 @@ curl -s https://huggingface.co/api/models/<repo>/tree/<rev> \
   | jq '.[] | select(.path|test("<QUANT>|mmproj")) | {path, size, oid: .lfs.oid}'
 
 # 3. download
-uvx --from "huggingface_hub[hf_xet]" hf download <repo> <file> [<mmproj-file>] \
+uvx --from "huggingface_hub[hf_xet]==2.2.0" hf download <repo> <file> [<mmproj-file>] \
   --revision <rev> --local-dir ~/llm/models/<org>/<repo>
 ```
 
@@ -274,7 +275,7 @@ Exit codes:
 No token is needed for the public repos in the manifest. For gated repos:
 
 ```bash
-uvx --from "huggingface_hub[hf_xet]" hf auth login
+uvx --from "huggingface_hub[hf_xet]==2.2.0" hf auth login
 ```
 
 The token is stored in `~/.cache/huggingface`. **Never put tokens in files in the repo** (manifest, scripts, compose, `.env`).

@@ -5,7 +5,7 @@ llama.cpp requires an INT8/UINT8 array. Tensors and all other metadata are copie
 
 Exit 10 (nothing written) when the key is absent or already numeric.
 
-Usage: uv run --with gguf --python 3.12 python -I tools/fix-gguf-charsmap.py <in.gguf> <out.gguf>
+Usage: uv run --with gguf==0.19.0 --python 3.12 python -I tools/fix-gguf-charsmap.py <in.gguf> <out.gguf>
 """
 import base64, sys
 import numpy as np

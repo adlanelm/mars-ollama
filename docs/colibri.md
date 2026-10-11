@@ -75,14 +75,15 @@ Facts confirmed in the source:
 
 ### Model
 
-`Qwen/Qwen3.8-Flash-Next-FP8` at revision `236dfdf285828023ca3bcd3f37366c58a3469b13`, 185,563,783,577 bytes in 144 files, in `~/llm/colibri/models/qwen38-flash-next`. Ungated, Qwen Community License, no conversion needed. The optional int4 sidecar (+68 GB, about 4 tok/s in README's numbers) is **not** created.
+`Qwen/Qwen3.8-Flash-Next-FP8` at revision `236dfdf285828023ca3bcd3f37366c58a3469b13`, 185,563,783,577 bytes in 144 files, in `~/llm/colibri/models/qwen38-flash-next`. Ungated, Qwen Community License, no conversion needed. Pinned machine-readably in `colibri/model.lock.yaml` (all 144 files with size and sha256 / git blob sha1, from the HF tree API). The optional int4 sidecar (+68 GB, about 4 tok/s in README's numbers) is **not** created.
 
 Resume or verify the download:
 
 ```bash
-uvx --from "huggingface_hub[hf_xet]" hf download Qwen/Qwen3.8-Flash-Next-FP8 \
+uvx --from "huggingface_hub[hf_xet]==2.2.0" hf download Qwen/Qwen3.8-Flash-Next-FP8 \
   --revision 236dfdf285828023ca3bcd3f37366c58a3469b13 --local-dir ~/llm/colibri/models/qwen38-flash-next
-~/llm/colibri/verify.sh   # sizes of all files, sha256 of 3 shards + non-shard files
+colibri/verify.sh         # reads colibri/model.lock.yaml: sizes of all files, sha256 of 3 shards + non-shard files
+colibri/verify.sh --full  # sha256 of every shard (185 GB, slow)
 ```
 
 ### Plan (CPU only)

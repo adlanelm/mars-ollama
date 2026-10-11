@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# gpu-mode: share the 16 GB RX 7800 XT between LLMs (llama-swap) and ComfyUI. Spec: docs/gpu-switching.md
+#   gpu-mode comfy   unload all LLMs, re-warm the aux models (embedders/reranker), start ComfyUI (if defined)
+#   gpu-mode llm     free ComfyUI VRAM (or stop its container); llama-swap loads chat models on demand
+#   gpu-mode status  VRAM/GTT, loaded models, ComfyUI state, RAM and swap
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+LLM=${LLM_URL:-http://localhost:11434}
+COMFY=${COMFY_URL:-http://localhost:8188}
+CARD=${GPU_CARD:-/sys/class/drm/card1/device}   # RX 7800 XT (card0 is the 610M iGPU)
+AUX=(bge-m3 snowflake-arctic-embed2 bge-reranker-v2-m3)
+
+mib() { echo $(( $(cat "$CARD/mem_info_$1") / 1048576 )); }
+has_comfy() { (cd "$ROOT" && docker compose --profile comfy config --services 2>/dev/null | grep -qx comfyui); }
+
+# /api/models/unload also unloads the persistent aux group and preload does not re-run: one request each brings them back
+rewarm_aux() {
+  curl -sf "$LLM/v1/embeddings" -H 'Content-Type: application/json' -d '{"model":"bge-m3","input":"warm"}' >/dev/null &
+  curl -sf "$LLM/v1/embeddings" -H 'Content-Type: application/json' -d '{"model":"snowflake-arctic-embed2","input":"warm"}' >/dev/null &
+  curl -sf "$LLM/v1/rerank" -H 'Content-Type: application/json' -d '{"model":"bge-reranker-v2-m3","query":"warm","documents":["warm"]}' >/dev/null &
+  wait || echo "warning: an aux model did not respond" >&2
+}
+
+status() {
+  echo "GPU   vram $(mib vram_used)/$(mib vram_total) MiB   gtt $(mib gtt_used) MiB"
+  echo "LLM   $(curl -sf "$LLM/running" | jq -r '[.running[] | "\(.model)(\(.state))"] | join(" ")' 2>/dev/null || echo 'llama-swap not reachable')"
+  if curl -sf "$COMFY/system_stats" >/dev/null 2>&1; then
+    echo "COMFY running   $(curl -sf "$COMFY/system_stats" | jq -r '.devices[0] | "vram free \(.vram_free/1048576|floor) MiB"')"
+  else echo "COMFY not running"; fi
+  free -h | awk '/Mem:/{print "RAM   available " $7 " of " $2}'
+  swapon --show=NAME,USED --noheadings | awk '{printf "SWAP  %s %s\n", $1, $2}'
+}
+
+case ${1:-status} in
+  comfy)
+    curl -sf -X POST "$LLM/api/models/unload" >/dev/null && echo "LLMs unloaded"
+    rewarm_aux && echo "aux models re-warmed (${AUX[*]})"
+    if has_comfy; then (cd "$ROOT" && docker compose --profile comfy up -d comfyui); else echo "no comfyui service yet (ROADMAP Phase 6)"; fi
+    status ;;
+  llm)
+    if curl -sf "$COMFY/system_stats" >/dev/null 2>&1; then
+      curl -sf -X POST "$COMFY/free" -H 'Content-Type: application/json' -d '{"unload_models":true,"free_memory":true}' >/dev/null && echo "ComfyUI models freed"
+    fi
+    if [[ ${2:-} == --stop ]] && has_comfy; then (cd "$ROOT" && docker compose --profile comfy stop comfyui); fi
+    status ;;
+  status) status ;;
+  *) echo "usage: gpu-mode {llm [--stop]|comfy|status}" >&2; exit 1 ;;
+esac

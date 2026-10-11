@@ -35,6 +35,34 @@ services:
     security_opt:
       - seccomp:unconfined
 
+  # ─────────────────────────────────────────────────────────────
+  # LLAMA-SWAP + llama.cpp (Vulkan) — replaces ollama, see ROADMAP.md
+  # ─────────────────────────────────────────────────────────────
+  llama-swap:
+    image: ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541
+    container_name: llama-swap
+    entrypoint: ["/app/llama-swap", "-config", "/config/config.yaml", "-watch-config"]
+    mem_limit: 28g
+    cpus: "12.8"
+    environment:
+      - GGML_VK_VISIBLE_DEVICES=0 # Vulkan0 = RX 7800 XT; Vulkan1 is the 610M iGPU
+      - LLAMA_CACHE=/cache        # only used by `-hf` experiments
+    ports:
+      - "11435:8080" # Phase 2: side by side with ollama; becomes 11434 at cutover
+    volumes:
+      - $HOME/llm/models:/models:ro,Z
+      - $HOME/llm/llama-cache:/cache:Z
+      - ./llama-swap:/config:ro,Z # a directory, not the file: editors replace the inode, a file mount would go stale
+    networks:
+      - ollama
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - "983" # video (host gid; names don't exist in the image)
+      - "987" # render
+    restart: always
+
   #docling:
   #  image: ghcr.io/docling-project/docling-serve-rocm:main
   #  container_name: docling

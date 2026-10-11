@@ -1,0 +1,122 @@
+# Managed by bin/llm-pull; edit via its commands (see docs/model-downloads.md)
+version: 1
+models:
+- id: granite-docling
+  source: hf
+  repo: ibm-granite/granite-docling-258M-GGUF
+  revision: e1e344cb19bae46a1d5edb4f04a27ebe0c268f72
+  files:
+  - name: granite-docling-258M-BF16.gguf
+    role: model
+    size: 331641120
+    sha256: fba182dea1c3adccbf2c5c22971fa7d4479587d83b20607405df1710a3683723
+  - name: mmproj-model-f16.gguf
+    role: mmproj
+    size: 190031712
+    sha256: 4b7b2c4ed3162bd9cb323668c188e2324838b8f8ca4f3f9767f16c4c600d43ad
+  aliases:
+  - ibm/granite-docling:258m
+- id: bge-m3
+  source: ollama
+  ollama:
+    ref: bge-m3:latest
+    blob: sha256-daec91ff
+    blob_sha256: daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c
+  files:
+  - name: bge-m3-F16.gguf
+    role: model
+    size: 1157671200
+    sha256: daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c
+  aliases:
+  - bge-m3:latest
+- id: snowflake-arctic-embed2
+  source: ollama
+  ollama:
+    ref: snowflake-arctic-embed2:latest
+    blob: sha256-8c625c95
+    blob_sha256: 8c625c9569c3c799f5f9595b5a141f91d224233055608189d66746347c14e613
+    fixup: charsmap-b64-to-uint8
+  files:
+  - name: snowflake-arctic-embed2-F16.gguf
+    role: model
+    size: 1157672064
+    sha256: c8a4dd8423a30f5d26aeec1ef42520673ca50dadc1f486a8e8524b8d3d035816
+  aliases:
+  - snowflake-arctic-embed2:latest
+  - snowflake-arctic-embed2:latest_8192
+- id: bge-reranker-v2-m3
+  source: hf
+  repo: gpustack/bge-reranker-v2-m3-GGUF
+  revision: 3093af03b1a635e67b084b1d8c03c5f5e020fd05
+  files:
+  - name: bge-reranker-v2-m3-Q8_0.gguf
+    role: model
+    size: 635676416
+    sha256: a43c7c9b11a4c1517e5bf95151960e1621d1b72f7a493364b01e386cf1aaa1d3
+  aliases:
+  - linux6200/bge-reranker-v2-m3:latest
+- id: granite-vision
+  source: hf
+  repo: ibm-granite/granite-vision-3.3-2b-GGUF
+  revision: 7edb59cacbffaeb016e29c760321c350fb43c429
+  files:
+  - name: granite-vision-3.3-2b-Q8_0.gguf
+    role: model
+    size: 2694109696
+    sha256: bbdf0c778030a7025e395c1d70300f0a2769f1cf2191fff1b84c6fec123b47b7
+  - name: mmproj-model-f16.gguf
+    role: mmproj
+    size: 892544608
+    sha256: 1cc6701f5b3eeb51987e16f21928a68113961601b398e801dad7026d01fa8341
+  aliases:
+  - ibm/granite3.3-vision:2b
+- id: gemma4-26b
+  source: hf
+  repo: unsloth/gemma-4-26B-A4B-it-qat-GGUF
+  revision: 7b92b5b28818151e8669af2e45e88d6086f490dd
+  files:
+  - name: gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
+    role: model
+    size: 14249047104
+    sha256: a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891
+  - name: mmproj-BF16.gguf
+    role: mmproj
+    size: 1194828256
+    sha256: 7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744
+  aliases:
+  - gemma4:26b
+  - gemma4:26b-128k
+  - gemma4:26b-64k
+- id: qwen3.8-27b
+  source: hf
+  repo: unsloth/Qwen3.8-27B-GGUF
+  revision: 4ca720788d1e01f1bff70c033e0d0028fd02e502
+  files:
+  - name: Qwen3.8-27B-UD-Q3_K_XL.gguf
+    role: model
+    size: 13146393504
+    sha256: 8c2a45ff85e7674ca185ec8eb6cdeab0e617ed9d8018caed0b64380eb2a67a5e
+  - name: mmproj-F16.gguf
+    role: mmproj
+    size: 927607488
+    sha256: cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e
+  aliases:
+  - qwen3.8
+  - qwen3.8:128k
+  - qwen3.8:64k
+  - qwen3.8:latest
+- id: qwen3.6-35b-a3b
+  source: hf
+  repo: unsloth/Qwen3.6-35B-A3B-GGUF
+  revision: a483e9e6cbd595906af30beda3187c2663a1118c
+  files:
+  - name: Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+    role: model
+    size: 22360456160
+    sha256: 707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450
+  - name: mmproj-F16.gguf
+    role: mmproj
+    size: 899283680
+    sha256: 8971ee4f331ff0a4c609374f32984b3d4e6dc086c0aa35f1d637fad1829e887f
+  aliases:
+  - qwen3.6

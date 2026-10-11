@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# llm-pull: pinned GGUF downloads for llama-swap. Spec: docs/model-downloads.md
+# Exit codes: 0 ok, 1 generic, 2 network/HF, 3 sha256 mismatch, 4 outdated, 5 gated/auth
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+MF=$ROOT/llama-swap/models.lock.yaml
+MODELS=${LLM_MODELS:-$HOME/llm/models}
+OLLAMA=${LLM_OLLAMA:-$HOME/llm/ollama/data/models}
+STAMP=$MODELS/.llm-pull-verified   # cache: path, size, mtime, sha256 of verified files
+HF_API=https://huggingface.co/api/models
+
+if command -v uvx >/dev/null 2>&1 && command -v uv >/dev/null 2>&1; then UVX=(uvx); UV=(uv)
+else UVX=(mise x uv@0.12.24 -- uvx); UV=(mise x uv@0.12.24 -- uv); fi
+TMP=$(mktemp -d); trap 'rm -rf "${TMP:?}"' EXIT
+
+die() { local c=$1; shift; echo "llm-pull: $*" >&2; exit "$c"; }
+say() { printf '%s\n' "$*"; }
+gb()  { awk -v b="${1:-0}" 'BEGIN{printf "%.2f GB", b/1e9}'; }
+hf()  { "${UVX[@]}" --from "huggingface_hub[hf_xet]" hf "$@"; }
+rmf() { rm -f -- "${MODELS:?}/${1:?}"; }   # remove a file given relative to $MODELS
+
+# ---- manifest: YAML on disk, JSON in memory (PyYAML via uv, jq for edits) ----
+py() { "${UV[@]}" run -q --with pyyaml --python 3.12 python -I -c '
+import sys, json, yaml
+if sys.argv[1] == "load":
+    print(json.dumps(yaml.safe_load(open(sys.argv[2])) or {}))
+else:
+    print("# Managed by bin/llm-pull; edit via its commands (see docs/model-downloads.md)")
+    yaml.safe_dump(json.load(sys.stdin), sys.stdout, sort_keys=False, default_flow_style=False, width=120)
+' "$@"; }
+load() { if [[ -f $MF ]]; then py load "$MF"; else echo '{"version":1,"models":[]}'; fi; }
+save() { mkdir -p "$(dirname "$MF")"; py dump > "$TMP/mf.yaml" && mv "$TMP/mf.yaml" "$MF"; }  # JSON on stdin
+# model dir relative to $MODELS (hf: repo, ollama: ollama/<model>); rows: rel \t sha \t size \t role
+JQD='def src: .source // "hf";
+ def mdir: if src=="ollama" then "ollama/"+(.ollama.ref|split(":")[0]|split("/")|last) else .repo end;
+ def rows: mdir as $d | .files[] | [$d+"/"+.name, (.sha256//"-"), (.size//"-"), .role] | @tsv;'
+upsert() { # $1 manifest json, $2 entry json -> new manifest json (aliases merged, position kept)
+  jq --argjson e "$2" "$JQD"' ([.models[]|select(.id==$e.id)|.aliases//[]]|add//[]) as $old
+   | ($e + {aliases: (($old + ($e.aliases//[]))|unique)}) as $n
+   | .version = 1 | if any(.models[]; .id==$e.id) then .models |= map(if .id==$e.id then $n else . end) else .models += [$n] end' <<<"$1"; }
+entry_of() { jq -e --arg id "$2" '.models[]|select(.id==$id)' <<<"$1" || die 1 "no manifest entry '$2'"; }
+
+# ---- HF API ----
+api() { local code; code=$(curl -sSL -o "$TMP/api.json" -w '%{http_code}' "$1") || die 2 "network error: $1"
+  case $code in 200) cat "$TMP/api.json";; 401|403) die 5 "gated or private repo (auth needed): hf auth login";;
+    404) die 1 "not found: $1";; *) die 2 "HF API HTTP $code: $1";; esac; }
+head_sha() { api "$HF_API/$1" | jq -r .sha; }
+tree() { api "$HF_API/$1/tree/$2?recursive=true"; }  # $1 repo $2 rev
+
+# ---- verification (0 ok, 1 missing, 2 bad); size-only when no sha known ----
+verify() { local f=$1 sha=$2 size=$3 s line h
+  [[ -f $f ]] || return 1
+  s=$(stat -c %s "$f"); [[ -z $size || $size == "$s" ]] || return 2
+  if [[ -z $sha ]]; then echo "  note: no sha256 available for ${f#"$MODELS"/}, size check only" >&2; return 0; fi
+  line=$(printf '%s\t%s\t%s' "$f" "$(stat -c '%s %Y' "$f")" "$sha")
+  grep -qxF -- "$line" "$STAMP" 2>/dev/null && return 0
+  h=$(sha256sum "$f" | cut -d' ' -f1); [[ $h == "$sha" ]] || return 2
+  { [[ -f $STAMP ]] && awk -F'\t' -v p="$f" '$1!=p' "$STAMP"; printf '%s\n' "$line"; } > "$TMP/stamp" || true
+  mkdir -p "$MODELS"; mv "$TMP/stamp" "$STAMP"; return 0; }
+# verify rows (rel \t sha \t size \t role) from stdin; delete bad files; exit 3 on mismatch
+verify_rows() { local rel sha size role bad=0 n=0 r
+  while IFS=$'\t' read -r rel sha size role; do
+    [[ $sha == - ]] && sha=; [[ $size == - ]] && size=; n=$((n+1)); r=0
+    verify "$MODELS/$rel" "$sha" "$size" || r=$?
+    if [[ $r == 1 ]]; then die 2 "missing after download: $rel"
+    elif [[ $r == 2 ]]; then echo "sha256 MISMATCH, deleting: $rel" >&2; rmf "$rel"; bad=1; fi
+  done
+  [[ $bad == 0 ]] || exit 3; say "sha256    ok ($n files)"; }
+dl() { local repo=$1 rev=$2 dir=$3; shift 3  # remaining: file names
+  mkdir -p "${MODELS:?}/$dir"; say "downloading ..."; hf download "$repo" "$@" --revision "$rev" --local-dir "$MODELS/$dir" >&2 \
+    || die 2 "hf download failed (network, or auth for gated repos)"; say "done"; }
+
+snippet() { jq -r "$JQD"' mdir as $d | "snippet   -m /models/\($d)/\([.files[]|select(.role=="model")][0].name)",
+   ([.files[]|select(.role=="mmproj")][]|"          --mmproj /models/\($d)/\(.name)")' <<<"$1"; }
+
+# download the files of hf entry $1 that are missing or bad (good files are skipped); returns 1 if none needed
+fetch_missing() { local e=$1 need=() rel sha size role r repo rev; repo=$(jq -r .repo <<<"$e"); rev=$(jq -r .revision <<<"$e")
+  while IFS=$'\t' read -r rel sha size role; do
+    [[ $sha == - ]] && sha=; [[ $size == - ]] && size=; r=0; verify "$MODELS/$rel" "$sha" "$size" || r=$?
+    if [[ $r == 2 ]]; then echo "bad file, re-downloading: $rel" >&2; rmf "$rel"; fi
+    [[ $r == 0 ]] || need+=("${rel#"$repo"/}")
+  done < <(jq -r "$JQD rows" <<<"$e")
+  ((${#need[@]})) || return 1
+  dl "$repo" "$rev" "$repo" "${need[@]}"; }
+
+# ---- add ----
+cmd_add() { local repo= quant= mm= id= AL=()
+  while (($#)); do case $1 in --mmproj) mm=$2; shift 2;; --id) id=$2; shift 2;; --alias) AL+=("$2"); shift 2;;
+    -*) die 1 "unknown option $1";; *) if [[ -z $repo ]]; then repo=$1; elif [[ -z $quant ]]; then quant=$1; else die 1 "unexpected arg $1"; fi; shift;; esac; done
+  [[ -n $repo && -n $quant ]] || die 1 "usage: llm-pull add <repo> <QUANT> [--mmproj <file>] [--id <id>] [--alias <name>]..."
+  [[ -n $id ]] || { id=${repo##*/}; id=${id%-GGUF}; id=${id,,}; }
+  local rev t ggufs cands top
+  rev=$(head_sha "$repo"); t=$(tree "$repo" "$rev")
+  ggufs=$(jq -r '.[]|select(.type=="file" and (.path|endswith(".gguf")) and ((.path|split("/")|last|startswith("mmproj"))|not))|.path' <<<"$t")
+  cands=$(grep -F -- "$quant" <<<"$ggufs" || true)                       # case-sensitive first, then insensitive
+  [[ -n $cands ]] || cands=$(grep -iF -- "$quant" <<<"$ggufs" || true)
+  [[ -n $cands ]] || die 1 "no .gguf matching '$quant' in $repo"
+  top=$(grep -v / <<<"$cands" || true); [[ -z $top ]] || cands=$top       # subdirs only if nothing top-level
+  if [[ $(wc -l <<<"$cands") -gt 1 ]]; then                              # several matches ok only as parts of one split file
+    local keys; keys=$(sed -E 's/-[0-9]{5}-of-[0-9]{5}\.gguf$//' <<<"$cands" | sort -u)
+    if [[ $(wc -l <<<"$keys") -ne 1 ]] || grep -qvE -- '-[0-9]{5}-of-[0-9]{5}\.gguf$' <<<"$cands"; then
+      echo "ambiguous quant '$quant', candidates:" >&2; sed 's/^/  /' <<<"$cands" >&2; exit 1; fi
+  fi
+  local roles; roles=$(sort <<<"$cands" | sed 's/$/\tmodel/')
+  if [[ -n $mm ]]; then jq -e --arg p "$mm" '.[]|select(.path==$p)' <<<"$t" >/dev/null || die 1 "mmproj '$mm' not found in $repo"
+  else local mc; mc=$(jq -r '.[]|select(.type=="file" and (.path|test("(^|/)mmproj.*\\.gguf$")))|.path' <<<"$t")
+    if [[ -n $mc && $(wc -l <<<"$mc") == 1 ]]; then mm=$mc
+    elif [[ -n $mc ]]; then echo "note: several mmproj files, none chosen (use --mmproj):" >&2; sed 's/^/  /' <<<"$mc" >&2; fi; fi
+  [[ -z $mm ]] || roles+=$'\n'"$mm"$'\tmmproj'
+  local want files
+  want=$(jq -Rn '[inputs|split("\t")|{(.[0]):.[1]}]|add' <<<"$roles")
+  files=$(jq -c --argjson want "$want" '[.[]|select($want[.path])|{name:.path, role:$want[.path], size:.size, sha256:(.lfs.oid // null)}]' <<<"$t")
+  say "repo      $repo @ $rev"
+  jq -r '.[]|"\(.role)\t\(.name)\t\(.size)\t\(.sha256)"' <<<"$files" | while IFS=$'\t' read -r r n s h; do
+    printf '%-9s %-45s %s\n' "$r" "$n" "$(gb "$s")"; [[ $h != null ]] || echo "  note: $n has no .lfs.oid; size check only" >&2; done
+  local e; e=$(jq -nc --arg id "$id" --arg repo "$repo" --arg rev "$rev" --argjson f "$files" '$ARGS.positional as $a
+    | {id:$id, source:"hf", repo:$repo, revision:$rev, files:$f, aliases:$a}' --args "${AL[@]}")
+  fetch_missing "$e" || say "files     already present"
+  jq -r "$JQD rows" <<<"$e" | verify_rows
+  save <<<"$(upsert "$(load)" "$e")"; say "manifest  ${MF#"$ROOT"/} updated"; snippet "$e"; }
+
+# ---- import-ollama ----
+cmd_import() { local ref= id= AL=()
+  while (($#)); do case $1 in --id) id=$2; shift 2;; --alias) AL+=("$2"); shift 2;; -*) die 1 "unknown option $1";; *) ref=$1; shift;; esac; done
+  [[ -n $ref ]] || die 1 "usage: llm-pull import-ollama <model:tag> [--id <id>] [--alias <name>]..."
+  local model=${ref%%:*} tag=latest ns=library name; [[ $ref == *:* ]] && tag=${ref#*:}
+  name=$model; [[ $model == */* ]] && { ns=${model%/*}; name=${model##*/}; }
+  [[ -n $id ]] || id=$name
+  local mp=$ns/$name/$tag mj= via= cand   # layouts: manifests/registry.ollama.ai (spec) and manifests-v2/ollama.com (newer Ollama)
+  for cand in manifests/registry.ollama.ai manifests-v2/ollama.com; do
+    if mj=$(cat "$OLLAMA/$cand/$mp" 2>/dev/null); then via=$cand; break
+    elif mj=$(docker exec ollama cat "/root/.ollama/models/$cand/$mp" 2>/dev/null); then via="$cand via docker"; break; fi; mj=
+  done
+  [[ -n $mj ]] || die 1 "Ollama manifest not found (host or container): $mp"
+  local digest size; digest=$(jq -r '.layers[]|select(.mediaType=="application/vnd.ollama.image.model")|.digest' <<<"$mj")
+  size=$(jq -r '.layers[]|select(.mediaType=="application/vnd.ollama.image.model")|.size' <<<"$mj")
+  [[ $digest == sha256:* ]] || die 1 "no model layer in manifest $mp"
+  local hex=${digest#sha256:} rel="ollama/$name/$name-F16.gguf" dest fixup=
+  dest=$MODELS/$rel
+  say "manifest  $via/$mp"; say "layer     application/vnd.ollama.image.model  sha256-${hex:0:8}…  $(gb "$size")"
+  # an existing copy may have been fixed up (see below): verify against the manifest's sha if there is one
+  local want_sha=$hex want_size=$size prev; prev=$(load | jq -r --arg rel "$name-F16.gguf" --arg ref "$ref" \
+    '.models[]|select(.ollama.ref==$ref)|.files[]|select(.name==$rel)|"\(.sha256) \(.size)"' | head -1)
+  [[ -z $prev ]] || read -r want_sha want_size <<<"$prev"
+  mkdir -p "$(dirname "$dest")"; local r=0; verify "$dest" "$want_sha" "$want_size" || r=$?
+  if [[ $r != 0 ]]; then
+    [[ $r != 2 ]] || rmf "$rel"
+    if [[ -r $OLLAMA/blobs/sha256-$hex ]]; then cp -- "$OLLAMA/blobs/sha256-$hex" "$dest.part"
+    else echo "note: host blob not readable, using: docker exec ollama cat /root/.ollama/models/blobs/sha256-$hex" >&2
+      docker exec ollama cat "/root/.ollama/models/blobs/sha256-$hex" > "$dest.part" || { rmf "$rel.part"; die 1 "cannot read blob via docker exec; is the ollama container running?"; }; fi
+    [[ $(sha256sum "$dest.part" | cut -d' ' -f1) == "$hex" ]] || { rmf "$rel.part"; die 3 "sha256 mismatch for blob $hex (deleted)"; }
+    # Ollama's converter stores some tokenizer charsmaps as base64 char arrays that llama.cpp rejects; fix in a copy
+    local fr=0; "${UV[@]}" run -q --with gguf --python 3.12 python -I "$ROOT/tools/fix-gguf-charsmap.py" "$dest.part" "$dest.fixed" >&2 || fr=$?
+    if [[ $fr == 0 ]]; then mv "$dest.fixed" "$dest"; rmf "$rel.part"; fixup=charsmap-b64-to-uint8; say "fixup     tokenizer charsmap -> UINT8 array (tensors unchanged)"
+    elif [[ $fr == 10 ]]; then mv "$dest.part" "$dest"; else rmf "$rel.part"; rmf "$rel.fixed"; die 1 "charsmap fixup failed"; fi
+    want_sha=$(sha256sum "$dest" | cut -d' ' -f1); want_size=$(stat -c %s "$dest"); verify "$dest" "$want_sha" "$want_size"
+  elif [[ -n $prev && $want_sha != "$hex" ]]; then fixup=charsmap-b64-to-uint8; fi
+  say "copy      -> ${dest/#$HOME/\~}"; say "sha256    ok"
+  local e; e=$(jq -nc --arg id "$id" --arg ref "$ref" --arg blob "sha256-${hex:0:8}" --arg f "$name-F16.gguf" --arg sha "$want_sha" --argjson size "$want_size" --arg bsha "$hex" --arg fix "$fixup" \
+    '$ARGS.positional as $a | {id:$id, source:"ollama", ollama:({ref:$ref, blob:$blob, blob_sha256:$bsha} + (if $fix=="" then {} else {fixup:$fix} end)),
+      files:[{name:$f, role:"model", size:$size, sha256:$sha}], aliases:$a}' --args "${AL[@]}")
+  save <<<"$(upsert "$(load)" "$e")"; say "manifest  ${MF#"$ROOT"/} updated"; snippet "$e"; }
+
+# ---- sync ----
+cmd_sync() { local m id src did=0 rc=0 e
+  m=$(load)
+  while read -r id; do e=$(entry_of "$m" "$id"); src=$(jq -r '.source//"hf"' <<<"$e")
+    if [[ $src == ollama ]]; then
+      if jq -r "$JQD rows" <<<"$e" | (verify_rows >/dev/null 2>&1); then printf '%-23s %s\n' "$id" "ok (ollama copy)"
+      else printf '%-23s %s\n' "$id" "MISSING/BAD (re-run: llm-pull import-ollama $(jq -r .ollama.ref <<<"$e") --id $id)"; rc=1; fi
+    elif fetch_missing "$e" >&2; then did=1; jq -r "$JQD rows" <<<"$e" | verify_rows >&2; printf '%-23s %s\n' "$id" "downloaded"
+    else printf '%-23s %s\n' "$id" ok; fi
+  done < <(jq -r '.models[].id' <<<"$m")
+  [[ $did == 1 ]] || say "nothing to download"; return $rc; }
+
+# ---- outdated / update ----
+cmd_outdated() { local rc=0 id repo rev h
+  while IFS=$'\t' read -r id repo rev; do
+    if [[ $repo == - ]]; then printf '%-23s %s\n' "$id" "ollama (n/a)"; continue; fi
+    h=$(head_sha "$repo")
+    if [[ $h == "$rev" ]]; then printf '%-23s %.12s  HEAD %.12s  current\n' "$id" "$rev" "$h"
+    else printf '%-23s %.12s  HEAD %.12s  OUTDATED\n' "$id" "$rev" "$h"; rc=4; fi
+  done < <(load | jq -r '.models[]|[.id,(.repo//"-"),(.revision//"-")]|@tsv'); return $rc; }
+
+cmd_update() { local id=${1:?usage: llm-pull update <id>} m e repo old new t ne
+  m=$(load); e=$(entry_of "$m" "$id"); [[ $(jq -r '.source//"hf"' <<<"$e") == hf ]] || die 1 "$id is not an hf entry"
+  repo=$(jq -r .repo <<<"$e"); old=$(jq -r .revision <<<"$e"); new=$(head_sha "$repo")
+  [[ $old != "$new" ]] || { say "$id already at HEAD ($new)"; return 0; }
+  say "$old -> $new"; t=$(tree "$repo" "$new")
+  ne=$(jq -ce --argjson t "$t" --arg rev "$new" '.revision=$rev | .files |= map(. as $f
+    | ($t[]|select(.path==$f.name)) as $n | $f + {size:$n.size, sha256:($n.lfs.oid // null)})' <<<"$e") \
+    || die 1 "a pinned file no longer exists at the new revision"
+  local name osha nsha
+  while IFS=$'\t' read -r name osha nsha; do
+    if [[ $osha == "$nsha" ]]; then printf '%-45s unchanged\n' "$name"; continue; fi
+    printf '%-45s changed\n' "$name"
+    [[ ! -f $MODELS/$repo/$name ]] || mv "$MODELS/$repo/$name" "$MODELS/$repo/$name.${old:0:7}.old"  # kept until gc
+  done < <(jq -nr --argjson a "$e" --argjson b "$ne" '[$a.files,$b.files]|transpose[]|[.[0].name,(.[0].sha256//"-"),(.[1].sha256//"-")]|@tsv')
+  fetch_missing "$ne" || true; jq -r "$JQD rows" <<<"$ne" | verify_rows
+  save <<<"$(upsert "$m" "$ne")"; say "old files kept until \`llm-pull gc\`"; }
+
+# ---- rm / gc / du ----
+referenced() { load | jq -r "$JQD"' .models[]|rows|split("\t")[0]'; }
+unreferenced() { local ref; ref=$(referenced | sort); [[ -d $MODELS ]] || return 0   # rel \t size
+  (cd "$MODELS" && find . -type f -not -path '*/.*' -printf '%P\t%s\n') | sort | awk -F'\t' -v r="$ref" 'BEGIN{n=split(r,a,"\n");for(i=1;i<=n;i++)k[a[i]]=1} !($1 in k)'; }
+prune_dirs() { [[ -d $MODELS ]] && find "${MODELS:?}" -mindepth 1 -type d -empty -delete 2>/dev/null || true; }
+
+cmd_rm() { local id=${1:?usage: llm-pull rm <id>} m e mine others n=0 tot=0 rel s
+  m=$(load); e=$(entry_of "$m" "$id"); mine=$(jq -r "$JQD rows" <<<"$e" | cut -f1)
+  others=$(jq -r --arg id "$id" "$JQD"' .models[]|select(.id!=$id)|rows|split("\t")[0]' <<<"$m")
+  while read -r rel; do [[ -n $rel ]] || continue; grep -qxF -- "$rel" <<<"$others" && continue
+    [[ -f $MODELS/$rel ]] || continue; s=$(stat -c %s "$MODELS/$rel"); rmf "$rel"; n=$((n+1)); tot=$((tot+s)); done <<<"$mine"
+  prune_dirs; jq --arg id "$id" '.models|=map(select(.id!=$id))' <<<"$m" | save
+  say "removed $n files ($(gb "$tot")), manifest updated"; }
+
+cmd_gc() { local yes=0 list tot p s a; [[ ${1:-} == -y ]] && yes=1; list=$(unreferenced)
+  [[ -n $list ]] || { say "nothing to collect"; return 0; }
+  tot=$(awk -F'\t' '{t+=$2} END{print t}' <<<"$list")
+  while IFS=$'\t' read -r p s; do say "unreferenced: $p ($(gb "$s"))"; done <<<"$list"
+  if [[ $yes == 0 ]]; then read -r -p "delete $(wc -l <<<"$list") files ($(gb "$tot"))? [y/N] " a || a=; [[ $a == [yY]* ]] || { say aborted; return 0; }; fi
+  while IFS=$'\t' read -r p s; do rmf "$p"; done <<<"$list"; prune_dirs; say "deleted ($(gb "$tot"))"; }
+
+cmd_du() { local m id rel sha size role s tot=0 miss un
+  m=$(load)
+  while read -r id; do s=0; miss=
+    while IFS=$'\t' read -r rel sha size role; do
+      if [[ -f $MODELS/$rel ]]; then s=$((s+$(stat -c %s "$MODELS/$rel"))); else miss=" (missing: ${rel##*/})"; fi
+    done < <(jq -r --arg id "$id" "$JQD"' .models[]|select(.id==$id)|rows' <<<"$m")
+    printf '%-24s %10s%s\n' "$id" "$(gb "$s")" "$miss"; tot=$((tot+s)); done < <(jq -r '.models[].id' <<<"$m")
+  un=$(unreferenced | awk -F'\t' '{t+=$2} END{print t+0}')
+  [[ $un == 0 ]] || printf '%-24s %10s  (run gc)\n' "unreferenced" "$(gb "$un")"
+  printf '%-24s %10s   (%s free)\n' total "$(gb "$tot")" "$(df -h --output=avail "$HOME" | tail -1 | tr -d ' ')"; }
+
+usage() { cat <<'U'
+usage: llm-pull <command>
+  add <repo> <QUANT> [--mmproj <file>] [--id <id>] [--alias <name>]...
+  import-ollama <model:tag> [--id <id>] [--alias <name>]...
+  sync | outdated | update <id> | rm <id> | gc [-y] | du
+env: LLM_MODELS (default ~/llm/models)   exit: 0 ok, 1 error, 2 network, 3 sha mismatch, 4 outdated, 5 auth
+U
+}
+c=${1:-}; shift || true
+case $c in add) cmd_add "$@";; import-ollama) cmd_import "$@";; sync) cmd_sync;; outdated) cmd_outdated;;
+  update) cmd_update "$@";; rm) cmd_rm "$@";; gc) cmd_gc "$@";; du) cmd_du;; -h|--help|help) usage;; *) usage >&2; exit 1;; esac

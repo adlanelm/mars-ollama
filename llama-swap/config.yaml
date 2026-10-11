@@ -1,0 +1,149 @@
+# llama-swap config (image ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541).
+# Schema: https://github.com/mostlygeek/llama-swap/blob/v263/docs/config.example.yaml
+# Rationale for quants and flags: docs/models.md. Files come from bin/llm-pull (llama-swap/models.lock.yaml).
+
+healthCheckTimeout: 600 # cold load of a 20 GB model from disk
+logLevel: info
+logToStdout: "proxy,upstream" # upstream = llama-server logs (fit/offload decisions) in `docker logs`
+startPort: 10001
+sendLoadingState: false # would inject loading text into reasoning_content (docling, scripts)
+includeAliasesInList: false
+
+macros:
+  # Shared by the big chat models. --fit (default on, 1 GiB margin) picks -ngl / expert split.
+  # --kv-unified: with an explicit -np, slots otherwise get c/np each (48k -> 2x24k).
+  # -lm dio (direct I/O, no mmap): CPU-side weights stay resident; with mmap, page-cache eviction after a
+  # model swap made qwen3.6 re-read experts from NVMe mid-inference (3.8 tok/s prompt instead of 700+).
+  chat_common: >-
+    -fa on -ctk q8_0 -ctv q8_0 -np 2 --kv-unified -ctxcp 8 -cram 2048 -lm dio --jinja --no-webui
+  # MoE models: physical cores (6-12 threads measured equal); ub 2048 = +40% prompt speed (bench/qwen3.6-sweep.md)
+  moe_common: >-
+    -t 8 -tb 8 -ub 2048 -b 2048
+  # CPU-resident aux models (embedders, reranker)
+  aux_common: >-
+    -dev none -ngl 0 -c 8192 -b 8192 -ub 8192 -t 4 -cram 0 --no-webui
+
+models:
+  # ── Chat group (GPU, one at a time) ────────────────────────────
+  # Dense 27B: must stay 100% on GPU. 48k context with vision (encoder on CPU).
+  "qwen3.8-27b":
+    name: "Qwen3.8 27B (dense, 48k, vision)"
+    aliases: ["qwen3.8:latest", "qwen3.8", "qwen3.8:64k", "qwen3.8:128k"]
+    ttl: 900
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q3_K_XL.gguf
+      --mmproj /models/unsloth/Qwen3.8-27B-GGUF/mmproj-F16.gguf
+      ${chat_common}
+      -c 49152 --no-mmproj-offload -ub 256
+      --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 0
+
+  # MoE 35B / 3B active. No -ngl / --n-cpu-moe: --fit picks the expert split at load time.
+  "qwen3.6-35b-a3b":
+    name: "Qwen3.6 35B-A3B (MoE, 128k, vision)"
+    aliases: ["qwen3.6"]
+    ttl: 900
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+      --mmproj /models/unsloth/Qwen3.6-35B-A3B-GGUF/mmproj-F16.gguf
+      ${chat_common} ${moe_common}
+      -c 131072
+      --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5
+
+  # MoE 25.2B / 3.8B active, QAT-based quant. Keep --swa-full off.
+  "gemma4-26b":
+    name: "Gemma 4 26B-A4B QAT (MoE, 128k, vision)"
+    aliases: ["gemma4:26b", "gemma4:26b-64k", "gemma4:26b-128k"]
+    ttl: 900
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
+      --mmproj /models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/mmproj-BF16.gguf
+      ${chat_common} ${moe_common}
+      -c 131072
+      --temp 1.0 --top-p 0.95 --top-k 64
+
+  # Docling helpers: GPU, in the chat group (a docling job swaps the chat model out).
+  # One granite-vision image is ~5k tokens (tiling), so the 4 slots share a unified 32k pool.
+  # granite-docling needs --special: DocTags element tags (<text>, <otsl>, ...) are special tokens.
+  "granite-vision":
+    name: "Granite Vision 3.3 2B"
+    aliases: ["ibm/granite3.3-vision:2b"]
+    ttl: 120
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/ibm-granite/granite-vision-3.3-2b-GGUF/granite-vision-3.3-2b-Q8_0.gguf
+      --mmproj /models/ibm-granite/granite-vision-3.3-2b-GGUF/mmproj-model-f16.gguf
+      -fa on --jinja --no-webui -np 4 --kv-unified
+      -ngl 99 -c 32768 --temp 0
+
+  "granite-docling":
+    name: "Granite Docling 258M"
+    aliases: ["ibm/granite-docling:258m"]
+    ttl: 120
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/ibm-granite/granite-docling-258M-GGUF/granite-docling-258M-BF16.gguf
+      --mmproj /models/ibm-granite/granite-docling-258M-GGUF/mmproj-model-f16.gguf
+      -fa on --jinja --no-webui -np 4 --kv-unified --special
+      -ngl 99 -c 32768 --temp 0
+
+  # ── Aux group (always loaded; embedders on CPU, reranker on GPU) ────────────────────────────
+  "bge-m3":
+    name: "BGE-M3 embeddings"
+    aliases: ["bge-m3:latest"]
+    ttl: 0
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/ollama/bge-m3/bge-m3-F16.gguf
+      ${aux_common} --embeddings
+
+  "snowflake-arctic-embed2":
+    name: "Snowflake Arctic Embed 2 embeddings"
+    aliases: ["snowflake-arctic-embed2:latest", "snowflake-arctic-embed2:latest_8192"]
+    ttl: 0
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/ollama/snowflake-arctic-embed2/snowflake-arctic-embed2-F16.gguf
+      ${aux_common} --embeddings
+
+  # Reranker on the GPU (~370 MiB): 10 RAG chunks rerank in 0.2 s vs ~4 s on the CPU (bench/llama-swap-results.md)
+  "bge-reranker-v2-m3":
+    name: "BGE reranker v2 m3"
+    aliases: ["linux6200/bge-reranker-v2-m3:latest"]
+    ttl: 0
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q8_0.gguf
+      -ngl 99 -fa on -c 8192 -b 8192 -ub 2048 -t 4 -cram 0 --no-webui --reranking
+
+routing:
+  router:
+    use: group
+    settings:
+      groups:
+        chat:
+          swap: true      # one member at a time
+          exclusive: true # loading a member unloads other (non-persistent) groups
+          members:
+            - qwen3.8-27b
+            - qwen3.6-35b-a3b
+            - gemma4-26b
+            - granite-vision
+            - granite-docling
+        aux:
+          persistent: true # never unloaded by the chat group
+          swap: false
+          exclusive: false
+          members:
+            - bge-m3
+            - snowflake-arctic-embed2
+            - bge-reranker-v2-m3
+
+hooks:
+  on_startup:
+    preload:
+      - bge-m3
+      - snowflake-arctic-embed2
+      - bge-reranker-v2-m3

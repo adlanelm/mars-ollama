@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-updates: report-only table of pinned vs latest (models, git pins, image, torch, Krita plugin). Changes nothing.
+# check-updates: report-only table of pinned vs latest (models, git pins, trellis base, image, torch, Krita plugin). Changes nothing.
 # Usage: bin/check-updates        (to update: edit the pin in the file named below, rebuild; see docs/README.md)
 # Exit codes: 0 all current, 4 something OUTDATED, 2 network failure (nothing could be checked)
 set -uo pipefail
@@ -44,7 +44,15 @@ check_trellis() { local n=$1 i=0 pin repo   # NAME_COMMIT=<sha>  # org/repo (tre
   done < <(sed -nE 's/^[A-Z0-9_]+_COMMIT=([0-9a-f]{40}) +# +([^ ]+\/[^ ]+).*/\1 \2/p' trellis/install.sh)
   pin=$(sed -nE 's/^ARG TOAST_COMMIT=([0-9a-f]+).*/\1/p' trellis/Dockerfile)
   repo=$(grep -oE 'github(usercontent)?\.com/toastmanAu/[^/]+' trellis/Dockerfile | head -1 | sed 's|.*/toastmanAu/|toastmanAu/|')
-  sha_row "${n}9" "trellis/Dockerfile toastmanAu" "$pin" "https://github.com/$repo" & wait; }
+  sha_row "${n}9" "trellis/Dockerfile toastmanAu" "$pin" "https://github.com/$repo" &
+  trellis_base "${n}8"; wait; }
+
+trellis_base() { local n=$1 base cur   # informational: trellis FROM tag vs the comfyui tag in compose; behind is fine, missing is not
+  base=$(sed -nE 's/^ARG COMFY_BASE=(.*)/\1/p' trellis/Dockerfile)
+  cur=$(sed -nE 's|^ *image: (comfyui-rocm:.*)|\1|p' docker-compose.yaml | head -1)
+  if ! docker image inspect "$base" >/dev/null 2>&1; then row "$n" "trellis base (trellis/Dockerfile)" "$base" "$cur" "missing base"
+  elif [[ $base == "$cur" ]]; then row "$n" "trellis base (trellis/Dockerfile)" "$base" "$cur" current
+  else row "$n" "trellis base (trellis/Dockerfile)" "$base" "$cur" "behind (ok)"; fi; }
 
 check_colibri() { local n=$1 tag url   # colibri/build.sh: git clone --branch <tag> <url>
   read -r tag url < <(sed -nE 's/.*git clone .*--branch ([^ ]+) (https:[^ ]+).*/\1 \2/p' colibri/build.sh)
@@ -73,7 +81,7 @@ check_models 1 & check_comfyui 2 & check_trellis 3 & check_colibri 4 & check_ima
 
 { printf 'component\tpinned\tlatest\tstatus\n'; cat "$T"/*.row 2>/dev/null; } | column -t -s $'\t'
 for f in "$T"/*.detail; do [[ -f $f ]] && cat "$f"; done
-rows=$(cat "$T"/*.row 2>/dev/null | wc -l); errs=$(cat "$T"/*.row 2>/dev/null | grep -c $'\terror$')
+rows=$(cat "$T"/*.row 2>/dev/null | wc -l); errs=$(cat "$T"/*.row 2>/dev/null | grep -cE $'\t(error|missing base)$')
 if grep -q $'\tOUTDATED$' "$T"/*.row 2>/dev/null; then exit 4; fi
 [[ $errs -lt $rows ]] || exit 2
 [[ $errs == 0 ]] || echo "check-updates: $errs check(s) failed (see 'error' rows)" >&2

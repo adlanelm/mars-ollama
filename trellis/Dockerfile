@@ -5,7 +5,10 @@
 # Spec and numbers: docs/trellis.md. Weights are NOT baked in: models/Trellis2 is a volume (~/llm/trellis/models).
 # Licence-clean (docs/licenses.md): nvdiffrast, nvdiffrec renderutils and MeshLib (all non-commercial) are not built or
 # installed; licence-stubs/ satisfies their module-level imports and raises on use. Colour is baked on vertices.
-FROM comfyui-rocm:0.39.2
+# The base is its own pin: it moves only when TRELLIS is deliberately updated. A ComfyUI update builds a new
+# comfyui-rocm tag and must NOT delete this one (bin/check-updates reports 'trellis base').
+ARG COMFY_BASE=comfyui-rocm:0.39.2
+FROM ${COMFY_BASE}
 USER root
 ARG ROCM_APT=7.2
 # HIP toolchain to compile the CUDA extensions (CuMesh, FlexGEMM, o-voxel) with hipcc.

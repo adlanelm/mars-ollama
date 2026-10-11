@@ -45,6 +45,8 @@ All extensions are compiled for **gfx1101** (`PYTORCH_ROCM_ARCH=gfx1101`), so no
 5. Puts `licence-stubs/` on `sys.path` (a `.pth` file), because `nodes.py` and o_voxel import nvdiffrast and MeshLib at module load. Then it runs `licence-check.py`, which fails the build if any NC package or file is in the image or a stub doesn't raise. To re-check a built image: `docker run --rm --entrypoint python comfyui-trellis2-rocm:0.39.2-b3b9e95-clean /opt/licence-check.py`.
 6. Launches plain `main.py`. The old `trellis_main.py` only existed to create an nvdiffrast GL context early (toast issue #5).
 
+The base is pinned separately (`ARG COMFY_BASE` in `trellis/Dockerfile`), so a ComfyUI update does not rebuild TRELLIS; bump `COMFY_BASE` only when deliberately updating TRELLIS, and keep that `comfyui-rocm` tag until then.
+
 Build time is about 8 min (the CuMesh compile takes about 2 min). The clean image is 25.3 GB (the first image was 25.7 GB). `pip freeze` is saved in the image at `/opt/trellis-pip-freeze.txt`.
 
 ### Pins

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# colibri-logs: show only colibri's lines from the llama-swap container log (colibri runs inside llama-swap,
+# its stdout/stderr reach `docker logs` because logToStdout includes "upstream").
+#   colibri-logs            follow live (Ctrl-C to stop)
+#   colibri-logs 1h         lines from the last hour, then exit
+# The engine prints load/placement lines at start and a summary per request (TTFT, tok/s, cache hit rate,
+# PEAK RSS, VRAM tier stats) when the request finishes. The local patch colibri/patches/0001-progress-log.patch
+# adds [progress] lines: start, first token (prefill time), every COLI_PROGRESS_SECS while decoding, finish.
+set -euo pipefail
+
+PATTERN='colibri-big|Z \[(progress|qwen38|VK|api|tok|gateway)\]|Z == Qwen3\.8|resident weights|OpenAI-compatible API|TTFT|Speed:|PEAK RSS|Expert cache|tier .*hit|Traceback|Error'
+
+if [[ $# -gt 0 ]]; then
+  docker logs --since "$1" -t llama-swap 2>&1 | grep -E "$PATTERN" | grep -v 'GET /health'
+else
+  docker logs --since 1m -f -t llama-swap 2>&1 | grep --line-buffered -E "$PATTERN" | grep --line-buffered -v 'GET /health'
+fi

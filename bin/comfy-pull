@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# comfy-pull: download the ComfyUI model set in comfyui/models.txt into ~/llm/comfyui/models/<folder>/.
+# Idempotent: files already present with the HF size are skipped.
+set -euo pipefail
+ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+DEST=${COMFY_MODELS:-$HOME/llm/comfyui/models}
+STAGE=$DEST/.hf-stage
+
+# hf_size <repo> <path>: size in bytes from the HF tree API (follows redirects); non-zero exit if missing
+hf_size() {
+  local repo=$1 file=$2 dir=${2%/*} url json
+  [[ $dir == "$file" ]] && url="https://huggingface.co/api/models/$repo/tree/main" || url="https://huggingface.co/api/models/$repo/tree/main/$dir"
+  json=$(curl -sfL "$url") || return 1
+  jq -er --arg p "$file" '.[] | select(.path == $p) | .size' <<<"$json"
+}
+
+# redirect from a file (not a pipe) so errors under set -e abort the script
+while read -r repo path folder; do
+  name=${path##*/}; out=$DEST/$folder/$name
+  size=$(hf_size "$repo" "$path") || { echo "error     cannot resolve $repo/$path" >&2; exit 2; }
+  if [[ -f $out && $(stat -c %s "$out") == "$size" ]]; then echo "ok        $folder/$name"; continue; fi
+  echo "download  $folder/$name ($(awk -v b="$size" 'BEGIN{printf "%.2f GB", b/1e9}'))"
+  uvx --from "huggingface_hub[hf_xet]" hf download "$repo" "$path" --local-dir "$STAGE/$repo" >/dev/null
+  [[ $(stat -c %s "$STAGE/$repo/$path") == "$size" ]] || { echo "error     size mismatch for $name" >&2; exit 3; }
+  mkdir -p "$DEST/$folder"; mv "$STAGE/$repo/$path" "$out"
+done < <(grep -vE '^\s*(#|$)' "$ROOT/comfyui/models.txt")
+rm -rf "$STAGE"

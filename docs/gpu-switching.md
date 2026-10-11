@@ -1,6 +1,6 @@
 # GPU switching
 
-Status: `bin/gpu-mode` exists; the `comfyui` service does not yet (Phase 6 is pending). llama-swap behaviour measured in Phase 3 ([../bench/llama-swap-results.md](../bench/llama-swap-results.md)). Items marked **[verify]** are still unconfirmed.
+Status: `bin/gpu-mode` and the `comfyui` service (`comfyui-rocm:0.39.0`, profile `comfy`, port 127.0.0.1:8188) exist; Phase 6 is done, see [../bench/comfyui-results.md](../bench/comfyui-results.md). llama-swap behaviour measured in Phase 3 ([../bench/llama-swap-results.md](../bench/llama-swap-results.md)). Items marked **[verify]** are still unconfirmed.
 
 See also: [architecture.md](architecture.md), [colibri.md](colibri.md), Phase 6 in [../ROADMAP.md](../ROADMAP.md).
 
@@ -11,7 +11,7 @@ The RX 7800 XT has 16 GB, with about 1.13-1.2 GB used by the desktop at idle.
 | Consumer | Size | Notes |
 |---|---|---|
 | llama-swap chat model | about 12-15 GB | One at a time (exclusive group `chat`) |
-| ComfyUI | e.g. Krea 2 Turbo fp8 about 13 GB | Runs as a container |
+| ComfyUI | measured 14-16 GiB whole-card during generation (Krea 2 Turbo fp8 takes the full card) | Runs as a container |
 | docling-proxy | varies | Layout and OCR also use the GPU. Avoid large jobs while a 14 GB chat model is loaded, or unload first |
 | Desktop | about 1.13-1.2 GB | Frees if the monitor moves to the iGPU |
 | Unity and Blender | another 1-3 GiB | Open while game-dev work is going on |
@@ -33,7 +33,7 @@ So `gpu-mode` only handles the **non-LLM** consumers.
 | Subcommand | Action |
 |---|---|
 | `comfy` | `POST /api/models/unload`, re-warm the three aux models (one request each), then start ComfyUI with `docker compose --profile comfy up -d comfyui` if that service is defined |
-| `llm` | `POST /free` to ComfyUI, or `llm --stop` to stop its container. llama-swap loads chat models on the next request |
+| `llm` | `POST /free` to ComfyUI, or `llm --stop` to stop its container. Without `--stop` the idle container keeps about 0.1 GiB and VRAM returns to baseline within seconds. llama-swap loads chat models on the next request |
 | `status` | Print: VRAM/GTT, `/running`, ComfyUI state, free RAM, swap |
 
 HTTP calls:
@@ -44,7 +44,7 @@ HTTP calls:
 | llama-swap loaded models | `GET http://localhost:11434/running` |
 | ComfyUI free VRAM | `POST <comfy>/free` body `{"unload_models":true}` |
 
-The `comfyui` service uses `profiles: ["comfy"]`, so it doesn't start automatically. The ComfyUI URL (`COMFY_URL`) defaults to port 8188 **[verify]**. `LLM_URL` defaults to `:11434`, so before cutover run it with `LLM_URL=http://localhost:11435`.
+The `comfyui` service uses `profiles: ["comfy"]`, so it doesn't start automatically. The ComfyUI URL (`COMFY_URL`) defaults to port 8188 (verified). `LLM_URL` defaults to `:11434`, so before cutover run it with `LLM_URL=http://localhost:11435`.
 
 ### Implementation
 

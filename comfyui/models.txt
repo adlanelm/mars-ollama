@@ -1,0 +1,16 @@
+# ComfyUI model set (bin/comfy-pull). Format: <hf repo> <path in repo> <ComfyUI models subfolder>
+# Sizes/licences checked 2026-10-11 via the HF API. Fits a 16 GB GPU; see docs/game-asset-workflow.md.
+# FLUX.2 [klein] 4B (Apache-2.0): fast t2i + multi-reference edit. Comfy-Org/flux2-klein-4B now 307-redirects to this repo (same files)
+Comfy-Org/vae-text-encorder-for-flux-klein-4b split_files/diffusion_models/flux-2-klein-4b.safetensors diffusion_models
+Comfy-Org/vae-text-encorder-for-flux-klein-4b split_files/text_encoders/qwen_3_4b.safetensors text_encoders
+Comfy-Org/vae-text-encorder-for-flux-klein-4b split_files/vae/flux2-vae.safetensors vae
+# Z-Image Turbo (Apache-2.0)
+Comfy-Org/z_image_turbo split_files/diffusion_models/z_image_turbo_bf16.safetensors diffusion_models
+Comfy-Org/z_image_turbo split_files/vae/ae.safetensors vae
+# Krea 2 Turbo fp8 (Krea-2 Community License: read LICENSE.pdf before commercial use) + PSX LoRA base
+Comfy-Org/Krea2 diffusion_models/krea2_turbo_fp8_scaled.safetensors diffusion_models
+Comfy-Org/Krea2 text_encoders/qwen3vl_4b_fp8_scaled.safetensors text_encoders
+Comfy-Org/Krea2 vae/qwen_image_vae.safetensors vae
+# Qwen-Image-Edit-2511 (Apache-2.0): GGUF Q4_K_M fits 16 GB (fp8 is 20.5 GB); needs city96/ComfyUI-GGUF
+unsloth/Qwen-Image-Edit-2511-GGUF qwen-image-edit-2511-Q4_K_M.gguf unet
+Comfy-Org/Qwen-Image_ComfyUI split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors text_encoders

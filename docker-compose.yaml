@@ -54,6 +54,8 @@ services:
       - $HOME/llm/models:/models:ro,Z
       - $HOME/llm/llama-cache:/cache:Z
       - ./llama-swap:/config:ro,Z # a directory, not the file: editors replace the inode, a file mount would go stale
+      - $HOME/llm/colibri/bin:/colibri:ro,Z # colibri v2.0.0 tree + qwen38 engine (VK=1) + shaders
+      - $HOME/llm/colibri/models:/colibri-models:Z # read-write: colibri writes .coli_kv/.coli_usage/.coli_ssd here
     networks:
       ollama:
         aliases:
@@ -69,6 +71,31 @@ services:
       interval: 30s
       timeout: 5s
     restart: always
+
+  # ─────────────────────────────────────────────────────────────
+  # COMFYUI (ROCm) — started by `bin/gpu-mode comfy`, see ROADMAP Phase 6
+  # ─────────────────────────────────────────────────────────────
+  comfyui:
+    profiles: ["comfy"]
+    build: ./comfyui
+    image: comfyui-rocm:0.39.0
+    container_name: comfyui
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "983" # video
+      - "987" # render
+    ipc: host
+    security_opt:
+      - seccomp=unconfined
+    ports:
+      - "127.0.0.1:8188:8188"
+    volumes:
+      - ${HOME}/llm/comfyui/models:/opt/ComfyUI/models
+      - ${HOME}/llm/comfyui/output:/opt/ComfyUI/output
+      - ${HOME}/llm/comfyui/user:/opt/ComfyUI/user
+    restart: "no" # gpu-mode starts and stops it
 
   #docling:
   #  image: ghcr.io/docling-project/docling-serve-rocm:main

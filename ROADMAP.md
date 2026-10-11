@@ -228,10 +228,12 @@ Then revert the client settings from the Phase 0 screenshots.
 
 ## Phase 6 — `gpu-mode` and ComfyUI
 
+**Status: Done (2026-10-11).** Results: [bench/comfyui-results.md](bench/comfyui-results.md). Krea 2 Turbo measured about 40 s per 1024² image (acceptance target about 30 s missed); FLUX.2 Klein 4B 7.5 s, Z-Image Turbo about 27 s.
+
 **Goal:** a one-command switch between LLM work and image generation. Spec: [docs/gpu-switching.md](docs/gpu-switching.md).
 
 **Tasks**
-1. **Add a `comfyui` service** (ROCm, `torch==2.13.0+rocm7.2`, models in `~/llm/comfyui/models`). Use `profiles: ["comfy"]` so it doesn't start automatically. Pin torch 2.13.0, which includes the aotriton files; ComfyUI issue #15585 describes the slowdown on this exact GPU.
+1. **Add a `comfyui` service** (ROCm, `torch 2.14.1+rocm7.2`, models in `~/llm/comfyui/models`). Use `profiles: ["comfy"]` so it doesn't start automatically. The wheel includes the aotriton files; do not use `--use-flash-attention`; ComfyUI issue #15585 describes the slowdown on this exact GPU.
 2. **Write `bin/gpu-mode`** with the subcommands `llm`, `comfy`, `status`.
 3. Document VRAM numbers per mode in `bench/`.
 
@@ -242,6 +244,8 @@ Then revert the client settings from the Phase 0 screenshots.
 ---
 
 ## Phase 7 — Colibri big-model tier
+
+**Status (2026-10-11):** tasks 1–4 done and integrated (`colibri-big` in llama-swap, chat group). Measured 0.5 tok/s cold, 1.1 tok/s warm, NVMe swap 0 B, aux models kept serving; results in [docs/colibri.md](docs/colibri.md#gpu-test-2026-10-11). Live `[progress]` logging via a local patch ([colibri/patches](colibri/patches/README.md)). Task 5 (overnight 50-entry batch) pending.
 
 **Goal:** a slow, unattended tier for models far larger than VRAM plus RAM. Spec: [docs/colibri.md](docs/colibri.md).
 

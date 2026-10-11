@@ -1,0 +1,80 @@
+--- a/c/openai_server.py
++++ b/c/openai_server.py
+@@ -6,6 +6,7 @@
+ import collections
+ import contextlib
+ import hashlib
++import itertools
+ import json
+ import math
+ import mimetypes
+@@ -33,6 +34,7 @@
+ 
+ 
+ HERE = Path(__file__).resolve().parent
++_PROGRESS_IDS = itertools.count(1)  # mars-ollama local patch: request numbers for [progress] lines
+ 
+ 
+ def default_engine(family=None):
+@@ -6147,6 +6149,32 @@
+     def generate(self, prompt, max_tokens, temperature, top_p, on_text, *args, **kwargs):
+         started = time.monotonic()
+         first_output = False
++        # mars-ollama local patch (colibri/patches/0001-progress-log.patch): live progress on
++        # stderr, so a slow request is visible in `docker logs` while it runs. Pieces are the
++        # engine's text callbacks: about one per token (an MTP step can carry more than one).
++        progress_every = float(os.environ.get("COLI_PROGRESS_SECS", "15") or 0)
++        progress_id = next(_PROGRESS_IDS)
++        pieces = 0
++        progress_started = time.perf_counter()  # own clock: tests pin time.monotonic call by call
++        first_at = None
++        last_log = progress_started
++
++        def progress(text):
++            nonlocal pieces, first_at, last_log
++            if not text or progress_every <= 0:
++                return
++            now = time.perf_counter()
++            pieces += 1
++            if first_at is None:
++                first_at = now
++                last_log = now
++                sys.stderr.write("[progress] #%d prefill done: first token after %.1fs (prompt %d chars)\n"
++                                 % (progress_id, now - progress_started, len(prompt)))
++            elif now - last_log >= progress_every:
++                last_log = now
++                sys.stderr.write("[progress] #%d decoding: ~%d tok in %.0fs, ~%.2f tok/s (max %s)\n"
++                                 % (progress_id, pieces, now - first_at,
++                                    (pieces - 1) / max(now - first_at, 1e-9), max_tokens))
+ 
+         def measured(callback):
+             def feed(text):
+@@ -6154,16 +6182,28 @@
+                 if text and not first_output:
+                     first_output = True
+                     self.scheduler.observe_timing("first_output_seconds", time.monotonic() - started)
++                progress(text)
+                 return callback(text)
+             return feed
+ 
+         if kwargs.get("on_tool") is not None:
+             kwargs["on_tool"] = measured(kwargs["on_tool"])
++        if progress_every > 0:
++            sys.stderr.write("[progress] #%d started: prompt %d chars, max %s tokens\n"
++                             % (progress_id, len(prompt), max_tokens))
+         try:
+             return self.engine.generate(prompt, max_tokens, temperature, top_p,
+                                         measured(on_text), *args, **kwargs)
+         finally:
+             self.scheduler.observe_timing("engine_call_seconds", time.monotonic() - started)
++            if progress_every > 0:
++                end = time.perf_counter()
++                decode = end - first_at if first_at is not None else 0.0
++                sys.stderr.write("[progress] #%d finished: ~%d tok, prefill %.1fs, decode %.1fs (~%.2f tok/s), total %.1fs\n"
++                                 % (progress_id, pieces,
++                                    (first_at if first_at is not None else end) - progress_started,
++                                    decode, (pieces - 1) / decode if pieces > 1 and decode > 0 else 0.0,
++                                    end - progress_started))
+ 
+     def process_request(self, request, client_address):
+         """Refuse past the caps instead of spawning an unbounded thread."""

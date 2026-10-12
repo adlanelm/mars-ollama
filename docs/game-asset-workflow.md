@@ -95,6 +95,7 @@ Roles:
 - **Animation sources:** CC0 libraries (Quaternius, Kenney), plus video2mocap (GVHMR) or FreeMoCap.
 - **Skip HY-Motion:** it needs 24 GB or more, and its Tencent licence excludes the EU.
 - **PS1 trick:** stepped 12–15 fps animation as a toggle.
+- **Research (2026-10-12):** licences, ROCm status (SkinTokens PRs) and the slice order of attack are in [characters-audio-research.md](characters-audio-research.md); GVHMR and UniRig are dropped there.
 
 ## B6. Audio
 
@@ -102,6 +103,8 @@ Roles:
 |---|---|---|
 | SFX | Stable Audio 3 Small-SFX plus jsfxr | |
 | Music | ACE-Step 1.5 (MIT, under 4 GB) plus Vital in LMMS for drones | |
+
+Research (2026-10-12): [characters-audio-research.md](characters-audio-research.md). Vital needs a paid licence for a business, so Surge XT is the default; Small-SFX needs registration and runs on CPU.
 
 ## B7. Unity
 

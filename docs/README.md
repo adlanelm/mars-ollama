@@ -12,7 +12,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | [llama-swap-config.md](llama-swap-config.md) | The live `config.yaml` and compose service explained: flags, groups, pinned image, mounts |
 | [clients.md](clients.md) | Reconfiguring Open WebUI (chat, RAG embeddings, reranker), docling and Page Assist; alias table |
 | [colibri.md](colibri.md) | Slow big-model tier: use cases, integration, disk and RAM gates |
-| [gpu-switching.md](gpu-switching.md) | `gpu-mode`: sharing one 16 GB GPU between LLMs, ComfyUI, docling and editors |
+| [gpu-switching.md](gpu-switching.md) | Sharing one 16 GB GPU between LLMs, ComfyUI, docling and editors: automatic llama-swap/ComfyUI arbitration ([gpu-guard + gpu_arbiter](gpu-switching.md#automatic-arbitration-llama-swap---comfyui)), `gpu-mode` override |
 | [game-asset-workflow.md](game-asset-workflow.md) | AI-assisted asset pipeline for the PS1/Signalis-style isometric Unity game |
 | [trellis.md](trellis.md) | TRELLIS.2 image → textured .glb on ROCm (gfx1101): build, pins, how to run, measurements, licences |
 | [krita.md](krita.md) | Krita (Flatpak) + krita-ai-diffusion v1.53.0 as a custom-server client of the local ComfyUI: install, connect, styles, limits, troubleshooting |
@@ -28,7 +28,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | Try a model quickly | Add a config entry with `llama-server -hf <repo>:<quant>` ([model-downloads.md](model-downloads.md#tier-2)) |
 | Check for updated GGUFs | `bin/llm-pull outdated` |
 | Switch chat models | Just request the other model id. llama-swap unloads the current one |
-| Free the GPU for ComfyUI | `bin/gpu-mode comfy` (unloads everything and re-warms the aux models); go back with `bin/gpu-mode llm` |
+| Free the GPU for ComfyUI | Automatic: a ComfyUI prompt unloads the LLM first, and a chat request frees ComfyUI first ([gpu-switching.md](gpu-switching.md#automatic-arbitration-llama-swap---comfyui)). Manual: `bin/gpu-mode comfy` / `bin/gpu-mode llm` |
 | Roll back to Ollama | `docker compose stop llama-swap && docker compose --profile legacy up -d ollama`, then revert client settings ([../ROADMAP.md](../ROADMAP.md#phase-4--cutover-on-11434)) |
 
 ## Keeping things up to date

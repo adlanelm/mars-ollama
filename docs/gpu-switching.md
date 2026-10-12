@@ -1,6 +1,6 @@
 # GPU switching
 
-Status: `bin/gpu-mode` and the `comfyui` service (`comfyui-rocm:0.39.2`, profile `comfy`, port 127.0.0.1:8188) exist; Phase 6 is done, see [../bench/comfyui-results.md](../bench/comfyui-results.md). llama-swap behaviour measured in Phase 3 ([../bench/llama-swap-results.md](../bench/llama-swap-results.md)). Items marked **[verify]** are still unconfirmed.
+Status: switching is automatic since 2026-10-12 ([below](#automatic-arbitration-llama-swap---comfyui)). `bin/gpu-mode` and the `comfyui` service (`comfyui-rocm:0.39.2`, profile `comfy`, port 127.0.0.1:8188) exist; Phase 6 is done, see [../bench/comfyui-results.md](../bench/comfyui-results.md). llama-swap behaviour measured in Phase 3 ([../bench/llama-swap-results.md](../bench/llama-swap-results.md)). Items marked **[verify]** are still unconfirmed.
 
 See also: [architecture.md](architecture.md), [colibri.md](colibri.md), Phase 6 in [../ROADMAP.md](../ROADMAP.md).
 
@@ -18,6 +18,32 @@ The RX 7800 XT has 16 GB, with about 1.13-1.2 GB used by the desktop at idle.
 
 Goal: exactly one large VRAM consumer at a time.
 
+## Automatic arbitration (llama-swap <-> ComfyUI)
+
+Added 2026-10-12. Neither side needs `gpu-mode` any more; it stays as manual override and status view.
+
+| Side | Mechanism | What it does |
+|---|---|---|
+| llama-swap | [`llama-swap/gpu-guard`](../llama-swap/gpu-guard), the `cmd` prefix (macro `${gpu_guard}`) of every chat-group model. llama-swap v263 has no pre-start hook (only `hooks.on_startup`) | Before the server starts: wait while `comfyui` or `comfyui-trellis` has a running/pending job or a prompt being admitted (`GET /queue`, `GET /gpu-arbiter`), then `POST /free {"unload_models":true,"free_memory":true}` to each that is up, wait until torch holds < 512 MiB, then `exec` the server. Stopped containers are skipped. Max wait 600 s (`GPU_GUARD_MAX_WAIT`), then exit 1: the request fails and the log says `[gpu-guard] giving up` |
+| ComfyUI | [`comfyui/gpu_arbiter`](../comfyui/gpu_arbiter/__init__.py), our own node package (MIT, no nodes, no deps), bind-mounted read-only into both containers. An aiohttp middleware on `POST /prompt` and `/api/prompt` | Before the prompt is queued: wait while a guarded model is loading or an in-flight llama-swap request (inflight snapshot on `/api/events`) targets a non-aux model, then `POST /api/models/unload/<id>` for each running guarded model and wait until sysfs shows the VRAM released. The aux models (no `gpu-guard` in their cmd) stay loaded, so nothing needs re-warming. Max wait 600 s (`GPU_ARBITER_MAX_WAIT`), then HTTP 503 `gpu_busy`. llama-swap unreachable: prompts pass unchanged |
+
+- **Race:** the node sets `admitting` (visible on `GET /gpu-arbiter`), then checks llama-swap again before unloading. An LLM request is in flight before gpu-guard runs, so one side always sees the other; on a tie the LLM goes first. A streaming answer is never cut off: the prompt waits for it.
+- **Network:** both ComfyUI services join the `ollama` network (`http://llama-swap:11434`; llama-swap reaches `http://comfyui:8188` and `http://comfyui-trellis:8188`). `healthCheckTimeout` is 1230 s to cover the guard wait plus a cold load.
+- **Why VRAM overflowed before:** ComfyUI's free-memory figure (HIP) does not count llama.cpp's Vulkan buffers, so it loaded everything on top of a resident LLM and spilled into GTT. The node therefore reads `mem_info_vram_used` from sysfs.
+- **Not arbitrated:** `comfyui` vs `comfyui-trellis` (free or stop one first), docling-proxy's own GPU use, Unity/Blender.
+- **Krita:** unchanged URL and websocket. While an LLM request is running, a Krita job sits in "waiting" until it finishes; Krita sends `POST /prompt` without a timeout.
+
+Measured 2026-10-12 (qwen3.6-35b-a3b, Flux.2 Klein 4B 512 px, desktop baseline about 0.9-1.3 GiB):
+
+| Switch | Added latency | VRAM / GTT |
+|---|---|---|
+| LLM loaded and idle -> ComfyUI prompt | 0.3-0.5 s (unload; 14.9 GiB -> 0.9 GiB) | job peak 16.2 GiB VRAM (the same as ComfyUI alone: 16.2), GTT flat at about 0.5 GiB |
+| ComfyUI holding models -> chat | 2.8-6.2 s `/free` (weights move to RAM), plus the normal 15-17 s load | LLM peak 15.2 GiB; its own GTT is about 11.9 GiB as before |
+| Chat sent 1.5 s into a running job | waits for the job (5 s), then `/free` + load: 24.6 s total | no overlap |
+| Prompt sent 2 s into a 13 s LLM stream | prompt queued 1.2 s after the stream ended (12.5 s wait) | stream completed, then unload |
+
+Thrash cost: alternating requests pay a full LLM load (about 15 s) and a ComfyUI model reload from RAM every time.
+
 ## How llama-swap switches LLMs
 
 - **Exclusive chat group:** `chat` has `swap: true, exclusive: true`. Requesting one member unloads the others, including `colibri-big`.
@@ -34,7 +60,7 @@ So `gpu-mode` only handles the **non-LLM** consumers.
 |---|---|
 | `comfy` | `POST /api/models/unload`, re-warm the three aux models (one request each), then start ComfyUI with `docker compose --profile comfy up -d comfyui` if that service is defined |
 | `llm` | `POST /free` to ComfyUI, or `llm --stop` to stop its container. Without `--stop` the idle container keeps about 0.1 GiB and VRAM returns to baseline within seconds. llama-swap loads chat models on the next request |
-| `status` | Print: VRAM/GTT, `/running`, ComfyUI state, free RAM, swap |
+| `status` | Print: VRAM/GTT, `/running`, ComfyUI state (torch-held VRAM, queue, arbiter idle/waiting/unloading), free RAM, swap |
 
 HTTP calls:
 
@@ -73,6 +99,7 @@ Unity and Blender take another 1-3 GiB of VRAM. Qwen3.8 then can't keep 48k on t
 
 | Symptom | Check |
 |---|---|
+| **Chat request or ComfyUI prompt hangs** | Expected while the other side works (max 600 s). `docker logs llama-swap \| grep gpu-guard`, `docker logs comfyui \| grep gpu_arbiter`, `bin/gpu-mode status` |
 | **OOM** at load or during generation | `gpu-mode status`. Look for a second VRAM consumer (ComfyUI, docling job, Unity, Blender). Run `gpu-mode llm` or close the editors, then retry. `--fit` adapts at load time, so reload the model |
 | **Slow tokens** | Run `swapon --show`. If the NVMe partition is in use, RAM is exhausted: unload models, close apps, use a smaller context or qwen3.6 instead of colibri. Also check `--fit` moved layers (dense qwen3.8) to the CPU |
-| **Model stuck loading** | Large models load slowly from cold disk. Raise `healthCheckTimeout` (`600` in the live config) and check `docker logs llama-swap`. For `-hf` downloads, pre-pull with `llm-pull` so the first request doesn't download |
+| **Model stuck loading** | Large models load slowly from cold disk. Raise `healthCheckTimeout` (`1230` in the live config: 600 s gpu-guard wait + cold load) and check `docker logs llama-swap`. For `-hf` downloads, pre-pull with `llm-pull` so the first request doesn't download |

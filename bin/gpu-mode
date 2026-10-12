@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # gpu-mode: share the 16 GB RX 7800 XT between LLMs (llama-swap) and ComfyUI. Spec: docs/gpu-switching.md
+# Switching is automatic (docs/gpu-switching.md "Automatic arbitration"): llama-swap starts GPU models through
+# llama-swap/gpu-guard (waits for ComfyUI jobs, then frees ComfyUI), and both ComfyUIs run the gpu_arbiter node
+# (waits for in-flight LLM requests, then unloads the LLM before a prompt is queued). This script is the manual
+# override and status view:
 #   gpu-mode comfy   unload all LLMs, re-warm the aux models (embedders/reranker), start ComfyUI (if defined)
 #   gpu-mode llm     free ComfyUI VRAM (or stop its container); llama-swap loads chat models on demand
-#   gpu-mode status  VRAM/GTT, loaded models, ComfyUI state, RAM and swap
+#   gpu-mode status  VRAM/GTT, loaded models, ComfyUI state and arbiter state, RAM and swap
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
@@ -26,7 +30,7 @@ status() {
   echo "GPU   vram $(mib vram_used)/$(mib vram_total) MiB   gtt $(mib gtt_used) MiB"
   echo "LLM   $(curl -sf "$LLM/running" | jq -r '[.running[] | "\(.model)(\(.state))"] | join(" ")' 2>/dev/null || echo 'llama-swap not reachable')"
   if curl -sf "$COMFY/system_stats" >/dev/null 2>&1; then
-    echo "COMFY running   $(curl -sf "$COMFY/system_stats" | jq -r '.devices[0] | "vram free \(.vram_free/1048576|floor) MiB"')"
+    echo "COMFY running   $(curl -sf "$COMFY/system_stats" | jq -r '.devices[0] | "torch holds \(.torch_vram_total/1048576|floor) MiB"')   queue $(curl -sf "$COMFY/queue" | jq -r '"\(.queue_running|length) running \(.queue_pending|length) pending"')   arbiter $(curl -sf "$COMFY/gpu-arbiter" | jq -r 'if .waiting == 1 then "waiting for LLM" elif .admitting == 1 then "unloading LLM" else "idle" end' 2>/dev/null || echo 'not loaded')"
   else echo "COMFY not running"; fi
   free -h | awk '/Mem:/{print "RAM   available " $7 " of " $2}'
   swapon --show=NAME,USED --noheadings | awk '{printf "SWAP  %s %s\n", $1, $2}'

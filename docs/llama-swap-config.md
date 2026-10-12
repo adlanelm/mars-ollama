@@ -104,7 +104,7 @@ The Qwen3.8 upgrade from the plan applies only if the monitor is moved to the iG
 - Granite is in the `chat` group, so a docling job swaps the chat model out.
 - Open WebUI's task model must be "current model", otherwise title and tag generation swap the chat model on every message ([clients.md](clients.md)).
 - `colibri-big` joins `chat` in Phase 7, so requesting it unloads the chat model automatically.
-- `healthCheckTimeout: 600` covers a cold load of a 20 GB model.
+- `healthCheckTimeout: 1230` covers the gpu-guard wait for ComfyUI (max 600 s, [gpu-switching.md](gpu-switching.md#automatic-arbitration-llama-swap---comfyui)) plus a cold load of a 20 GB model (600 s). GPU models start as `${gpu_guard} llama-server ...`.
 
 ### Adding a model
 1. Download it: `llm-pull add <repo> <quant>` (see [model-downloads.md](model-downloads.md)). It prints a ready snippet and pins the revision in `models.lock.yaml`.

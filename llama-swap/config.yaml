@@ -2,7 +2,7 @@
 # Schema: https://github.com/mostlygeek/llama-swap/blob/v263/docs/config.example.yaml
 # Rationale for quants and flags: docs/models.md. Files come from bin/llm-pull (llama-swap/models.lock.yaml).
 
-healthCheckTimeout: 600 # cold load of a 20 GB model from disk
+healthCheckTimeout: 1230 # gpu-guard wait for ComfyUI (max 600) + cold load of a 20 GB model from disk (600) + /free
 logLevel: info
 logToStdout: "proxy,upstream,http" # upstream = llama-server logs (fit/offload decisions); http = access log
 startPort: 10001
@@ -10,6 +10,9 @@ sendLoadingState: false # would inject loading text into reasoning_content (docl
 includeAliasesInList: false
 
 macros:
+  # GPU models start through gpu-guard: it waits for ComfyUI jobs to finish and frees ComfyUI's VRAM first
+  # (docs/gpu-switching.md). ComfyUI's gpu_arbiter node finds the models to unload by this name in their cmd.
+  gpu_guard: /config/gpu-guard
   # Shared by the big chat models. --fit (default on, 1 GiB margin) picks -ngl / expert split.
   # --kv-unified: with an explicit -np, slots otherwise get c/np each (48k -> 2x24k).
   # -lm dio (direct I/O, no mmap): CPU-side weights stay resident; with mmap, page-cache eviction after a
@@ -31,7 +34,7 @@ models:
     aliases: ["qwen3.8:latest", "qwen3.8", "qwen3.8:64k", "qwen3.8:128k"]
     ttl: 900
     cmd: |
-      llama-server --port ${PORT}
+      ${gpu_guard} llama-server --port ${PORT}
       -m /models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q3_K_XL.gguf
       --mmproj /models/unsloth/Qwen3.8-27B-GGUF/mmproj-F16.gguf
       ${chat_common}
@@ -44,7 +47,7 @@ models:
     aliases: ["qwen3.6"]
     ttl: 900
     cmd: |
-      llama-server --port ${PORT}
+      ${gpu_guard} llama-server --port ${PORT}
       -m /models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
       --mmproj /models/unsloth/Qwen3.6-35B-A3B-GGUF/mmproj-F16.gguf
       ${chat_common} ${moe_common}
@@ -57,7 +60,7 @@ models:
     aliases: ["gemma4:26b", "gemma4:26b-64k", "gemma4:26b-128k"]
     ttl: 900
     cmd: |
-      llama-server --port ${PORT}
+      ${gpu_guard} llama-server --port ${PORT}
       -m /models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
       --mmproj /models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/mmproj-BF16.gguf
       ${chat_common} ${moe_common}
@@ -72,7 +75,7 @@ models:
     aliases: ["ibm/granite3.3-vision:2b"]
     ttl: 120
     cmd: |
-      llama-server --port ${PORT}
+      ${gpu_guard} llama-server --port ${PORT}
       -m /models/ibm-granite/granite-vision-3.3-2b-GGUF/granite-vision-3.3-2b-Q8_0.gguf
       --mmproj /models/ibm-granite/granite-vision-3.3-2b-GGUF/mmproj-model-f16.gguf
       -fa on --jinja --no-webui -np 4 --kv-unified
@@ -83,7 +86,7 @@ models:
     aliases: ["ibm/granite-docling:258m"]
     ttl: 120
     cmd: |
-      llama-server --port ${PORT}
+      ${gpu_guard} llama-server --port ${PORT}
       -m /models/ibm-granite/granite-docling-258M-GGUF/granite-docling-258M-BF16.gguf
       --mmproj /models/ibm-granite/granite-docling-258M-GGUF/mmproj-model-f16.gguf
       -fa on --jinja --no-webui -np 4 --kv-unified --special
@@ -127,7 +130,7 @@ models:
     # coli is a Python launcher (python3 3.14 exists in the image) that spawns /colibri/c/qwen38 (the C engine).
     # It does not hit the network. --ram is the expert-cache budget in GiB (sets RAM_GB), --cap the cache slots per layer.
     cmd: |
-      python3 /colibri/c/coli serve
+      ${gpu_guard} python3 /colibri/c/coli serve
       --model /colibri-models/qwen38-flash-next
       --host 127.0.0.1 --port ${PORT}
       --model-id colibri-big

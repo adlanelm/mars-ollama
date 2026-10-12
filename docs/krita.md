@@ -73,6 +73,7 @@ Not installed on purpose: SD 1.5 and SDXL (with their IP-Adapter, CLIP vision an
 - **"Connection refused"**: ComfyUI is not running. Run `bin/gpu-mode comfy` and wait about 10 s (`bin/gpu-mode status` shows `COMFY running`).
 - **"Missing custom nodes" or "No supported workload"**: the connection panel lists what is missing per base model. Server side, see the container logs: `docker logs comfyui | tail -50`. Client side, see `client.log` (link in Configure > Connection). It lists every search pattern and every file found. Model filenames must contain the plugin's search pattern, for example `big-lama`, `OmniSR_X4`, `OmniSR_X2`, `qwen_3_4b`, `flux2` (VAE) or `qwen_image` (VAE). Models come from `comfyui/models.txt` and `bin/comfy-pull`. Don't rename the files.
 - **Style shows a warning or no model**: open the style and pick a checkpoint that exists on the server, or click Configure > Connection > refresh after adding models.
+- **Job stays "waiting" or fails with `gpu_busy`**: an LLM request is still running; the job starts when it ends (max 600 s, then HTTP 503). See [gpu-switching.md](gpu-switching.md#automatic-arbitration-llama-swap---comfyui).
 - **Out of memory or very slow**: check `bin/gpu-mode status` for leftover LLMs and switch to Klein. Generate at 1024² or below.
 - **Flatpak can't connect but `curl localhost:8188/system_stats` works on the host**: run `flatpak info --show-permissions org.kde.krita`. Only if `network` is missing, run `flatpak override --user --share=network org.kde.krita`.
 

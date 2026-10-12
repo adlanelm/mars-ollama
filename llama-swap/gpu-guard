@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""gpu-guard: `cmd` prefix for the GPU models in llama-swap/config.yaml (macro ${gpu_guard}). Spec: docs/gpu-switching.md.
+
+Runs when llama-swap starts a GPU model, before the server process:
+  1. wait until every ComfyUI in COMFY_URLS that is up has no running or pending job and no prompt being admitted
+     (the gpu_arbiter node's GET /gpu-arbiter; it unloads the LLM before a prompt is queued),
+  2. POST /free {"unload_models":true,"free_memory":true} to each and wait until torch has released its VRAM,
+  3. exec the real command (same PID, so llama-swap's SIGTERM reaches the server).
+A ComfyUI that does not answer (container stopped) has nothing to wait for. After GPU_GUARD_MAX_WAIT seconds
+(default 600) it exits 1: llama-swap fails the start and the request gets an error; healthCheckTimeout covers the wait.
+stdlib only; output goes to the llama-swap log ("upstream").
+"""
+import json, os, sys, time, urllib.error, urllib.request
+
+URLS = os.environ.get("COMFY_URLS", "http://comfyui:8188 http://comfyui-trellis:8188").split()
+MAX_WAIT = float(os.environ.get("GPU_GUARD_MAX_WAIT", "600"))
+TORCH_IDLE = 512 * 2**20  # torch reserved below this = models unloaded
+
+
+def log(msg):
+    print(f"[gpu-guard] {msg}", file=sys.stderr, flush=True)
+
+
+def call(url, data=None, timeout=5):
+    req = urllib.request.Request(url, json.dumps(data).encode() if data is not None else None,
+                                 {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read()
+    return json.loads(body) if body else None
+
+
+def jobs(url):
+    """Running + pending + admitting prompts, or None if this ComfyUI is not reachable."""
+    try:
+        q = call(url + "/queue")
+    except (OSError, ValueError):  # connection refused, unknown host, timeout (URLError is an OSError)
+        return None
+    n = len(q.get("queue_running", [])) + len(q.get("queue_pending", []))
+    try:
+        n += int(call(url + "/gpu-arbiter")["admitting"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # node not installed: queue only
+    return n
+
+
+def free(url):
+    try:
+        call(url + "/free", {"unload_models": True, "free_memory": True})
+    except (OSError, ValueError) as e:
+        log(f"{url}/free failed: {e}")
+        return
+    end = time.monotonic() + 30  # the prompt worker thread applies the flag within a second or two
+    while time.monotonic() < end:
+        try:
+            if call(url + "/system_stats")["devices"][0]["torch_vram_total"] < TORCH_IDLE:
+                return
+        except (OSError, ValueError, KeyError, IndexError):
+            return
+        time.sleep(0.25)
+    log(f"{url}: torch still holds VRAM 30 s after /free, starting anyway")
+
+
+def main(argv):
+    if not argv:
+        sys.exit("usage: gpu-guard <command> [args...]")
+    t0 = time.monotonic()
+    announced = False
+    while True:
+        state = {u: jobs(u) for u in URLS}
+        busy = {u.split("//")[-1]: n for u, n in state.items() if n}
+        if not busy:
+            break
+        if time.monotonic() - t0 > MAX_WAIT:
+            log(f"giving up after {MAX_WAIT:.0f} s: ComfyUI still busy {busy}; not starting {os.path.basename(argv[0])}")
+            sys.exit(1)
+        if not announced:
+            log(f"ComfyUI busy {busy}: waiting (max {MAX_WAIT:.0f} s) before starting {os.path.basename(argv[0])}")
+            announced = True
+        time.sleep(1)
+    up = [u for u, n in state.items() if n is not None]
+    for u in up:
+        free(u)
+    log(f"freed ComfyUI {[u.split('//')[-1] for u in up]} in {time.monotonic() - t0:.1f} s; starting {os.path.basename(argv[0])}")
+    os.execvp(argv[0], argv)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

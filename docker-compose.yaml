@@ -73,7 +73,7 @@ services:
     restart: always
 
   # ─────────────────────────────────────────────────────────────
-  # COMFYUI (ROCm) — started by `bin/gpu-mode comfy`, see ROADMAP Phase 6
+  # COMFYUI (ROCm) — started by `bin/gpu-mode comfy`, see ROADMAP Phase 6; GPU arbitration with llama-swap: docs/gpu-switching.md
   # ─────────────────────────────────────────────────────────────
   comfyui:
     profiles: ["comfy"]
@@ -95,10 +95,16 @@ services:
       - ${HOME}/llm/comfyui/models:/opt/ComfyUI/models
       - ${HOME}/llm/comfyui/output:/opt/ComfyUI/output
       - ${HOME}/llm/comfyui/user:/opt/ComfyUI/user
+      - ./comfyui/gpu_arbiter:/opt/ComfyUI/custom_nodes/gpu_arbiter:ro # unloads llama-swap's GPU model before a prompt runs (docs/gpu-switching.md)
+    environment:
+      - GPU_ARBITER_LLM_URL=http://llama-swap:11434
+    networks:
+      - ollama # reaches llama-swap; llama-swap's gpu-guard reaches http://comfyui:8188
     restart: "no" # gpu-mode starts and stops it
 
   # TRELLIS.2 image -> vertex-coloured .glb, licence-clean (docs/trellis.md, docs/licenses.md). Separate image/tag so the Krita ComfyUI stays untouched.
-  # Exclusive GPU use: `bin/gpu-mode llm --stop` first; `docker compose --profile trellis up -d comfyui-trellis`.
+  # Start: `docker compose --profile trellis up -d comfyui-trellis`. The hand-over with llama-swap is automatic (docs/gpu-switching.md),
+  # not with the Krita `comfyui`: free or stop that one first (`bin/gpu-mode llm --stop`).
   comfyui-trellis:
     profiles: ["trellis"]
     build: ./trellis
@@ -121,6 +127,11 @@ services:
       - ${HOME}/llm/trellis/out:/opt/ComfyUI/output
       - ${HOME}/llm/trellis/user:/opt/ComfyUI/user
       - ${HOME}/llm/trellis/cache:/cache # u2net (rembg), Triton JIT cache, HF cache
+      - ./comfyui/gpu_arbiter:/opt/ComfyUI/custom_nodes/gpu_arbiter:ro # same arbiter as comfyui (not baked in: the image stays as licence-checked)
+    environment:
+      - GPU_ARBITER_LLM_URL=http://llama-swap:11434
+    networks:
+      - ollama # gpu-guard reaches http://comfyui-trellis:8188
     restart: "no"
 
   #docling:

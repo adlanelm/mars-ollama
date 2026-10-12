@@ -324,9 +324,21 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
      (`--max-dim`, `--ground`; mesh named after `--out`) → prefab. All pass `PsxAssetReport`.*
    - *Known gaps: vertex-colour TRELLIS loses fine detail (the locker's stencilled "07"); uniform scaling
      keeps concept proportions (crate flatter than briefed); Play-mode render path not checked.*
-   - *Characters and audio: plan in [docs/characters-audio-research.md](docs/characters-audio-research.md)
-     (Rigify + Quaternius first, SkinTokens ROCm PRs to try; jsfxr/Kenney/Sonniss + Stable Audio 3 SFX;
-     ACE-Step 1.5 music).*
+   - *Characters and audio: plan in [docs/characters-audio-research.md](docs/characters-audio-research.md).*
+
+   *2026-10-12/13, characters and audio done (all in `Slice.unity`, `PsxAssetReport` failures=0):*
+   - *Prop fixes: `ps1_prep --size W D H` (crate 1.0 × 0.6 × 0.7 m) and `--decal` (locker "07").*
+   - *Crew: Krea 2 → TRELLIS.2 → `ps1_prep` (1433 tris) → `rig_humanoid.py` (Rigify-derived 22 deform bones,
+     automatic weights) → Unity Humanoid (valid avatar); Quaternius UAL clips (CC0 in the zip) idle/walk/run/
+     hit/death; Crew.controller and prefab.*
+   - *Crawler: 2442 tris, `rig_crawler.py` (22 bones, Generic, automatic weights), hand-keyed Idle/Crawl/Attack
+     at 12 keys/s; Crawler.controller and prefab.*
+   - *SFX: 15 procedural sounds (`Tools/audio/sfx_gen.py`), no third-party audio. Not listened to yet.*
+   - *Music: ACE-Step 1.5 (MIT) DiT-only, 60 s station drone loop, -18 LUFS
+     ([docs/acestep.md](docs/acestep.md)). Not listened to yet.*
+   - *SkinTokens (MIT; vendored GPL-3.0 part) runs on gfx1101 via PR #14: ~35 s, 11 GiB per rig
+     ([docs/skintokens.md](docs/skintokens.md)); comparison with the hand rigs still to do.*
+   - *Not checked: Play mode, Animator transitions at runtime, run/hit/death on the crew, foot sliding.*
    - *GPU: automatic LLM ↔ ComfyUI arbitration ([docs/gpu-switching.md](docs/gpu-switching.md)) after
      parallel GPU use crashed the desktop.*
 

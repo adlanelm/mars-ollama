@@ -303,7 +303,7 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
         verified, and on a rented CUDA GPU.
 
       Excluded as non-commercial: LLaMA-Mesh, MeshAnything, LL3M (and FastMesh until verified).
-5. Unity URP project: PSX shader, `PsxSettings`, AssetPostprocessor, unity-mcp, git-lfs.
+5. Unity URP project: PSX shader, `PsxSettings`, AssetPostprocessor, unity-mcp, git-lfs. **Done 2026-10-12.**
    *Already there: `PsxLit` shader and material, `PsxSettings`, `PsxImportPostprocessor` (texture and model
    defaults), git-lfs rules. Done 2026-10-12:*
    - *Imported materials under `Art/` use `PsxIso/PsxLit` with their texture; `PsxAssetReport` fails otherwise.*
@@ -312,7 +312,10 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
      from opencode (console, scene, create/find/delete). Roslyn DLLs kept for `execute_code`.*
    - *Packages added: Cinemachine, glTFast, ProBuilder.*
 
-   *To do: the Blender → Unity re-export check.*
+   - *Re-export check: `PsxIso > Re-export check` (Snapshot, then Verify) in the editor. Re-exporting
+     `prop_terminal.fbx` 784 → 588 tris kept the FBX GUID, mesh/material fileIDs and the `PropTerminal` prefab's
+     references (12/12 PASS); restored to 784 afterwards. Rule: re-export with the same `--out` over the file.
+     The mesh name comes from the source glb node (`geometry_0`), not from `--out`.*
 6. **Vertical slice:** 1 room tileset, 3 props, 1 humanoid, 1 creature, an SFX set and a music loop.
 
 ---

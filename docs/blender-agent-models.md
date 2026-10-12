@@ -49,6 +49,28 @@ Coverage was about 12 searches; no 2025–2026 open Blender agent model was conf
 | CAD-Coder (gudo7208) | Apache-2.0 (HF metadata) | Qwen2.5-7B, CadQuery rather than bpy; CAD parts only |
 | SceneOrchestra | none found | 2026 paper, no code |
 
+## Baseline: crate brief (2026-10-12)
+
+**The brief:**
+- an 0.8 m wooden crate on the ground at (4.8, 0.6), rotated 15°;
+- a darker plank frame;
+- under 150 tris;
+- two materials;
+- parts parented to `Crate`.
+
+Each run was measured in Blender afterwards, not taken from the model's report.
+
+| Setup | Time | Result |
+|---|---|---|
+| qwen3.6-35b-a3b, raw bpy, cheat sheet **not loaded** (opencode ignores `instructions`) | a few min | 276 tris (it claimed 138), wrong size, below the ground, duplicate materials, a false report |
+| qwen3.8-27b, same | 18 min | 0 tool calls; it hit the 16k output limit while still reasoning |
+| qwen3.6-35b-a3b + `AGENTS.md` cheat sheet + `psx` helpers | 6 min, 14 calls | right place and rotation, 132 tris (true), no duplicates. Corner posts 0.38 m too high (the crate ended up 1.14 m tall), not noticed |
+| qwen3.8-27b + `AGENTS.md` + helpers | 18 min, 9 calls, about 14 tok/s with Blender open | correct: 0.8 m body on the ground, 108 tris, posts and top rails. The report is accurate except a lamp clearance of "0.25 m" (really about 0.1 m) |
+
+The cheat sheet only works when opencode loads it as `AGENTS.md`. The helpers remove the duplicates and the
+made-up numbers. What's left is that 3.6 doesn't notice its own placement mistakes, which is what step 4b
+items 1–3 target.
+
 ## Plan
 
 ROADMAP Phase 8 step 4b lists the commercially usable approaches to try, in order, measured on the same crate

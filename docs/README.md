@@ -37,6 +37,7 @@ Run `bin/check-updates`: one table of pinned vs latest for models, git pins (Com
 - Models: `bin/llm-pull update <id>` for GGUFs; edit `comfyui/models.txt` for ComfyUI files, then `bin/comfy-pull`.
 - A ComfyUI update builds a new `comfyui-rocm:<ver>` tag and rebuilds and recreates only `comfyui`; the old tag is kept while TRELLIS uses it (`trellis/Dockerfile` `COMFY_BASE`). TRELLIS moves to a new base only when you choose to: bump `COMFY_BASE`, rebuild, licence-check, smoke test. Remove an old base tag only after nothing uses it.
 - Pins stay where they are; nothing is bumped automatically.
+- After a torch/ROCm update, re-run the idle-CPU check in [rocm-idle-spin.md](rocm-idle-spin.md) (known ROCm 7.x runtime spin, one core at 100% while ComfyUI is up).
 
 ## Conventions
 - **[verify]** marks a claim that could not be confirmed from a primary source during research (2026-10-10/11). Resolve it in the roadmap phase where it appears.

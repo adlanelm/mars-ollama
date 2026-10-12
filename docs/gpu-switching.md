@@ -18,6 +18,21 @@ The RX 7800 XT has 16 GB, with about 1.13-1.2 GB used by the desktop at idle.
 
 Goal: exactly one large VRAM consumer at a time.
 
+### ComfyUI `--reserve-vram 1.5`
+
+Added 2026-10-13 to the `comfyui` service (`command:` in [../docker-compose.yaml](../docker-compose.yaml), the Dockerfile CMD plus `--reserve-vram 1.5`; the two lists must be kept in step). Reason: Krea 2 Turbo 1024 px peaked at 16.19 GiB whole-card (desktop included) and Flux.2 klein 512 at 16.2 GiB on a 16 GiB card, so the KDE desktop was squeezed. Measured with `RUNS=3 bin/comfy-bench krea2_turbo` (6 steps, 1024 px, HTTP API, no LLM loaded, container recreated per trial), whole-card `mem_info_vram_used` sampled every 0.5 s:
+
+| `--reserve-vram` | Peak VRAM (GiB) | Peak GTT (GiB) | Timed images (s) |
+|---|---|---|---|
+| none | 15.78 | 0.90 | 30.9, 33.6 |
+| 1.5 | 15.15, 14.83, 14.55 (three runs) | 0.93-1.40 | 31.7, 32.6 / 39.4, 34.2 / 33.8, 33.1 |
+| 2.0 | 15.79, 15.80 (two runs) | 1.4-1.75 | 30.4, 30.5 / 33.2, 32.8 |
+| 3.0 | not usable: system RAM ran out (available 0 GiB) while the model was being offloaded, run aborted | - | - |
+
+- **Value 1.5:** peak drops by about 0.6-1.2 GiB to 14.5-15.2 GiB, time per image unchanged within noise (about 31-34 s, the 39.4 s is a single outlier). 2.0 showed no gain over no flag in two runs: the peak is set by the VAE decode and the torch cache, which the reserve does not cover, so more reserve only adds offloading and RAM use. Do not raise it above 1.5 without watching free RAM.
+- **Not repeated:** Flux.2 klein 512 with the flag, since the setting is global to the service.
+- **`comfyui-trellis`: not set.** TRELLIS peaks at 4.1 GiB, far below the card.
+
 ## Automatic arbitration (llama-swap <-> ComfyUI)
 
 Added 2026-10-12. Neither side needs `gpu-mode` any more; it stays as manual override and status view.

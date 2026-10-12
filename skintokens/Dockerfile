@@ -4,6 +4,7 @@
 # before 5.1, and 5.1+ is cp313 only. Weights are NOT in the image: ~/llm/skintokens/{experiments,models} are mounted.
 FROM ghcr.io/astral-sh/uv:0.12.24 AS uv
 FROM ubuntu:24.04
+# PR14_BASE=273b691d35989d71cd17ff2895fdc735097b92d1  (upstream main the PR sits on; bin/check-updates reports when main moves)
 ARG SKINTOKENS_COMMIT=b576ed8d0ee5d68d45474e9f9546a9597fa8ce4b
 ARG TORCH=2.14.1 TORCHVISION=0.29.1 BPY=4.5.14
 ENV DEBIAN_FRONTEND=noninteractive UV_NO_CACHE=1 UV_PYTHON_INSTALL_DIR=/opt/python

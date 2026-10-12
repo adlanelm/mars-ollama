@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-updates: report-only table of pinned vs latest (models, git pins, trellis base, image, torch, Krita plugin, Blender/Unity MCP pins). Changes nothing.
+# check-updates: report-only table of pinned vs latest (models, git pins, trellis base, image, torch, Krita plugin, Blender/Unity MCP pins, ACE-Step and SkinTokens code/weights/torch pins). Changes nothing.
 # Usage: bin/check-updates        (to update: edit the pin in the file named below, rebuild; see docs/README.md)
 # Exit codes: 0 all current, 4 something OUTDATED, 2 network failure (nothing could be checked)
 set -uo pipefail
@@ -94,7 +94,43 @@ check_unity_mcp() { local n=$1 f pin u=https://github.com/CoplayDev/unity-mcp ta
   [[ -n ${h:-} ]] || { err "$n" "psx-iso unity-mcp.sh" "${pin:0:8}"; return; }
   if [[ $h == "$pin" ]]; then row "$n" "psx-iso unity-mcp.sh" "${pin:0:8}" "$tag ${h:0:8}" current; else row "$n" "psx-iso unity-mcp.sh" "${pin:0:8}" "$tag ${h:0:8}" OUTDATED; fi; }
 
-check_models 1 & check_comfyui 2 & check_trellis 3 & check_colibri 4 & check_image 5 & check_torch 6 & check_krita 7 & check_blender_mcp 8 & check_unity_mcp 9 & wait
+# whl_row <slot> <component> <pinned version> <package>: newest <package> on the rocm7.2 index (same index as check_torch)
+whl_row() { local n=$1 c=$2 pin=$3 pkg=$4 new idx=${TORCH_INDEX:-https://download.pytorch.org/whl/rocm7.2/torch/}
+  new=$(timeout "$TO" curl -sfL "${idx%torch/}$pkg/" | grep -oE "$pkg-[0-9]+\.[0-9]+\.[0-9]+(%2B|\+)rocm" | sed -E "s/^$pkg-//; s/(%2B|\+)rocm$//" | sort -uV | tail -1)
+  [[ -n $new ]] && cmp_row "$n" "$c" "$pin" "$new" || err "$n" "$c" "$pin"; }
+# hf_row <slot> <component> <pinned sha> <org/repo>: HF main head vs pinned revision (HF API, no token)
+hf_row() { local n=$1 c=$2 pin=$3 h
+  h=$(timeout "$TO" curl -sfL "https://huggingface.co/api/models/$4" | jq -r '.sha // empty' 2>/dev/null)
+  [[ -n $h ]] || { err "$n" "$c" "${pin:0:8}"; return; }
+  if [[ $h == "$pin" ]]; then row "$n" "$c" "${pin:0:8}" "${h:0:8}" current; else row "$n" "$c" "${pin:0:8}" "${h:0:8}" OUTDATED; fi; }
+
+check_acestep() { local n=$1 pin tv ta   # ARG ACESTEP_COMMIT / TORCH / TORCHAUDIO (acestep/Dockerfile), REV= (acestep/fetch-weights.sh)
+  pin=$(sed -nE 's/^ARG ACESTEP_COMMIT=([0-9a-f]{40}).*/\1/p' acestep/Dockerfile)
+  sha_row "${n}1" "acestep/Dockerfile ACE-Step-1.5" "$pin" https://github.com/ace-step/ACE-Step-1.5 &
+  hf_row "${n}2" "acestep/fetch-weights.sh Ace-Step1.5" "$(sed -nE 's/^REV=([0-9a-f]{40}).*/\1/p' acestep/fetch-weights.sh)" ACE-Step/Ace-Step1.5 &
+  # torch is held at torchaudio's last rocm7.2 version (2.11.0), so torchaudio is the one that can move
+  ta=$(sed -nE 's/^ARG .*TORCHAUDIO=([0-9.]+).*/\1/p' acestep/Dockerfile)
+  whl_row "${n}3" "acestep/Dockerfile torchaudio" "$ta" torchaudio &
+  wait; }
+
+check_skintokens() { local n=$1 pin base j pr merged h   # PR #14 head + its upstream base (skintokens/Dockerfile), weights revisions (skintokens/fetch-weights.sh)
+  pin=$(sed -nE 's/^ARG SKINTOKENS_COMMIT=([0-9a-f]{40}).*/\1/p' skintokens/Dockerfile)
+  base=$(sed -nE 's/^# PR14_BASE=([0-9a-f]{40}).*/\1/p' skintokens/Dockerfile)
+  local u=https://github.com/VAST-AI-Research/SkinTokens
+  h=$(timeout "$TO" git ls-remote "$u" refs/pull/14/head 2>/dev/null | cut -c1-40)
+  j=$(timeout "$TO" curl -sfL https://api.github.com/repos/VAST-AI-Research/SkinTokens/pulls/14 | jq -r '"\(.state) \(.merged)"' 2>/dev/null)
+  if [[ -z $h || -z $j ]]; then err "${n}1" "skintokens/Dockerfile PR #14 head" "${pin:0:8}"
+  elif [[ $j == *true ]]; then row "${n}1" "skintokens/Dockerfile PR #14 head" "${pin:0:8}" "merged upstream" OUTDATED
+  elif [[ $j == closed* ]]; then row "${n}1" "skintokens/Dockerfile PR #14 head" "${pin:0:8}" "closed unmerged" OUTDATED
+  elif [[ $h == "$pin" ]]; then row "${n}1" "skintokens/Dockerfile PR #14 head" "${pin:0:8}" "${h:0:8} (open)" current
+  else row "${n}1" "skintokens/Dockerfile PR #14 head" "${pin:0:8}" "${h:0:8} (open)" OUTDATED; fi
+  sha_row "${n}2" "skintokens/Dockerfile upstream main (PR base)" "$base" "$u" &
+  hf_row "${n}3" "skintokens/fetch-weights.sh SkinTokens" "$(sed -nE "s/.*hf_hub_download\('VAST-AI\/SkinTokens', f, revision='([0-9a-f]{40})'.*/\1/p" skintokens/fetch-weights.sh)" VAST-AI/SkinTokens &
+  hf_row "${n}4" "skintokens/fetch-weights.sh Qwen3-0.6B" "$(sed -nE "s/.*snapshot_download\('Qwen\/Qwen3-0.6B', revision='([0-9a-f]{40})'.*/\1/p" skintokens/fetch-weights.sh)" Qwen/Qwen3-0.6B &
+  whl_row "${n}5" "skintokens/Dockerfile torch" "$(sed -nE 's/^ARG TORCH=([0-9.]+).*/\1/p' skintokens/Dockerfile)" torch &
+  wait; }
+
+check_models 1 & check_comfyui 2 & check_trellis 3 & check_colibri 4 & check_image 5 & check_torch 6 & check_krita 7 & check_blender_mcp 8 & check_unity_mcp 9 & check_acestep a & check_skintokens b & wait
 
 { printf 'component\tpinned\tlatest\tstatus\n'; cat "$T"/*.row 2>/dev/null; } | column -t -s $'\t'
 for f in "$T"/*.detail; do [[ -f $f ]] && cat "$f"; done

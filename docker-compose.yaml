@@ -80,6 +80,8 @@ services:
     build: ./comfyui
     image: comfyui-rocm:0.39.2
     container_name: comfyui
+    # Same args as the Dockerfile CMD plus --reserve-vram: keeps the card's whole-card peak under ~15 GiB so the KDE desktop is not squeezed (docs/gpu-switching.md)
+    command: ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188", "--use-pytorch-cross-attention", "--disable-pinned-memory", "--cache-ram", "6", "--reserve-vram", "1.5"]
     devices:
       - /dev/kfd
       - /dev/dri

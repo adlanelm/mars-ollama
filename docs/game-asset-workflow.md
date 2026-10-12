@@ -85,7 +85,7 @@ Roles:
 3. Bake, or project the turnaround views. Keep a 1024px source.
 4. Export, plus the derived 128/256px texture.
 
-**MCP for Blender** (MIT, safe mode) gives Claude Code live control of Blender.
+**MCP for Blender** (MIT) gives Claude Code live control of Blender. Safe mode is not a sandbox: the add-on socket runs arbitrary Python, so keep it on loopback. Setup, pin updates and moving the server to jupiter (`MCP_HOST` in `.mcp.json`) are in psx-iso `Tools/mcp/README.md`.
 
 ## B5. Rigging and animation
 

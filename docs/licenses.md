@@ -123,7 +123,7 @@ The docling / embedding / reranker models in the lock file (granite, bge, snowfl
 | Quaternius assets | **Quaternius Asset License v1.0** (updated 2026-08-28), not CC0: free commercial use, no credit required, **no redistribution as stand-alone assets or packs** (§3a) | **OK-cond** | Packs downloaded before 2026-08-28 may be CC0 [verify per pack]; don't commit raw packs to a public repo |
 | retropsx-urp (`Natteens/retropsx-urp` @`7102c255`) | MIT | **OK** | Ships in the game: keep the notice in credits |
 | URP-PSX-Unity6 (`Clufin/URP-PSX-Unity6` @`a581eda4`) | MIT | **OK** | Ships in the game: keep the notice |
-| unity-mcp (`CoplayDev/unity-mcp` @`142ea0af`), blender-mcp (`ahujasid/blender-mcp` @`7a0373ec`) | MIT | **OK** (local tools) | v10.3 tag not confirmed [verify] |
+| unity-mcp (`CoplayDev/unity-mcp` @`142ea0af`), blender-mcp (`ahujasid/blender-mcp` @`7a0373ec`) | MIT | **OK** (local tools) | v10.3 tag not confirmed [verify]. blender-mcp full SHA `7a0373ec9199183cb460068c4f96aed9c579fb4f` (2026-10-06, now branded "MCP for Blender"); its asset integrations and Premium are off (assets not cleared for commercial use), telemetry off; add-on sha256 `eb0facf6…97fa5` |
 | jsfxr (`chr15m/jsfxr` @`b7b6aa27`) | Unlicense | **OK** | none |
 | Vital synth | Proprietary EULA: rendered audio may be used commercially | **OK-cond** | Never ship Vital presets or wavetables, and don't distribute content made from "unaltered" factory content [verify the full EULA] |
 | LMMS (`LMMS/lmms` @`a2f57e70`) | GPL-2.0 (local tool) | **OK** | Bundled samples not audited: use your own [verify] |

@@ -32,7 +32,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | Roll back to Ollama | `docker compose stop llama-swap && docker compose --profile legacy up -d ollama`, then revert client settings ([../ROADMAP.md](../ROADMAP.md#phase-4--cutover-on-11434)) |
 
 ## Keeping things up to date
-Run `bin/check-updates`: one table of pinned vs latest for models, git pins (ComfyUI and its custom nodes, trellis, colibri), the llama-swap image, torch in `comfyui-rocm` and the Krita plugin. It only reports (exit 4 if anything is OUTDATED, 2 on network failure).
+Run `bin/check-updates`: one table of pinned vs latest for models, git pins (ComfyUI and its custom nodes, trellis, colibri), the llama-swap image, torch in `comfyui-rocm` and the Krita plugin and the Blender MCP pin (in psx-iso). It only reports (exit 4 if anything is OUTDATED, 2 on network failure).
 - To update a pin: edit it in the file named in the table's first column, rebuild the image, then run `trellis/licence-check.py` and the smoke test `trellis/run_workflow.py --image concept.png`.
 - Models: `bin/llm-pull update <id>` for GGUFs; edit `comfyui/models.txt` for ComfyUI files, then `bin/comfy-pull`.
 - A ComfyUI update builds a new `comfyui-rocm:<ver>` tag and rebuilds and recreates only `comfyui`; the old tag is kept while TRELLIS uses it (`trellis/Dockerfile` `COMFY_BASE`). TRELLIS moves to a new base only when you choose to: bump `COMFY_BASE`, rebuild, licence-check, smoke test. Remove an old base tag only after nothing uses it.

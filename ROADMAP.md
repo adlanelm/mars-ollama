@@ -305,10 +305,14 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
       Excluded as non-commercial: LLaMA-Mesh, MeshAnything, LL3M (and FastMesh until verified).
 5. Unity URP project: PSX shader, `PsxSettings`, AssetPostprocessor, unity-mcp, git-lfs.
    *Already there: `PsxLit` shader and material, `PsxSettings`, `PsxImportPostprocessor` (texture and model
-   defaults), git-lfs rules. To do:*
-   - *remap imported materials to `PsxLit`;*
-   - *unity-mcp through an `MCP_HOST` wrapper;*
-   - *the Blender → Unity re-export check.*
+   defaults), git-lfs rules. Done 2026-10-12:*
+   - *Imported materials under `Art/` use `PsxIso/PsxLit` with their texture; `PsxAssetReport` fails otherwise.*
+   - *unity-mcp: MCP for Unity v10.3.0 (MIT) via `Tools/mcp/unity-mcp.sh` (`MCP_HOST` switch), stdio bridge
+     on 127.0.0.1:6400. `McpForUnityPrefs.cs` pins stdio, telemetry off and no client-config rewrites. Tested
+     from opencode (console, scene, create/find/delete). Roslyn DLLs kept for `execute_code`.*
+   - *Packages added: Cinemachine, glTFast, ProBuilder.*
+
+   *To do: the Blender → Unity re-export check.*
 6. **Vertical slice:** 1 room tileset, 3 props, 1 humanoid, 1 creature, an SFX set and a music loop.
 
 ---

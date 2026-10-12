@@ -176,6 +176,17 @@ Not recommended: UniRig, Make-It-Animatable, GVHMR, any SMPL tool, HY-Motion.
 2. Register with Stability for SA3 and save the gated `LICENSE.md` and `NOTICE`.
 3. Update the section 5 rows in [licenses.md](licenses.md) (Quaternius, Mixamo, Sonniss, Stable Audio, Surge XT, SkinTokens, FreeMoCap) when each step is actually used. Not done here, since nothing is adopted yet.
 
+## Results: ACE-Step 1.5 and SkinTokens on gfx1101 (2026-10-12)
+
+First real runs on the RX 7800 XT (Linux, ROCm 7.x host, container wheels torch 2.11/2.14 + rocm7.2). Details, recipes and licence checks: [acestep.md](acestep.md), [skintokens.md](skintokens.md).
+
+| Tool | Works? | Numbers | Notes |
+|---|---|---|---|
+| ACE-Step 1.5 (12–16 GB tier: turbo DiT INT8, CPU offload, LM 1.7B on the `pt` backend) | **Yes** | 80 s track: 30–38 s with LM (+24 s load), 12–16 s DiT-only (+7 s load); whole-card VRAM peak 14.7 GiB with LM, 13.8 GiB without | `HSA_OVERRIDE_GFX_VERSION=11.0.1` as upstream documents. LM-planned runs added a regular transient pulse despite "no drums"; DiT-only gave the beatless drone. Thin headroom with the LM: use `--no-lm` while Unity/Blender are open. Used for `station_ambient_loop.wav` |
+| SkinTokens / TokenRig, PR #14 (`b576ed8d`) | **Yes**, no own patches | ~33 s per mesh (load excluded), VRAM peak 11.0 GiB; 18 s / 13.4 GiB with `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` | Crew humanoid and high-poly crawler: clean rigs (43–46 bones, 4 weights/vertex); 2.5k-tri crawler FBX: usable but blurrier weights. Feasibility only, outputs not in the game repo |
+
+Resolved from the open list below: "SkinTokens on Linux + gfx1101" and "ACE-Step 1.5 on a 7800 XT: first real run". Still open: SkinTokens training-data licences (and the vendored GPL Michelangelo code), ACE-Step training-data claims, EU copyright of AI audio.
+
 ## Open [verify] items
 
 - SkinTokens on **Linux + gfx1101**: apply PR #14, run `giraffe.glb`, then the crate/creature; record time and VRAM. Re-check whether upstream merges #10 or #14.

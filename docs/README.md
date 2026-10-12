@@ -15,6 +15,8 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | [gpu-switching.md](gpu-switching.md) | Sharing one 16 GB GPU between LLMs, ComfyUI, docling and editors: automatic llama-swap/ComfyUI arbitration ([gpu-guard + gpu_arbiter](gpu-switching.md#automatic-arbitration-llama-swap---comfyui)), `gpu-mode` override |
 | [game-asset-workflow.md](game-asset-workflow.md) | AI-assisted asset pipeline for the PS1/Signalis-style isometric Unity game |
 | [trellis.md](trellis.md) | TRELLIS.2 image → textured .glb on ROCm (gfx1101): build, pins, how to run, measurements, licences |
+| [acestep.md](acestep.md) | ACE-Step 1.5 text-to-music on ROCm (gfx1101): container recipe, tier settings, timings, VRAM, licences |
+| [skintokens.md](skintokens.md) | SkinTokens/TokenRig auto-rigging feasibility test on gfx1101 (PR #14): recipe, timings, VRAM, rig quality, licences |
 | [krita.md](krita.md) | Krita (Flatpak) + krita-ai-diffusion v1.53.0 as a custom-server client of the local ComfyUI: install, connect, styles, limits, troubleshooting |
 | [licenses.md](licenses.md) | Licence registry for everything that can put content into the game (verdicts, conditions, revisions), already-produced assets, prioritised replacement plan, provenance tagging |
 

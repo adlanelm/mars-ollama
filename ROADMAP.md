@@ -274,13 +274,14 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
 2. Krita + krita-ai-diffusion connected to the local ComfyUI. *Done 2026-10-11: Krita Flatpak 5.3.4.1 + plugin 1.53.0 on the custom server; generate (Klein, Krea 2), inpaint and upscale verified by the user. MAT → LaMa and NMKD → OmniSR 4x on 2026-10-12 (licence). See [docs/krita.md](docs/krita.md).*
 3. TRELLIS.2 (ROCm port, gfx1101): take one prop from concept to mesh. *Done 2026-10-11: prop-terminal concept → 188k-tri textured .glb (2048² PBR) in 67 s warm / 133 s cold at 512, VRAM peak 4.7 GiB, NVMe swap 0; Aero-Ex nodes + egore/toast ROCm recipe, all clones pinned. On 2026-10-12 the image was made licence-clean (no nvdiffrast/MeshLib; vertex colours, ~48k tris, 63 s warm, 4.1 GiB). The PS1 texture is baked in Blender later. See [docs/trellis.md](docs/trellis.md) and [docs/licenses.md](docs/licenses.md).*
 4. Blender MCP plus `ps1_prep.py` (decimate, UV, bake, export at 128/256px).
-   *Status 2026-10-12, mostly done (psx-iso branch `blender-vertex-colour-bake`, not merged):*
-   - *`ps1_prep.py`: vertex-colour bake, keeps the 1024px source, hard triangle maximum.*
+   *Done 2026-10-12 (psx-iso `main`, cf3a423; that repo has no remote):*
+   - *`ps1_prep.py`: vertex-colour bake, hard triangle maximum, 1024px source to `art-src/` via `--src-dir`.*
    - *Blender MCP pinned, safe mode, `MCP_HOST` switch for jupiter; works from opencode.*
    - *The `bpy.ops.psx.*` helper add-on and the cheat sheet, loaded via `AGENTS.md`.*
+   - *Round trip: `prop-terminal_00008_` → 784 tris, 256² point-filtered texture → Unity; upright, true size
+     (0.77 × 0.86 × 1.0 m). Check with `PsxAssetReport` (`-executeMethod PsxIso.Editor.PsxAssetReport.Run`).*
 
-   *With them, qwen3.6-35b-a3b builds a correct-ish crate but misplaces parts. Still open: one round trip into
-   Unity, then merge.*
+   *Gap, moved to step 5: imported materials get URP/Lit, not `PsxIso/PsxLit`.*
    **4b. Make agent-built assets reliable, using only commercially usable approaches.** Details:
    [docs/blender-agent-models.md](docs/blender-agent-models.md). Try them in this order and measure each on
    the same crate brief (size, ground contact, triangles, part placement, honest report):
@@ -303,6 +304,11 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
 
       Excluded as non-commercial: LLaMA-Mesh, MeshAnything, LL3M (and FastMesh until verified).
 5. Unity URP project: PSX shader, `PsxSettings`, AssetPostprocessor, unity-mcp, git-lfs.
+   *Already there: `PsxLit` shader and material, `PsxSettings`, `PsxImportPostprocessor` (texture and model
+   defaults), git-lfs rules. To do:*
+   - *remap imported materials to `PsxLit`;*
+   - *unity-mcp through an `MCP_HOST` wrapper;*
+   - *the Blender → Unity re-export check.*
 6. **Vertical slice:** 1 room tileset, 3 props, 1 humanoid, 1 creature, an SFX set and a music loop.
 
 ---

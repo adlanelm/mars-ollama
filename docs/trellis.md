@@ -77,7 +77,7 @@ docker run --rm --user 1000:1000 -e HF_HOME=/models/.hf -v ~/llm/trellis/models:
   -v $PWD/trellis:/w:ro --entrypoint python comfyui-rocm:0.39.2 /w/fetch-weights.py Q8_0
 cp concept.png ~/llm/trellis/in/
 docker compose --profile trellis up -d comfyui-trellis      # UI/API on http://localhost:8189
-trellis/run_workflow.py --image concept.png [--seed N]      # host python3, stdlib only; prints stage timings
+trellis/run_workflow.py --image concept.png [--seed N] [--prefix trellis2/NAME]   # host python3, stdlib only; prints stage timings; --prefix names the .glb
 trellis/sample-peaks.sh comfyui-trellis > peaks.log &       # optional: VRAM / RAM / NVMe-swap peaks
 docker compose --profile trellis stop comfyui-trellis
 # optional stats + 4-view unlit preview PNG next to the .glb (CPU only, no GPU needed, can run any time):

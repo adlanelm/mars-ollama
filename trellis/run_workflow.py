@@ -3,7 +3,7 @@
 
 Stdlib only (runs with the host python3, nothing to install). Each stage is submitted as a cumulative prefix of
 the graph: ComfyUI caches the upstream nodes, so a prompt's execution time is the time of the newly added nodes.
-  trellis/run_workflow.py [--url http://localhost:8189] [--image NAME] [--seed N] [workflow.json]
+  trellis/run_workflow.py [--url http://localhost:8189] [--image NAME] [--seed N] [--prefix trellis2/NAME] [workflow.json]
 """
 import argparse, copy, json, pathlib, time, urllib.request
 
@@ -35,10 +35,12 @@ ap = argparse.ArgumentParser()
 ap.add_argument("workflow", nargs="?", default=str(pathlib.Path(__file__).parent / "workflows/trellis2_512_api.json"))
 ap.add_argument("--url", default="http://localhost:8189")
 ap.add_argument("--image"); ap.add_argument("--seed", type=int)
+ap.add_argument("--prefix", help="ExportMesh filename_prefix (default from the workflow: trellis2/prop-terminal)")
 a = ap.parse_args()
 wf = json.load(open(a.workflow))
 if a.image: wf["2"]["inputs"]["image"] = a.image
 if a.seed is not None: wf["4"]["inputs"]["seed"] = a.seed
+if a.prefix: wf["6"]["inputs"]["filename_prefix"] = a.prefix
 keep, total = [], 0.0
 for name, ids in STAGES:
     keep += ids

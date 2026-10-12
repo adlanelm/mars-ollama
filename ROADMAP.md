@@ -317,6 +317,18 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
      references (12/12 PASS); restored to 784 afterwards. Rule: re-export with the same `--out` over the file.
      The mesh name comes from the source glb node (`geometry_0`), not from `--out`.*
 6. **Vertical slice:** 1 room tileset, 3 props, 1 humanoid, 1 creature, an SFX set and a music loop.
+   *2026-10-12, environment part done (psx-iso `Scenes/Slice.unity`, built by `PsxIso/Build Slice scene`):*
+   - *Room tileset: `Tools/blender/kit_scifi_room.py`, 7 scripted pieces (10–56 tris), 2 m grid, 3 m walls,
+     one 256 px procedural atlas; `TestRoom` prefab.*
+   - *Props: terminal 784, locker 490, crate 392 tris; Krea 2 Turbo concept → TRELLIS.2 → `ps1_prep`
+     (`--max-dim`, `--ground`; mesh named after `--out`) → prefab. All pass `PsxAssetReport`.*
+   - *Known gaps: vertex-colour TRELLIS loses fine detail (the locker's stencilled "07"); uniform scaling
+     keeps concept proportions (crate flatter than briefed); Play-mode render path not checked.*
+   - *Characters and audio: plan in [docs/characters-audio-research.md](docs/characters-audio-research.md)
+     (Rigify + Quaternius first, SkinTokens ROCm PRs to try; jsfxr/Kenney/Sonniss + Stable Audio 3 SFX;
+     ACE-Step 1.5 music).*
+   - *GPU: automatic LLM ↔ ComfyUI arbitration ([docs/gpu-switching.md](docs/gpu-switching.md)) after
+     parallel GPU use crashed the desktop.*
 
 ---
 

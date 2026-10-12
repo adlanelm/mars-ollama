@@ -274,6 +274,34 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
 2. Krita + krita-ai-diffusion connected to the local ComfyUI. *Done 2026-10-11: Krita Flatpak 5.3.4.1 + plugin 1.53.0 on the custom server; generate (Klein, Krea 2), inpaint and upscale verified by the user. MAT → LaMa and NMKD → OmniSR 4x on 2026-10-12 (licence). See [docs/krita.md](docs/krita.md).*
 3. TRELLIS.2 (ROCm port, gfx1101): take one prop from concept to mesh. *Done 2026-10-11: prop-terminal concept → 188k-tri textured .glb (2048² PBR) in 67 s warm / 133 s cold at 512, VRAM peak 4.7 GiB, NVMe swap 0; Aero-Ex nodes + egore/toast ROCm recipe, all clones pinned. On 2026-10-12 the image was made licence-clean (no nvdiffrast/MeshLib; vertex colours, ~48k tris, 63 s warm, 4.1 GiB). The PS1 texture is baked in Blender later. See [docs/trellis.md](docs/trellis.md) and [docs/licenses.md](docs/licenses.md).*
 4. Blender MCP plus `ps1_prep.py` (decimate, UV, bake, export at 128/256px).
+   *Status 2026-10-12, mostly done (psx-iso branch `blender-vertex-colour-bake`, not merged):*
+   - *`ps1_prep.py`: vertex-colour bake, keeps the 1024px source, hard triangle maximum.*
+   - *Blender MCP pinned, safe mode, `MCP_HOST` switch for jupiter; works from opencode.*
+   - *The `bpy.ops.psx.*` helper add-on and the cheat sheet, loaded via `AGENTS.md`.*
+
+   *With them, qwen3.6-35b-a3b builds a correct-ish crate but misplaces parts. Still open: one round trip into
+   Unity, then merge.*
+   **4b. Make agent-built assets reliable, using only commercially usable approaches.** Details:
+   [docs/blender-agent-models.md](docs/blender-agent-models.md). Try them in this order and measure each on
+   the same crate brief (size, ground contact, triangles, part placement, honest report):
+   1. **Verifier rule:** before answering, the agent compares `psx.report` size and bounds with the brief and
+      fixes mismatches. This only changes the cheat sheet.
+   2. **Render → inspect → edit loop**, the VIGA pattern (MIT). After building, call `look` from fixed views
+      and run a second "review only" pass that lists fixes, then apply them. Best-of-N if it helps.
+   3. **Separate local vision critic** (Qwen3-VL-8B class) as a llama-swap entry, given the screenshots,
+      the report and the brief.
+      - Before using it: check that its licence allows commercial use and that the GGUF runs on Vulkan
+        **[verify]**, and that it fits beside Blender and the coder in 16 GB.
+   4. **BlenderLLM** (8B, Apache-2.0 weights and code) as a one-shot bpy object-script generator, called by
+      the agent. It needs a self-made GGUF, and its quality claims come from the authors' own benchmark.
+   5. **Optional:**
+      - **Docs retrieval:** a Blender API retrieval skill (the BlenderRAG idea; we implement it ourselves, not
+        LL3M's academic-only code).
+      - **Reasoning cap** or no-thinking mode for qwen3.8-27b.
+      - **Mesh generators:** MeshXL (MIT) and DeepMesh (LICENSE unclear) only after their licences are
+        verified, and on a rented CUDA GPU.
+
+      Excluded as non-commercial: LLaMA-Mesh, MeshAnything, LL3M (and FastMesh until verified).
 5. Unity URP project: PSX shader, `PsxSettings`, AssetPostprocessor, unity-mcp, git-lfs.
 6. **Vertical slice:** 1 room tileset, 3 props, 1 humanoid, 1 creature, an SFX set and a music loop.
 

@@ -65,7 +65,7 @@ Usable VRAM is about 14.85 GiB. `--fit` (default on) keeps a 1 GiB margin per de
 |---|---|---|---|---|---|
 | `qwen3.8-27b` (dense, UD-Q3_K_XL) | 13.15 GB (12.24 GiB) | 0.93 GB F16, **on CPU** (`--no-mmproj-offload`, frees 0.86 GiB) | 34 KiB/token: 48k ctx, about 1.6 GiB | 100% GPU, all 65 layers (no `-ngl`; `--fit` decides). Measured VRAM 15.2 GB at 48k | `-ub 256` leaves room for the GPU reranker. Spills dense layers if Unity or Blender take VRAM |
 | `qwen3.6-35b-a3b` (MoE, UD-Q4_K_XL) | 22.36 GB (20.8 GiB) | 0.90 GB F16 | 10.6 KiB/token: 128k, about 1.33 GiB | Measured: experts of blk 20-39 (20 layers) in pinned host RAM (GTT 11.7 GB) | Picks the split at load time. Don't pin `-ngl` or `--n-cpu-moe` |
-| `gemma4-26b` (MoE, QAT UD-Q4_K_XL) | 14.25 GB (13.27 GiB) | 1.19 GB BF16 | about 10.6 KiB/token: 128k, about 1.33 GiB (about half if K=V is stored once **[verify]**) | Measured: experts of blk 24-29 (6 of 30 layers) in host RAM | Picks the split at load time. `--swa-full` stays off |
+| `gemma4-26b` (MoE, QAT UD-Q4_K_XL) | 14.25 GB (13.27 GiB) | 1.19 GB BF16 | about 10.6 KiB/token: 128k, about 1.33 GiB (measured: K and V stored separately) | Measured: experts of blk 24-29 (6 of 30 layers) in host RAM | Picks the split at load time. `--swa-full` stays off |
 | `granite-vision` | 2.69 GB Q8_0 | 0.89 GB | `-c 32768`, `-np 4 --kv-unified` (one image is about 5.2k tokens) | GPU | Chat group member |
 | `granite-docling` | 0.33 GB BF16 | 0.19 GB | `-c 32768`, `-np 4 --kv-unified --special` | GPU | Chat group member |
 | Aux: bge-m3, snowflake | 1.16 GB each (F16) | none | `-c 8192` | **CPU** | n/a |
@@ -106,8 +106,8 @@ Qwen3.8 KV note: 32k is about 1.06 GiB and 64k about 2.1 GiB. The 48k entry gets
 **Why Vulkan instead of ROCm here**
 - Ollama already runs here with `OLLAMA_VULKAN=1`, and flash attention plus q8_0 KV are supported on Vulkan. The RX 7800 XT is on the llama.cpp FA scoreboard.
 - Image: `ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541` (llama.cpp build 11541). Resolved: it bundles `llama-server` at this pinned tag.
-- A ROCm image, `v263-rocm-b11541`, **exists** but has not been benchmarked yet. ROCm vs Vulkan is still open **[verify]**.
-- MTP (`--spec-type draft-mtp`) stays off (Vulkan bug reports) and was not tested **[verify]**.
+- ROCm image `v263-rocm-b11541` benchmarked 2026-10-13: Vulkan stays (ROCm −17%/−20% tg on gemma4/qwen3.8, +8% on qwen3.6, slower loads, wrong free-VRAM report for `--fit`). See [bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md).
+- MTP (`--spec-type draft-mtp`) stays off. Tested 2026-10-13: Gemma 4's draft works on Vulkan and is faster, but `--fit` doesn't budget its VRAM.
 
 **Why the embedders run on the CPU and the reranker on the GPU**
 - Every VRAM GiB matters: qwen3.8 only fits with Q3 weights and 48k context. The embedders are small (568M parameters) and stay loaded (`persistent`), so the CPU is enough.
@@ -122,7 +122,7 @@ Qwen3.8 KV note: 32k is about 1.06 GiB and 64k about 2.1 GiB. The 48k entry gets
 | Risk | Mitigation |
 |---|---|
 | Qwen3.8 is dense and must fit 100% in VRAM. Unity or Blender (1-3 GiB) makes `--fit` spill layers | Use qwen3.6 or Claude Code while editors are open ([gpu-switching.md](gpu-switching.md)) |
-| MoE experts compete for RAM (about 12-13 GiB available) | `-cram 2048`, `-ctxcp 8`, `-lm dio`. NVMe swap stayed at 0 B in the full-context tests. Per-checkpoint RAM cost not isolated **[verify]** |
+| MoE experts compete for RAM (about 12-13 GiB available) | `-cram 2048`, `-ctxcp 8`, `-lm dio`. NVMe swap stayed at 0 B in the full-context tests. Per checkpoint: qwen3.6 62.8 MiB, qwen3.8 149.6 MiB, gemma4 106.3 MiB |
 | The migration could be *slower* than Ollama (no MTP) | Measured faster: qwen3.8 32.4 vs 6.6 tok/s, gemma4 43-47 vs 33.0 tok/s; qwen3.5 baseline not measured (Ollama hung) |
 | Embedder blobs may not load or may differ | Resolved: parity PASS (see above) |
 | granite-docling and granite-vision multimodal support in llama.cpp | Resolved: both work (docling needs `--special`). Fallback if it regresses: docling-serve local engine |

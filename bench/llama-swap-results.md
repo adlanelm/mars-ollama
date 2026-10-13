@@ -55,11 +55,12 @@ Raw outputs: `ollama-baseline.txt`, `qwen3.6-sweep.md`, `smoke-1.txt`, `smoke-gr
 - A single-file bind mount of `config.yaml` goes stale when an editor replaces the inode; the compose file mounts the `llama-swap/` directory instead.
 - The image has no `video`/`render` group names; compose uses the host GIDs (983, 987).
 
-## Not done (optional)
+## Optional items (resolved 2026-10-13, [verification-2026-10-13.md](verification-2026-10-13.md))
 
-- MTP speculative decoding (Gemma 4 MTP draft) — skipped, Vulkan bug reports; revisit later.
-- ROCm image vs Vulkan comparison.
-- `-ctxcp` RAM cost per checkpoint — not isolated; total RAM stays well within budget.
+- MTP (Gemma 4 draft) works on Vulkan: +34% tg at 5.6k depth, +40–75% on short answers, 60–83% acceptance; coherent but not bit-identical at temperature 0; `--fit` doesn't budget the draft. Not applied.
+- ROCm (`v263-rocm-b11541`) vs Vulkan: Vulkan stays (ROCm −17% gemma4 tg, −20% qwen3.8 tg, +8% qwen3.6 tg, slower loads, misreports free VRAM).
+- `-ctxcp` per checkpoint: qwen3.6 62.8 MiB, qwen3.8 149.6 MiB, gemma4 106.3 MiB (worst case 8 × 2 slots: 1.0 / 2.3 / 1.7 GiB).
+- qwen3.8 is now 63 of 65 layers on the GPU (reranker in VRAM): 21 tok/s at 5.5k depth; `-c 40960` puts all 65 on the GPU, 26.7 tok/s.
 
 ## Phase 4 cutover (2026-10-11)
 
@@ -69,7 +70,7 @@ Raw outputs: `ollama-baseline.txt`, `qwen3.6-sweep.md`, `smoke-1.txt`, `smoke-gr
 | Open WebUI RAG | query embeddings 30–45 ms; rerank 200 but 14–17 s per query: 3 concurrent requests × ~60 chunks × ~1,400 tokens ≈ 280k tokens. Tune Top K / Top K Reranker / chunk size (deferred) |
 | Open WebUI document upload | ~150 chunks embedded; 71 s with `-t 4`, ~25 s expected with `-t 8` (48 chunks in 7.8 s) |
 | docling-proxy, standard pipeline + `picture_description_api` → granite-vision | success, 27 s, table + picture description |
-| docling-proxy, VLM pipeline → granite-docling (`response_format: doctags`) | success, 4 s; trailing `<\|end_of_text\|>` is handled |
+| docling-proxy, VLM pipeline → granite-docling (`response_format: doctags`) | success, 4 s; trailing `<\|end_of_text\|>` is handled (re-checked 2026-10-13 with a synthetic PDF: 0 occurrences in md/doctags/json) |
 | opencode (`ollama/qwen3.6-35b-a3b`) | works; config updated to new ids and real context limits |
 | Page Assist | skipped (not used); CORS verified above |
 

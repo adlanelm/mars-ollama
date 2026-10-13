@@ -18,7 +18,7 @@ Related docs:
 | `glm-4.7-flash` (:latest/:198k) | `glm4moelite`, **MoE** 30B-A3B | Q4_K_M 19 GB | Drop (owner's choice) |
 | `bge-m3` | bert / XLM-R, 568M | F16 | **Keep.** Reuse the exact Ollama blob (it's a GGUF) so Qdrant vectors stay valid |
 | `snowflake-arctic-embed2` (+`:latest_8192`) | bert, 568M | F16, `latest_8192` only sets num_ctx | **Keep**, reuse the blob. Resolved: llama.cpp rejects the Ollama blob as is (charsmap stored as a base64 char array); `llm-pull import-ollama` fixes it automatically ([model-downloads.md](model-downloads.md)). Cosine parity PASS |
-| `linux6200/bge-reranker-v2-m3` | bert, 568M, **shown as "completion"** | F16 | **Ollama has no rerank API, so this can't have been reranking.** Check how Open WebUI's reranker is set up today. Replace with `gpustack/bge-reranker-v2-m3-GGUF` and llama-server `--reranking` (`/v1/rerank`). Still **[verify]**: how Open WebUI's reranker was configured before migration |
+| `linux6200/bge-reranker-v2-m3` | bert, 568M, **shown as "completion"** | F16 | **Ollama has no rerank API, so this can't have been reranking.** Check how Open WebUI's reranker is set up today. Replace with `gpustack/bge-reranker-v2-m3-GGUF` and llama-server `--reranking` (`/v1/rerank`). The pre-migration Open WebUI setting is not recoverable (Ollama data removed, no screenshot); current setup: [bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md) |
 | `ibm/granite-docling:258m` | llama + clip, 164M+94M | BF16 | Use the official `ibm-granite/granite-docling-258M-GGUF`. Resolved: multimodal works (needs `--special`) |
 | `ibm/granite3.3-vision:2b` | granite + clip | Q8_0, ctx 16k, temp 0 | Use the official `ibm-granite/granite-vision-3.3-2b-GGUF` Q8_0. Resolved: multimodal works |
 
@@ -28,7 +28,7 @@ Related docs:
 |---|---|
 | `num_thread 13` | Pointless for models fully on GPU. For MoE offload it is likely worse than `-t 8` (physical cores). Benchmark it |
 | `MAX_LOADED_MODELS=2` | Two 15 GB models can't share 14.8 GiB. Replaced by llama-swap groups: big models swap exclusively, small models stay loaded on the CPU |
-| `draft_num_predict` (MTP) | llama.cpp has MTP (`--spec-type draft-mtp`), but there are **Vulkan bug reports (garbage output)** and it costs another 1-1.4 GB of VRAM. Left **off**; not tested (**[verify]**). A ROCm image exists (`v263-rocm-b11541`) but has not been benchmarked yet. Measured speeds are already well above Ollama (see below) |
+| `draft_num_predict` (MTP) | llama.cpp has MTP (`--spec-type draft-mtp`), but there are **Vulkan bug reports (garbage output)** and it costs another 1-1.4 GB of VRAM. Tested 2026-10-13 on Vulkan: works for Gemma 4 (+34% tg at 5.6k depth, +40–75% short answers), not bit-identical at temperature 0, and `--fit` doesn't budget the draft. Still **off**; proposal in [bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md). ROCm (`v263-rocm-b11541`) was benchmarked and loses on 2 of 3 models, so Vulkan stays |
 | Flash attention, q8_0 KV | **Kept.** Both are supported on Vulkan; the RX 7800 XT is on the llama.cpp FA scoreboard |
 
 ---
@@ -46,7 +46,7 @@ Related docs:
 |---|---|---|---|
 | Qwen3.8-27B | 16 attention layers x 4 KV heads x 256 dim | **34 KiB** | 32k = 1.06 GiB, 64k = 2.1 GiB |
 | Qwen3.6-35B-A3B | 10 of 40 layers are attention, x 2 KV heads x 256 | **10.6 KiB** | 128k = 1.33 GiB |
-| Gemma 4 26B | 25 sliding-window layers (window 1024, fixed ~0.15 GiB) + 5 global layers x 2 KV heads x 512 | **about 10.6 KiB** | 128k = 1.33 GiB, or half if llama.cpp stores K=V once (`attention_k_eq_v=true`) |
+| Gemma 4 26B | 25 sliding-window layers (window 1024, fixed ~0.15 GiB) + 5 global layers x 2 KV heads x 512 | **about 10.6 KiB** (measured: K and V are stored separately) | 128k = 1.33 GiB for the global layers; `fit-params` context total 1.64 GiB at 128k |
 
 The per-token figure is layers x KV heads x head dim x 2 (K and V) x 1.0625 B, for example Qwen3.8: 16 x 4 x 256 x 2 x 1.0625 = 34,816 B = 34 KiB.
 
@@ -56,7 +56,7 @@ The per-token figure is layers x KV heads x head dim x 2 (K and V) x 1.0625 B, f
 
 | ID (aliases) | File (exact size) | Why this quant | Placement / key flags |
 |---|---|---|---|
-| **`qwen3.8-27b`** (`qwen3.8:latest`, `qwen3.8`, `qwen3.8:64k`, `qwen3.8:128k`; all old context tags map to this 48k entry) | `unsloth/Qwen3.8-27B-GGUF` **UD-Q3_K_XL** (13.15 GB = 12.24 GiB) + `mmproj-F16` (0.93 GB) | Dense, so it must be 100% on GPU. UD-IQ4_XS (13.27 GiB) is better quality, but with compute buffers it leaves only about 0.9 GiB, which is about 24k context with no vision on the GPU. Q4_K_S and above don't fit. UD-Q3_K_XL is the largest that leaves useful context | `-c 49152 -ctk q8_0 -ctv q8_0 --no-mmproj-offload -ub 256` (no `-ngl`: `--fit` decides and fits all 65 layers; `-ub 256` leaves room for the GPU reranker). **Running the vision encoder on the CPU frees 0.86 GiB**, which turns 32k into **48k with vision in a single entry**. Image encoding takes a few seconds on 8 cores |
+| **`qwen3.8-27b`** (`qwen3.8:latest`, `qwen3.8`, `qwen3.8:64k`, `qwen3.8:128k`; all old context tags map to this 48k entry) | `unsloth/Qwen3.8-27B-GGUF` **UD-Q3_K_XL** (13.15 GB = 12.24 GiB) + `mmproj-F16` (0.93 GB) | Dense, so it must be 100% on GPU. UD-IQ4_XS (13.27 GiB) is better quality, but with compute buffers it leaves only about 0.9 GiB, which is about 24k context with no vision on the GPU. Q4_K_S and above don't fit. UD-Q3_K_XL is the largest that leaves useful context | `-c 49152 -ctk q8_0 -ctv q8_0 --no-mmproj-offload -ub 256` (no `-ngl`: `--fit` decides; measured 2026-10-13 with the reranker and desktop in VRAM: **63 of 65 layers**, 21 tok/s at 5.5k depth; `-c 40960` fits all 65, 26.7 tok/s). **Running the vision encoder on the CPU frees 0.86 GiB**, which turns 32k into **48k with vision in a single entry**. Image encoding takes a few seconds on 8 cores |
 | **`qwen3.6-35b-a3b`** (`qwen3.6`) | `unsloth/Qwen3.6-35B-A3B-GGUF` **UD-Q4_K_XL** (22.36 GB = 20.8 GiB) + `mmproj-F16` (0.90 GB) | MoE: about 92% of weights are experts (about 0.47 GiB per layer). Measured: `--fit` puts the experts of blk 20-39 (20 of 40 layers) on the CPU. UD-Q5_K_XL (24.8 GiB) would need about 13 GiB of RAM, past the RAM budget. MXFP4_MOE has no hardware benefit on RDNA3 | `-c 131072 -ctk q8_0 -ctv q8_0 -ub 2048 -b 2048 -t 8 -tb 8`. **Don't pin `-ngl` or `--n-cpu-moe`:** `--fit` picks the expert split from the VRAM free at load time. That matters because Unity and Blender also use the GPU. Log the chosen split |
 | **`gemma4-26b`** (`gemma4:26b`, `gemma4:26b-64k`, `gemma4:26b-128k`) | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` **UD-Q4_K_XL** (14.25 GB = 13.27 GiB) + `mmproj-BF16` (1.19 GB) | The only QAT-based quant, and the best 4-bit quality. With mmproj and 128k KV it is about 1.5-2 GiB over budget. Measured: `--fit` puts the experts of blk 24-29 (6 of 30 layers) on the CPU, which is cheap for a 3.8B-active MoE. **One entry replaces three context tags** | `-c 131072 -ctk q8_0 -ctv q8_0 -t 8 -tb 8 -ub 2048 -b 2048`, with `--fit` deciding the expert split. Keep `--swa-full` off, because the default SWA cache plus context checkpoints is what keeps 128k cheap |
 | `granite-vision` (`ibm/granite3.3-vision:2b`) | `ibm-granite/granite-vision-3.3-2b-GGUF` **Q8_0** (2.69 GB) + `mmproj-model-f16` (0.89 GB) | Q8 is near-lossless and faster than BF16 (5.07 GB). Same quant as Ollama today | GPU, `-ngl 99 -np 4 --kv-unified -c 32768`, temp 0 (one image is about 5.2k tokens, so the 4 slots share a unified 32k pool). Member of the chat group (swaps the chat model out during docling jobs) |
@@ -106,13 +106,13 @@ Applies if the monitor is moved to the iGPU (+1.13 GiB of VRAM).
 | `--fit on --fit-target 1024` | default | Adapts to the desktop, Unity or Blender VRAM use at load time. No `-ngl` on the big chat models |
 | `-np 2 --kv-unified` | chat models | Lets Open WebUI run a background task (title or tags) alongside a chat. With an explicit `-np 2`, llama.cpp otherwise gives each slot c/np (48k becomes 2x24k); `--kv-unified` makes the slots share one pool of the full size |
 | `-lm dio` | chat models | Direct I/O, replaces `--no-mmap` (removed in b11541; `-lm/--load-mode {auto,none,mmap,mlock,mmap+mlock,dio}`). With mmap, page-cache eviction after a model swap made qwen3.6 re-read CPU-side experts from NVMe during inference: 3.8-14 tok/s prompt, 16-19 tok/s generation instead of 31.5 |
-| `-ctxcp 8` | Qwen and Gemma | Context checkpoints let hybrid and SWA models reuse prompts across turns. The default of 32 per slot can use a lot of RAM. Per-checkpoint RAM cost not isolated, total RAM stays within budget **[verify]** |
+| `-ctxcp 8` | Qwen and Gemma | Context checkpoints let hybrid and SWA models reuse prompts across turns. The default of 32 per slot can use a lot of RAM. Measured per checkpoint: qwen3.6 62.8 MiB, qwen3.8 149.6 MiB, gemma4 106.3 MiB (worst case 8 × 2 slots: 1.0 / 2.3 / 1.7 GiB) |
 | `-cram 2048` | all | The default 8 GiB host prompt cache competes with MoE experts for RAM |
 | `-t 8 -tb 8` | MoE models | Physical cores. Measured: 6, 8 and 12 threads are within noise |
 | `-ub -b` | 256 qwen3.8 / 2048 MoE (`-b 2048`) | MoE, measured prompt speed: 2048 = 1040 tok/s, 1024 = 750, 512 = 470 (generation unchanged). qwen3.8: 256 keeps all 65 layers on the GPU with the reranker in VRAM, -8% prompt speed (367 vs 398 tok/s at 512) |
 | `--no-mmproj-offload` | qwen3.8 only | Frees VRAM. No measurable effect on the MoE models once the mmap issue was fixed |
 | `--jinja`, `--reasoning-format auto` | defaults | Thinking output goes into `reasoning_content`, which Open WebUI shows as a thinking block |
-| MTP (`--spec-type draft-mtp`) | **off** | Skipped (Vulkan bug reports), no VRAM to spare for Qwen3.8. Gemma 4 has a small 252 MB MTP draft file, worth testing later **[verify]** |
+| MTP (`--spec-type draft-mtp`) | **off** | No VRAM to spare for Qwen3.8. Gemma 4's 252 MB draft works on Vulkan (+20–34% tg at depth with `--fit-target 2048`), but `--fit` ignores the draft's VRAM; see [bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md) |
 
 ### Sampling defaults
 

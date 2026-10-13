@@ -12,7 +12,7 @@ Notes:
 - Model paths follow `/models/<org>/<repo>/<file>` (the `llm-pull` layout). The embedders are copies of the Ollama blobs under `/models/ollama/<model>/<model>-F16.gguf` (see [model-downloads.md](model-downloads.md)).
 - `--fit` (default on, 1 GiB margin) decides `-ngl` and the MoE expert split, so none of the big chat models has `-ngl` or `--n-cpu-moe`.
 - Sampling flags are server defaults. Clients can override them per request.
-- MTP (`--spec-type draft-mtp`) is **off** and was not tested **[verify]**.
+- MTP (`--spec-type draft-mtp`) is **off**. Tested 2026-10-13: works for Gemma 4 on Vulkan and is faster, but `--fit` ignores the draft's VRAM ([bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md)).
 - `sendLoadingState: false`, because loading text would end up in `reasoning_content`.
 
 Annotated excerpt (abridged; see the real file for everything):
@@ -49,7 +49,7 @@ hooks:
 
 | Entry | Flags beyond the macros | Why |
 |---|---|---|
-| `qwen3.8-27b` | `-c 49152 --no-mmproj-offload -ub 256` | No `-ngl 99`: `--fit` decides and fits all 65 layers. `-ub 256` leaves room for the GPU reranker (about 370 MiB), at -8% prompt speed (367 vs 398 tok/s at ub 512) |
+| `qwen3.8-27b` | `-c 49152 --no-mmproj-offload -ub 256` | No `-ngl 99`: `--fit` decides. Since the reranker moved to the GPU it places 63 of 65 layers (2026-10-13); `-c 40960` would fit all 65 (+25% tg). `-ub 256` leaves room for the GPU reranker (about 370 MiB), at -8% prompt speed (367 vs 398 tok/s at ub 512) |
 | `qwen3.6-35b-a3b` | `${moe_common} -c 131072` | `-t 8 -tb 8 -ub 2048 -b 2048` (measured, see below). `--fit` puts the experts of blk 20-39 on the CPU |
 | `gemma4-26b` | `${moe_common} -c 131072` | `--fit` puts the experts of blk 24-29 (6 of 30 layers) on the CPU. `--swa-full` stays off |
 | `granite-vision` | `-np 4 --kv-unified -c 32768 -ngl 99 --temp 0` | One image is about 5.2k tokens (tiling), so the 4 slots share one unified 32k KV pool |
@@ -70,7 +70,7 @@ The live file is [`docker-compose.yaml`](../docker-compose.yaml), service `llama
 
 | Setting | Value | Why |
 |---|---|---|
-| `image` | `ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541` | Pinned. Bundles `llama-server` (llama.cpp build 11541, Vulkan, RADV NAVI32). Resolved: llama-server is bundled at this tag |
+| `image` | `ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541` | Pinned. Bundles `llama-server` (llama.cpp build 11541, Vulkan, RADV NAVI32). Resolved: llama-server is bundled at this tag. Vulkan beat the ROCm image (`v263-rocm-b11541`) on 2 of 3 models, and ROCm misreports free VRAM to `--fit` ([verification](../bench/verification-2026-10-13.md)) |
 | `entrypoint` | `["/app/llama-swap", "-config", "/config/config.yaml", "-listen", ":11434"]` (no `-watch-config`, see below) | Overrides the image default so the config lives under `/config` and is reloaded on change |
 | volume `./llama-swap:/config:ro,Z` | the **directory**, not the file | A single-file bind mount points at an inode. Editors replace the file with a new inode, so the container keeps seeing the old, stale content. A directory mount follows the file name |
 | `GGML_VK_VISIBLE_DEVICES=0` | | Resolved: `Vulkan0` is the RX 7800 XT, `Vulkan1` the 610M iGPU. Never select 1 |

@@ -25,7 +25,7 @@ Open WebUI runs in the homelab k3s. Its connection, RAG and reranker settings li
        -d '{"model":"bge-reranker-v2-m3","query":"isometric camera","documents":["orthographic camera at 30 degrees","banana bread recipe"],"top_n":2}' | jq .
      ```
    - **Relevance threshold:** keep it at **0**, or set it in logit units. llama.cpp rerank scores are raw logits (they can be negative, not 0-1), and Open WebUI only filters when the threshold is not 0, so a value like 0.3 would silently drop good chunks.
-   - Still **[verify]**: how the reranker was configured before migration. Ollama has no rerank API, so the old `linux6200/bge-reranker-v2-m3` cannot have been serving real reranking.
+   - How the reranker was configured before migration is **not recoverable** (Ollama data removed, no screenshot). Ollama has no rerank API, so the old `linux6200/bge-reranker-v2-m3` cannot have been serving real reranking. Current traffic: Open WebUI calls `/v1/rerank`, median 1.9 s (2026-10-13). Check in Admin → Settings → Documents: engine External, `http://mars.internal:11434/v1/rerank`, model `bge-reranker-v2-m3`, relevance threshold 0.
    - The reranker runs on the GPU (about 370 MiB), about 0.2 s for 10 chunks.
 4. **Task model** (Admin, Interface): set it to **current model**.
    - Why: otherwise title and tag generation request a different model on every message, and llama-swap swaps the chat model out and back in.
@@ -67,7 +67,7 @@ Indicative `DOCLING_PARAMS` fragment, using the current field names:
 }
 ```
 
-granite-docling output ends with `<|end_of_text|>` after `</doctag>`. Whether docling strips or tolerates it is **[verify]** at cutover (Phase 4).
+granite-docling output ends with `<|end_of_text|>` after `</doctag>`. Resolved (2026-10-13, synthetic PDF): docling's granite-docling spec lists both as stop strings, so the converted md, doctags and json contain no `<|end_of_text|>` ([verification](../bench/verification-2026-10-13.md)).
 
 **Deprecation note.** The docling-serve fields `picture_description_api` and the VLM API fields are deprecated in favour of `picture_description_custom_config` and `vlm_pipeline_custom_config` with engine `"api"`. **[verify the exact JSON]** against the docling-serve usage and configuration docs before use. The field names and nesting in the fragment above are not confirmed.
 

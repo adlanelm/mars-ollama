@@ -85,7 +85,7 @@ At cutover (Phase 4, not applied yet):
 - Add the network alias `ollama` on the `ollama` network, so docling-proxy and other in-network clients still resolve `ollama`. Until then the service has no alias.
 - Move the `ollama` service under `profiles: ["legacy"]`.
 
-Rollback: `docker compose stop llama-swap && docker compose --profile legacy up -d ollama`. Stop llama-swap first, because both claim host port 11434 and the `ollama` alias.
+Rollback: `docker compose stop llama-swap && docker compose --profile legacy up -d ollama`. Stop llama-swap first, because both claim host port 11434 and the `ollama` alias. *Removed 2026-10-13 (Phase 5 step 2): the `legacy` service, its data and image are gone, so there is no Ollama rollback any more.*
 
 The Qwen3.8 upgrade from the plan applies only if the monitor is moved to the iGPU (+1.13 GiB VRAM). Then swap the file for UD-IQ4_XS (14.25 GB) and keep the same flags and `-c 49152`. Not tested; the reranker's 370 MiB on the GPU also counts against it **[verify]**.
 

@@ -1,6 +1,6 @@
 # Roadmap: Ollama → llama-swap + llama.cpp, then the game asset pipeline
 
-Status: **Phases 0-4, 6 and 7 done (2026-10-11)**; llama-swap serves `:11434`, Ollama is removed (`legacy` profile, data kept). Phase 5 step 1 is done; step 2 is due after about 2026-10-25. Phase 8 steps 2-3 are done, 4-6 open. Results: [bench/llama-swap-results.md](bench/llama-swap-results.md).
+Status: **Phases 0-4, 6 and 7 done (2026-10-11)**; llama-swap serves `:11434`, Ollama, its data and the `legacy` profile are removed (Phase 5 done 2026-10-13). Phase 8 steps 2-3 are done, 4-6 open. Results: [bench/llama-swap-results.md](bench/llama-swap-results.md).
 
 Each phase lists its goal, prerequisites, tasks, acceptance criteria and rollback. Items marked **[verify]** could not be confirmed from primary sources during research. Resolve them during the phase where they appear.
 
@@ -13,7 +13,7 @@ Background docs: [docs/README.md](docs/README.md).
 | 2 | llama-swap running side by side on `:11435` | Adds a container | **Done** 2026-10-11 |
 | 3 | Validation and tuning | No | **Done** 2026-10-11 |
 | 4 | Cutover on `:11434` + client reconfiguration | **Yes** | Done 2026-10-11 (Page Assist skipped: not used) |
-| 5 | Cleanup of Ollama data | Deletes data | Partly done: qwen3.5 + glm removed; `~/llm/ollama` kept as rollback until about 2026-10-25 |
+| 5 | Cleanup of Ollama data | Deletes data | **Done** 2026-10-13 (step 2 brought forward at the user's request) |
 | 6 | `gpu-mode` + ComfyUI | Adds a container | **Done** 2026-10-11 |
 | 7 | Colibri big-model tier | Adds a model entry | **Done** 2026-10-11 |
 | 8 | Game asset pipeline | Separate projects | In progress: `psx-iso` Unity scaffold done 2026-10-11 |
@@ -204,6 +204,8 @@ docker compose --profile legacy up -d ollama
 ```
 Then revert the client settings from the Phase 0 screenshots.
 
+*Removed 2026-10-13 (Phase 5 step 2): the `legacy` service, its data and image are gone, so there is no Ollama rollback any more.*
+
 ---
 
 ## Phase 5 — Cleanup
@@ -223,6 +225,8 @@ Then revert the client settings from the Phase 0 screenshots.
    - Run `docker image rm ollama/ollama:rocm`.
 
 *Step 1 done (checked 2026-10-12): the qwen3.5 and glm-4.7-flash models are gone; `~/llm/ollama/data` is 40 GB (was 78 GB) and holds only `llamacpp` and `snowflake-arctic-embed2`.*
+
+*Step 2 done 2026-10-13, brought forward at the user's request: `~/llm/ollama` deleted (40 GB; bge-m3 and snowflake in `~/llm/models/ollama/` are independent copies, link count 1), `legacy` service block removed from `docker-compose.yaml`, `ollama/ollama:rocm` image removed (3.2 GB). `/home` free: 110 GB.*
 
 **Acceptance criteria:** `df -h /home` shows about 345 GB free.
 

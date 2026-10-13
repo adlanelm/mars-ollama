@@ -31,7 +31,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | Check for updated GGUFs | `bin/llm-pull outdated` |
 | Switch chat models | Just request the other model id. llama-swap unloads the current one |
 | Free the GPU for ComfyUI | Automatic: a ComfyUI prompt unloads the LLM first, and a chat request frees ComfyUI first ([gpu-switching.md](gpu-switching.md#automatic-arbitration-llama-swap---comfyui)). Manual: `bin/gpu-mode comfy` / `bin/gpu-mode llm` |
-| Roll back to Ollama | `docker compose stop llama-swap && docker compose --profile legacy up -d ollama`, then revert client settings ([../ROADMAP.md](../ROADMAP.md#phase-4--cutover-on-11434)) |
+| Roll back to Ollama | Not possible any more: Ollama and its data were removed 2026-10-13 (ROADMAP Phase 5) |
 
 ## Keeping things up to date
 Run `bin/check-updates`: one table of pinned vs latest for models, git pins (ComfyUI and its custom nodes, trellis, colibri), the llama-swap image, torch in `comfyui-rocm` and the Krita plugin and the Blender MCP pin (in psx-iso). It only reports (exit 4 if anything is OUTDATED, 2 on network failure).

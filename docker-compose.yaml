@@ -1,42 +1,5 @@
 services:
   # ─────────────────────────────────────────────────────────────
-  # OLLAMA
-  # ─────────────────────────────────────────────────────────────
-  ollama:
-    image: ollama/ollama:rocm
-    container_name: ollama
-    profiles: ["legacy"] # replaced by llama-swap; kept for rollback (ROADMAP Phase 4/5)
-    pull_policy: always
-    mem_limit: 28g
-    cpus: "12.8" # 80% of 16 logical CPUs; models set PARAMETER num_thread 13
-    environment:
-      - OLLAMA_FLASH_ATTENTION=1
-      - OLLAMA_MAX_LOADED_MODELS=2
-      - OLLAMA_VULKAN=1
-      #- HSA_OVERRIDE_GFX_VERSION=10.3.0
-      - OLLAMA_KV_CACHE_TYPE=q8_0
-      - ROCR_VISIBLE_DEVICES=0
-      - HIP_VISIBLE_DEVICES=0
-      - OLLAMA_DEBUG=0
-      - OLLAMA_NEW_ENGINE=True
-      - OLLAMA_NEW_ESTIMATES=True
-      - OLLAMA_KEEP_ALIVE=35
-      - OLLAMA_ORIGINS="moz-extension://*"
-    ports:
-      - "11434:11434" # Ollama API at http://localhost:11434
-    volumes:
-      - $HOME/llm/ollama/data:/root/.ollama:Z,U
-    networks:
-      - ollama
-    devices:
-      - /dev/dri:/dev/dri
-      - /dev/kfd:/dev/kfd
-    restart: always
-    privileged: true
-    security_opt:
-      - seccomp:unconfined
-
-  # ─────────────────────────────────────────────────────────────
   # LLAMA-SWAP + llama.cpp (Vulkan) — replaces ollama, see ROADMAP.md
   # ─────────────────────────────────────────────────────────────
   llama-swap:

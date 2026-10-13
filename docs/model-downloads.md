@@ -102,7 +102,7 @@ Ollama-imported files live under `~/llm/models/ollama/<model>/<model>-F16.gguf`.
 
 ```
 llm-pull add <repo> <QUANT> [--mmproj <file>] [--id <id>] [--alias <name>]...   # resolve, pin, download, print snippet
-llm-pull import-ollama <model:tag> [--id <id>] [--alias <name>]...               # copy the GGUF blob from ~/llm/ollama/data
+llm-pull import-ollama <model:tag> [--id <id>] [--alias <name>]...               # copy the GGUF blob from ~/llm/ollama/data (that data was deleted 2026-10-13; only useful with a fresh Ollama store)
 llm-pull sync                                                # download everything in the manifest
 llm-pull outdated                                            # compare pinned SHA with repo HEAD
 llm-pull update <id>                                         # re-pin to HEAD and download

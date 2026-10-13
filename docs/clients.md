@@ -119,6 +119,8 @@ docker compose stop llama-swap
 docker compose --profile legacy up -d ollama
 ```
 
+*Removed 2026-10-13 (Phase 5 step 2): the `legacy` service, its data and image are gone, so there is no Ollama rollback any more.*
+
 ## Sources
 - https://docs.openwebui.com/getting-started/quick-start/connect-a-provider/starting-with-llama-cpp
 - https://docs.openwebui.com/reference/env-configuration

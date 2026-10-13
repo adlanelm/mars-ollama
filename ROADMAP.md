@@ -294,10 +294,13 @@ Still open:
 
 ## Finalisation
 
-Open verification items before this track is closed (from the [verify] checklist and the Phase 0-7 markers):
-- [ ] Phase 0: whether the client-settings screenshot item was done is not recorded **[verify]**
-- [ ] MTP on Vulkan (Gemma 4 draft): not tested (Phase 3 task 9)
-- [ ] `-ctxcp` checkpoint RAM cost for hybrid models: not isolated
-- [ ] How the reranker was actually configured in Open WebUI before migration
-- [ ] ROCm vs Vulkan: image `v263-rocm-b11541` exists, not benchmarked
-- [ ] docling's handling of granite-docling's trailing `<|end_of_text|>` after `</doctag>` (Phase 4)
+Verification run 2026-10-13, details and scripts: [bench/verification-2026-10-13.md](bench/verification-2026-10-13.md) (commit `9e593a8`).
+- [x] ROCm vs Vulkan (`v263-rocm-b11541`, same llama.cpp build): **stay on Vulkan**. tg gemma4 47-50 vs 41, qwen3.8 21 vs 16.7 tok/s; qwen3.6 ROCm 44 vs 41. ROCm loads 1.2-2x slower, image 22.9 GB, and reports 16 GB free VRAM when 14.6 GB is free (auto layer placement would overflow). Image deleted.
+- [x] MTP on Vulkan (Gemma 4 draft): works, +34% tg on a long prompt, +40-75% on short answers, 60-83% acceptance; output not byte-identical at temp 0 but equivalent. Needs a 2048 MiB fit margin (draft VRAM 0.2-1.0 GB not counted by auto placement): peak 15.2 GB, +20% vs today. **Not applied yet** (draft file to pin with `llm-pull` first).
+- [x] `-ctxcp` checkpoint RAM: per checkpoint qwen3.6 62.8 MiB, qwen3.8 149.6 MiB, gemma4 106.3 MiB; worst case at `-ctxcp 8` 1.0 / 2.3 / 1.7 GB. Keep 8.
+- [x] docling and granite-docling's trailing `<|end_of_text|>`: the raw output has it, docling strips it (0 in the output; synthetic PDF, table correct).
+- [x] Reranker config before migration: **not recoverable** (Ollama data deleted; Open WebUI needs an admin token). Today Open WebUI calls `/v1/rerank` (median 1.9 s); check Admin → Settings → Documents: External, `http://mars.internal:11434/v1/rerank`, threshold 0.
+- [x] Fit in 16 GB: all models load, peak 15.45 GB, no OOM; reranker ranking correct (0.31 s / 10 chunks).
+- [ ] **Regression found:** qwen3.8 has 63/65 layers on the GPU (21 tok/s) since the reranker moved to the GPU. At 40k instead of 48k context it fits fully: 26.7 tok/s. Decision pending (user).
+- [ ] Needs the user: Phase 0 client-settings screenshots (not recorded), Qwen3.8 IQ4_XS upgrade (needs the monitor on the iGPU), Page Assist.
+- Updates: llama-swap v264 available (no speed changes; optional), ComfyUI 0.40.0 out.

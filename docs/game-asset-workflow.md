@@ -2,7 +2,7 @@
 
 Status: **planned**, nothing implemented yet. Part B of the approved plan, researched 2026-10-10/11. Items marked **[verify]** could not be confirmed from primary sources.
 
-Related: [README](README.md) · [models.md](models.md) · [colibri.md](colibri.md) · [ROADMAP](../ROADMAP.md) (Phase 8)
+Related: [README](README.md) · [models.md](models.md) · [colibri.md](colibri.md) · [ROADMAP-gamedev](../ROADMAP-gamedev.md)
 
 ## Context
 

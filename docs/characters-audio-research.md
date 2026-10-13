@@ -1,6 +1,6 @@
 # Characters, animation and audio: licence and feasibility research
 
-Researched **2026-10-12** for the vertical slice (step 6 of [ROADMAP.md](../ROADMAP.md) Phase 8): 1 humanoid (500–2000 tris), 1 creature (≤3000 tris), an SFX set (UI blips, doors, metal footsteps, terminal hum, creature sounds) and one dark-ambient music loop. Plan text being checked: B5 and B6 in [game-asset-workflow.md](game-asset-workflow.md). House rules and registry format: [licenses.md](licenses.md).
+Researched **2026-10-12** for the vertical slice (step G6 of [ROADMAP-gamedev.md](../ROADMAP-gamedev.md)): 1 humanoid (500–2000 tris), 1 creature (≤3000 tris), an SFX set (UI blips, doors, metal footsteps, terminal hum, creature sounds) and one dark-ambient music loop. Plan text being checked: B5 and B6 in [game-asset-workflow.md](game-asset-workflow.md). House rules and registry format: [licenses.md](licenses.md).
 
 Nothing was installed and the GPU was not used. Licence texts were read from the repo LICENSE files, HF cards/API (`license:` field) and the licence pages named below, on 2026-10-12. **[verify]** marks a point that could not be confirmed from a primary source. This is an engineering audit, not legal advice.
 

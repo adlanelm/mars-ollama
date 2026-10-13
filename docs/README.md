@@ -2,7 +2,7 @@
 
 This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-swap + llama.cpp** on `:11435` until cutover) plus docling-proxy. These docs describe the migration and the game-asset workflow built on top of it.
 
-**Status: Phases 0-3 done (2026-10-11).** llama-swap runs side by side with Ollama on `:11435`; the cutover to `:11434` (Phase 4) is pending. Execution order and progress are tracked in [../ROADMAP.md](../ROADMAP.md). Measurements: [../bench/llama-swap-results.md](../bench/llama-swap-results.md).
+**Status: Phases 0-3 done (2026-10-11).** llama-swap runs side by side with Ollama on `:11435`; the cutover to `:11434` (Phase 4) is pending. Execution order and progress are tracked in [../ROADMAP.md](../ROADMAP.md) (LLM hosting) and [../ROADMAP-gamedev.md](../ROADMAP-gamedev.md) (game development). Measurements: [../bench/llama-swap-results.md](../bench/llama-swap-results.md).
 
 | Doc | What's in it |
 |---|---|

@@ -12,6 +12,8 @@ Measured 2026-10-11 on the RX 7800 XT (gfx1101, 16 GB), 30 GiB RAM, via `bin/gpu
 | Custom nodes (baked in, pinned to krita-ai-diffusion v1.53.0 commits) | ComfyUI-GGUF 01f8845, comfyui-tooling-nodes ca01116, comfyui-inpaint-nodes 1293755, comfyui_controlnet_aux e8b689a, ComfyUI_IPAdapter_plus b188a6c |
 | Launch flags | `--use-pytorch-cross-attention --disable-pinned-memory --cache-ram 6` |
 
+Upgraded 2026-10-13 to ComfyUI v0.40.0 (`comfyui-rocm:0.40.0`, same torch, custom nodes and flags; frontend 1.55.17). Krea 2 Turbo re-check: [../docs/gpu-switching.md](../docs/gpu-switching.md#comfyui---reserve-vram-15). The tables below are from v0.39.0.
+
 Krita note: krita-ai-diffusion v1.53.0 pins ComfyUI commit `4da9e2d`; we run v0.39.0 (newer). Not tested with Krita yet (game track G2).
 
 ## Speed (seconds per 1024x1024 image, second and later runs)

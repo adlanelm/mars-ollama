@@ -1,6 +1,6 @@
 # GPU switching
 
-Status: switching is automatic since 2026-10-12 ([below](#automatic-arbitration-llama-swap---comfyui)). `bin/gpu-mode` and the `comfyui` service (`comfyui-rocm:0.39.2`, profile `comfy`, port 127.0.0.1:8188) exist; Phase 6 is done, see [../bench/comfyui-results.md](../bench/comfyui-results.md). llama-swap behaviour measured in Phase 3 ([../bench/llama-swap-results.md](../bench/llama-swap-results.md)). Items marked **[verify]** are still unconfirmed.
+Status: switching is automatic since 2026-10-12 ([below](#automatic-arbitration-llama-swap---comfyui)). `bin/gpu-mode` and the `comfyui` service (`comfyui-rocm:0.40.0`, profile `comfy`, port 127.0.0.1:8188) exist; Phase 6 is done, see [../bench/comfyui-results.md](../bench/comfyui-results.md). llama-swap behaviour measured in Phase 3 ([../bench/llama-swap-results.md](../bench/llama-swap-results.md)). Items marked **[verify]** are still unconfirmed.
 
 See also: [architecture.md](architecture.md), [colibri.md](colibri.md), Phase 6 in [../ROADMAP.md](../ROADMAP.md).
 
@@ -31,6 +31,7 @@ Added 2026-10-13 to the `comfyui` service (`command:` in [../docker-compose.yaml
 
 - **Value 1.5:** peak drops by about 0.6-1.2 GiB to 14.5-15.2 GiB, time per image unchanged within noise (about 31-34 s, the 39.4 s is a single outlier). 2.0 showed no gain over no flag in two runs: the peak is set by the VAE decode and the torch cache, which the reserve does not cover, so more reserve only adds offloading and RAM use. Do not raise it above 1.5 without watching free RAM.
 - **Not repeated:** Flux.2 klein 512 with the flag, since the setting is global to the service.
+- **Re-checked on ComfyUI v0.40.0** (2026-10-13, `comfyui-rocm:0.40.0`, same `RUNS=3 bin/comfy-bench krea2_turbo`, seeds 1000-1002): clean trial (no LLM, fresh container) warm-up 43.8 s, timed 32.4 / 30.8 s, peak 14.93 GiB, GTT 1.12 GiB, the same as v0.39.2. A trial that started with qwen3.6-35b-a3b loaded: the arbiter unloaded it in 0.5 s (15143 -> 1385 MiB), warm-up 45.8 s, timed 36.2 / 29.5 s, peak 15.52 GiB during the warm-up VAE decode (timed runs 15.15 / 14.91 GiB). The VAE-decode OOM-then-retry warning still appears once per image.
 - **`comfyui-trellis`: not set.** TRELLIS peaks at 4.1 GiB, far below the card.
 
 ## Automatic arbitration (llama-swap <-> ComfyUI)

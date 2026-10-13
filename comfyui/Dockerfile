@@ -1,7 +1,7 @@
 # ComfyUI on ROCm for the RX 7800 XT (gfx1101). Everything (torch, ComfyUI, custom nodes) lives in this image.
 # Custom nodes are baked in (pinned to the commits krita-ai-diffusion v1.53.0 expects); models/output/user are volumes.
 FROM ubuntu:24.04
-ARG COMFY_VERSION=v0.39.2
+ARG COMFY_VERSION=v0.40.0
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv python3-dev git ca-certificates libgl1 libglib2.0-0 libgomp1 build-essential \

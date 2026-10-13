@@ -1,6 +1,6 @@
 # Roadmap: Ollama → llama-swap + llama.cpp, then the game asset pipeline
 
-Status: **Phases 0-4, 6 and 7 done (2026-10-11)**; llama-swap serves `:11434`, Ollama, its data and the `legacy` profile are removed (Phase 5 done 2026-10-13). Phase 8 steps 2-3 are done, 4-6 open. Results: [bench/llama-swap-results.md](bench/llama-swap-results.md).
+Status: **Phases 0-4, 6 and 7 done (2026-10-11)**; llama-swap serves `:11434`, Ollama, its data and the `legacy` profile are removed (Phase 5 done 2026-10-13). Phase 8 steps 2-6 done (vertical slice playable 2026-10-13). Results: [bench/llama-swap-results.md](bench/llama-swap-results.md).
 
 Each phase lists its goal, prerequisites, tasks, acceptance criteria and rollback. Items marked **[verify]** could not be confirmed from primary sources during research. Resolve them during the phase where they appear.
 
@@ -344,8 +344,13 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
      ([docs/acestep.md](docs/acestep.md)). Not listened to yet.*
    - *SkinTokens (MIT; vendored GPL-3.0 part) runs on gfx1101 via PR #14: ~35 s, 11 GiB per rig
      ([docs/skintokens.md](docs/skintokens.md)); compared 2026-10-13: the hand rigs win for both characters.*
-   - *Not checked: Play mode, Animator transitions at runtime, run/hit/death on the crew, foot sliding.
-     No runtime code plays footsteps or door sounds yet.*
+   - *2026-10-13, playable (psx-iso `2fdd8e9`, `d512a24`): player (walk/run, footsteps), keycard + terminal unlock a
+     locked door, crawler chase/attack, crew NPC patrol with hit/death, HUD on the PSX path, music crossfade to a
+     tension loop when the crawler engages. 11 PlayMode tests pass (batchmode). Crew clips were facing 180° (fixed);
+     foot drift 2% walk / 5% run. Not done: crawler can't be hurt, crawler crawl speed vs clip not checked.*
+   - *Audio redone DXMD-style 2026-10-13 (user picks by ear): UI/terminal/item/creature set G (`sfx_dxmd.py`), station
+     music ACE-Step instrumental seed 4222, tension loop seed 5211; captions name no artists. Old Ollama data removed
+     (Phase 5).*
    - *GPU: automatic LLM ↔ ComfyUI arbitration ([docs/gpu-switching.md](docs/gpu-switching.md)) after
      parallel GPU use crashed the desktop.*
 

@@ -3,7 +3,7 @@ services:
   # LLAMA-SWAP + llama.cpp (Vulkan) — replaces ollama, see ROADMAP.md
   # ─────────────────────────────────────────────────────────────
   llama-swap:
-    image: ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541
+    image: ghcr.io/mostlygeek/llama-swap:v264-vulkan-b11580
     container_name: llama-swap
     entrypoint: ["/app/llama-swap", "-config", "/config/config.yaml", "-listen", ":11434"] # no -watch-config: a reload restarts models mid-request (502s); apply edits with `docker compose restart llama-swap`
     mem_limit: 28g
@@ -41,7 +41,7 @@ services:
   comfyui:
     profiles: ["comfy"]
     build: ./comfyui
-    image: comfyui-rocm:0.39.2
+    image: comfyui-rocm:0.40.0
     container_name: comfyui
     # Same args as the Dockerfile CMD plus --reserve-vram: keeps the card's whole-card peak under ~15 GiB so the KDE desktop is not squeezed (docs/gpu-switching.md)
     command: ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188", "--use-pytorch-cross-attention", "--disable-pinned-memory", "--cache-ram", "6", "--reserve-vram", "1.5"]

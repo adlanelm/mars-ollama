@@ -1,6 +1,6 @@
 # Roadmap: LLM hosting (Ollama → llama-swap + llama.cpp)
 
-Status: **Phases 0-4, 6 and 7 done (2026-10-11)**; llama-swap serves `:11434`, Ollama, its data and the `legacy` profile are removed (Phase 5 done 2026-10-13). GPU arbitration (LLM ↔ ComfyUI): [docs/gpu-switching.md](docs/gpu-switching.md). Results: [bench/llama-swap-results.md](bench/llama-swap-results.md).
+Status: **All phases (0-7) done; track closed 2026-10-13** after the Finalisation checks. llama-swap serves `:11434`, Ollama, its data and the `legacy` profile are removed (Phase 5 done 2026-10-13). GPU arbitration (LLM ↔ ComfyUI): [docs/gpu-switching.md](docs/gpu-switching.md). Results: [bench/llama-swap-results.md](bench/llama-swap-results.md).
 
 Each phase lists its goal, prerequisites, tasks, acceptance criteria and rollback. Items marked **[verify]** could not be confirmed from primary sources during research. Resolve them during the phase where they appear.
 
@@ -285,10 +285,10 @@ Resolved (Phases 0-3, see [bench/llama-swap-results.md](bench/llama-swap-results
 
 Still open:
 - [x] MTP on Vulkan (Gemma 4 draft): tested and enabled 2026-10-13 (see Finalisation)
-- [ ] `-ctxcp` checkpoint RAM cost for hybrid models: not isolated
-- [ ] How the reranker was actually configured in Open WebUI before migration
-- [ ] ROCm vs Vulkan: image `v263-rocm-b11541` exists, not benchmarked
-- [ ] docling's handling of granite-docling's trailing `<|end_of_text|>` after `</doctag>` (Phase 4)
+- [x] `-ctxcp` checkpoint RAM cost: measured 2026-10-13 (see Finalisation)
+- [x] Reranker config before migration: not recoverable, closed 2026-10-13 (see Finalisation)
+- [x] ROCm vs Vulkan: benchmarked 2026-10-13, stay on Vulkan (see Finalisation)
+- [x] docling and granite-docling's trailing `<|end_of_text|>`: stripped by docling, checked 2026-10-13 (see Finalisation)
 
 ---
 
@@ -304,5 +304,5 @@ Verification run 2026-10-13, details and scripts: [bench/verification-2026-10-13
 - [x] **Regression found:** qwen3.8 has 63/65 layers on the GPU (21 tok/s) since the reranker moved to the GPU. At 40k instead of 48k context it fits fully: 26.7 tok/s. **User decision 2026-10-13: keep 48k.**
 - [x] Qwen3.8 IQ4_XS upgrade: **dropped** (user keeps the monitor on the dGPU, 2026-10-13).
 - [x] Page Assist: **dropped** (user, 2026-10-13).
-- [ ] Phase 0 client-settings screenshots (not recorded): asked the user.
+- [x] Phase 0 client-settings screenshots: **closed, no longer needed** (user, 2026-10-13): Ollama rollback is gone, current settings are in `docs/clients.md`.
 - Updates: llama-swap v264 available (no speed changes; optional), ComfyUI 0.40.0 out.

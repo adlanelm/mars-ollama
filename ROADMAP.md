@@ -333,12 +333,15 @@ This phase lives in the game project repos. Full detail: [docs/game-asset-workfl
      hit/death; Crew.controller and prefab.*
    - *Crawler: 2442 tris, `rig_crawler.py` (22 bones, Generic, automatic weights), hand-keyed Idle/Crawl/Attack
      at 12 keys/s; Crawler.controller and prefab.*
-   - *SFX: 15 procedural sounds (`Tools/audio/sfx_gen.py`), no third-party audio. Not listened to yet.*
+   - *SFX: 15 procedural sounds (`Tools/audio/sfx_gen.py`); footsteps and doors replaced 2026-10-13 by DXMD-style
+     clips built from Sonniss GDC recordings (`Tools/audio/sfx_sonniss.py`, picked by ear: steps set F, doors set E,
+     plus run steps and `door_locked`; licence in [docs/licenses.md](docs/licenses.md)). Other SFX not listened to yet.*
    - *Music: ACE-Step 1.5 (MIT) DiT-only, 60 s station drone loop, -18 LUFS
      ([docs/acestep.md](docs/acestep.md)). Not listened to yet.*
    - *SkinTokens (MIT; vendored GPL-3.0 part) runs on gfx1101 via PR #14: ~35 s, 11 GiB per rig
-     ([docs/skintokens.md](docs/skintokens.md)); comparison with the hand rigs still to do.*
-   - *Not checked: Play mode, Animator transitions at runtime, run/hit/death on the crew, foot sliding.*
+     ([docs/skintokens.md](docs/skintokens.md)); compared 2026-10-13: the hand rigs win for both characters.*
+   - *Not checked: Play mode, Animator transitions at runtime, run/hit/death on the crew, foot sliding.
+     No runtime code plays footsteps or door sounds yet.*
    - *GPU: automatic LLM ↔ ComfyUI arbitration ([docs/gpu-switching.md](docs/gpu-switching.md)) after
      parallel GPU use crashed the desktop.*
 

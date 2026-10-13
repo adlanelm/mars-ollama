@@ -109,3 +109,9 @@ vision-critic licence and fit, and the Page Assist UI.
    to `gemma4-26b`. That gives +20% tg at 5.6k depth and up to +75% on short answers, peak 15.2 GiB. Watch VRAM for a few days, because `--fit` doesn't count the draft.
 3. **qwen3.8:** choose between 48k at 21 tok/s (now) and `-c 40960` at 26.7 tok/s with all layers on the GPU. `--fit-target 768` (48k, 64 layers,
    23.9 tok/s) is the middle ground with about 0.9 GiB less safety margin.
+
+## Addendum: llama-swap v264-vulkan-b11580 (llama.cpp b11580), 2026-10-13
+
+Same fixed prompt and flags (`verify-bench.sh`), qwen3.6-35b-a3b: load 12.1 s, VRAM 15.17 / 15.24 GiB, pp 1493-1591, **tg 42.3-42.5 tok/s**
+(v263: 38.5-41.0). Smoke test after the switch: all chat models answer; gemma4 with MTP 83.6 tok/s (86% accepted); qwen3.8 23.9 tok/s
+(short prompt); bge-m3 and the reranker OK. The colibri binary (built on v263) still runs in the new image (all libraries resolve).

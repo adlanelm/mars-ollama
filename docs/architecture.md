@@ -105,7 +105,7 @@ Qwen3.8 KV note: 32k is about 1.06 GiB and 64k about 2.1 GiB. The 48k entry gets
 
 **Why Vulkan instead of ROCm here**
 - Ollama already runs here with `OLLAMA_VULKAN=1`, and flash attention plus q8_0 KV are supported on Vulkan. The RX 7800 XT is on the llama.cpp FA scoreboard.
-- Image: `ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541` (llama.cpp build 11541). Resolved: it bundles `llama-server` at this pinned tag.
+- Image: `ghcr.io/mostlygeek/llama-swap:v264-vulkan-b11580` (llama.cpp build 11580; v263-vulkan-b11541 until 2026-10-13). Resolved: it bundles `llama-server` at this pinned tag.
 - ROCm image `v263-rocm-b11541` benchmarked 2026-10-13: Vulkan stays (ROCm −17%/−20% tg on gemma4/qwen3.8, +8% on qwen3.6, slower loads, wrong free-VRAM report for `--fit`). See [bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md).
 - MTP (`--spec-type draft-mtp`) stays off. Tested 2026-10-13: Gemma 4's draft works on Vulkan and is faster, but `--fit` doesn't budget its VRAM.
 

@@ -12,7 +12,7 @@ Notes:
 - Model paths follow `/models/<org>/<repo>/<file>` (the `llm-pull` layout). The embedders are copies of the Ollama blobs under `/models/ollama/<model>/<model>-F16.gguf` (see [model-downloads.md](model-downloads.md)).
 - `--fit` (default on, 1 GiB margin) decides `-ngl` and the MoE expert split, so none of the big chat models has `-ngl` or `--n-cpu-moe`.
 - Sampling flags are server defaults. Clients can override them per request.
-- MTP (`--spec-type draft-mtp`) is **off**. Tested 2026-10-13: works for Gemma 4 on Vulkan and is faster, but `--fit` ignores the draft's VRAM ([bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md)).
+- MTP (`--spec-type draft-mtp`) is **on for `gemma4-26b`** since 2026-10-13 (draft `mtp-gemma-4-26B-A4B-it.gguf` pinned in `models.lock.yaml`, role `draft`; `--spec-draft-n-max 4 --fit-target 2048`). First check after enabling: 78-83 tok/s on short answers, 75-78% acceptance, 14.7 GiB VRAM in use. Off for the other models. `--fit` ignores the draft's VRAM, hence the 2 GiB margin ([bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md)).
 - `sendLoadingState: false`, because loading text would end up in `reasoning_content`.
 
 Annotated excerpt (abridged; see the real file for everything):

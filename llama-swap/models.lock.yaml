@@ -83,6 +83,10 @@ models:
     role: mmproj
     size: 1194828256
     sha256: 7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744
+  - name: mtp-gemma-4-26B-A4B-it.gguf
+    role: draft
+    size: 251939328
+    sha256: 7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a
   aliases:
   - gemma4:26b
   - gemma4:26b-128k

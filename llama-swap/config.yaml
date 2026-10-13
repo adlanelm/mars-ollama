@@ -55,6 +55,8 @@ models:
       --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5
 
   # MoE 25.2B / 3.8B active, QAT-based quant. Keep --swa-full off.
+  # MTP draft (2026-10-13, bench/verification-2026-10-13.md): +20-75% tg. --fit does not count the draft
+  # (+0.2-1.0 GiB), hence the 2 GiB margin; 1.5 GiB showed VRAM eviction.
   "gemma4-26b":
     name: "Gemma 4 26B-A4B QAT (MoE, 128k, vision)"
     aliases: ["gemma4:26b", "gemma4:26b-64k", "gemma4:26b-128k"]
@@ -66,6 +68,8 @@ models:
       ${chat_common} ${moe_common}
       -c 131072
       --temp 1.0 --top-p 0.95 --top-k 64
+      --spec-type draft-mtp --spec-draft-model /models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/mtp-gemma-4-26B-A4B-it.gguf
+      --spec-draft-n-max 4 --fit-target 2048
 
   # Docling helpers: GPU, in the chat group (a docling job swaps the chat model out).
   # One granite-vision image is ~5k tokens (tiling), so the 4 slots share a unified 32k pool.

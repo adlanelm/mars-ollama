@@ -112,7 +112,7 @@ Applies if the monitor is moved to the iGPU (+1.13 GiB of VRAM).
 | `-ub -b` | 256 qwen3.8 / 2048 MoE (`-b 2048`) | MoE, measured prompt speed: 2048 = 1040 tok/s, 1024 = 750, 512 = 470 (generation unchanged). qwen3.8: 256 keeps all 65 layers on the GPU with the reranker in VRAM, -8% prompt speed (367 vs 398 tok/s at 512) |
 | `--no-mmproj-offload` | qwen3.8 only | Frees VRAM. No measurable effect on the MoE models once the mmap issue was fixed |
 | `--jinja`, `--reasoning-format auto` | defaults | Thinking output goes into `reasoning_content`, which Open WebUI shows as a thinking block |
-| MTP (`--spec-type draft-mtp`) | **off** | No VRAM to spare for Qwen3.8. Gemma 4's 252 MB draft works on Vulkan (+20–34% tg at depth with `--fit-target 2048`), but `--fit` ignores the draft's VRAM; see [bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md) |
+| MTP (`--spec-type draft-mtp`) | **Gemma 4: on** (2026-10-13), others off | No VRAM to spare for Qwen3.8. Gemma 4's 252 MB draft works on Vulkan (+20–34% tg at depth with `--fit-target 2048`), but `--fit` ignores the draft's VRAM; see [bench/verification-2026-10-13.md](../bench/verification-2026-10-13.md) |
 
 ### Sampling defaults
 

@@ -108,8 +108,8 @@ G6. **Vertical slice:** 1 room tileset, 3 props, 1 humanoid, 1 creature, an SFX 
 
 ## Next
 
-1. **P0-c Blender bake in `ps1_prep.py`**: in progress.
-2. **unity-mcp server moves to jupiter**, Blender MCP stays on mars: in progress, blocked on the jupiter SSH host key.
+1. **P0-c Blender bake in `ps1_prep.py`**: done (bake existed since psx-iso `9cf5508`; all five slice assets ship 256 px bakes, re-runs byte-identical; 128 px island gap fixed in `29a50da`, checked 2026-10-13). The locker "07" still needs `--decal` (TRELLIS source shows "4D").
+2. **unity-mcp server moves to jupiter**, Blender MCP stays on mars: configured 2026-10-13 (psx-iso `d428913`; `MCP_HOST=jupiter.internal`, uv 0.13.0 on jupiter, server start + tool list over the tunnel checked, cloud asset-gen tools disabled). End-to-end call with the editor open: still to do.
 3. **Game-design and pipeline-optimisation phase**: placeholder, not yet planned.
 4. **Known gaps of the slice:**
    - The crawler can't be hurt.

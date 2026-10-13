@@ -26,7 +26,7 @@ acestep/run.sh --caption "dark ambient drone soundscape, beatless, ..." --durati
 # -> ~/llm/acestep/out/nolm_s9909.{wav,json}, nolm.peaks.log
 ```
 
-Options of `generate.py`: `--no-lm` (DiT only), `--lm acestep-5Hz-lm-0.6B` (lower tier; the 0.6B LM is a separate repo, not fetched), `--no-quant`, `--steps` (8), `--shift` (3.0, recommended for turbo), `--dit`.
+Options of `generate.py`: `--lyrics` (default `[Instrumental]`; anything else turns vocals on, `\n` is a line break; a syllable vocalise such as `[Verse]\nooh... aah...` gives wordless vocals, intelligibility not verified by ear) and `--vocal-language` (default `unknown`), added 2026-10-13 (rebuild the image after editing `generate.py`: it is copied in), `--no-lm` (DiT only), `--lm acestep-5Hz-lm-0.6B` (lower tier; the 0.6B LM is a separate repo, not fetched), `--no-quant`, `--steps` (8), `--shift` (3.0, recommended for turbo), `--dit`.
 
 Settings are upstream's **12–16 GB tier** ("tier5" in `acestep/gpu_config.py`): turbo DiT on the GPU with INT8 weight-only quantization (`torch.compile` on), VAE and text encoder offloaded to the CPU between uses, 1.7B LM on the PyTorch backend (`ACESTEP_LM_BACKEND=pt`; nano-vllm needs flash-attn). Environment from upstream's `start_api_server_rocm.sh` and `docs/en/INSTALL.md`: `HSA_OVERRIDE_GFX_VERSION=11.0.1` (gfx1101 is listed there for the RX 7800 XT), `MIOPEN_FIND_MODE=FAST`. Upstream's ROCm default dtype is **float32** (`ACESTEP_ROCM_DTYPE`, chosen for Strix Halo stability); we kept it.
 

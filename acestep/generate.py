@@ -45,6 +45,8 @@ def main():
     ap.add_argument("--lm", default="acestep-5Hz-lm-1.7B")
     ap.add_argument("--no-lm", action="store_true", help="DiT only (no LM planning / audio codes)")
     ap.add_argument("--no-quant", action="store_true")
+    ap.add_argument("--lyrics", default="[Instrumental]", help="lyrics / structure tags; e.g. a wordless vocalise (ooh/aah) for vocals")
+    ap.add_argument("--vocal-language", default="unknown")
     ap.add_argument("--out", default="/out")
     ap.add_argument("--name", default="gen")
     a = ap.parse_args()
@@ -78,7 +80,8 @@ def main():
     for seed in [int(s) for s in a.seeds.split(",")]:
         torch.cuda.reset_peak_memory_stats()
         params = GenerationParams(
-            task_type="text2music", caption=a.caption, lyrics="[Instrumental]", instrumental=True,
+            task_type="text2music", caption=a.caption, lyrics=a.lyrics.replace("\\n", "\n"),
+            instrumental=a.lyrics.strip() == "[Instrumental]", vocal_language=a.vocal_language,
             bpm=a.bpm, keyscale=a.keyscale, timesignature=a.timesignature, duration=a.duration,
             inference_steps=a.steps, shift=a.shift, seed=seed, thinking=not a.no_lm,
         )

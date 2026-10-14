@@ -80,19 +80,19 @@ check_krita() { local n=$1 v   # docs/krita.md first **vX.Y.Z**
   v=$(grep -oE '\*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*' docs/krita.md | head -1 | tr -d '*')
   cmp_row "$n" "docs/krita.md Krita plugin" "$v" "$(newest_tag https://github.com/Acly/krita-ai-diffusion)"; }
 
-check_blender_mcp() { local n=$1 f pin   # SHA= in psx-iso Tools/mcp/blender-mcp.sh (PSX_ISO overrides the project path)
-  f=${PSX_ISO:-$HOME/unity_projects/psx-iso}/Tools/mcp/blender-mcp.sh
+check_blender_mcp() { local n=$1 f pin   # SHA= in gamekit tools/mcp/blender-mcp.sh (GAMEKIT overrides the repo path)
+  f=${GAMEKIT:-$HOME/devel/gamekit}/tools/mcp/blender-mcp.sh
   pin=$(sed -nE 's/^SHA=([0-9a-f]{40}).*/\1/p' "$f" 2>/dev/null)
-  [[ -n $pin ]] || { err "$n" "psx-iso blender-mcp.sh"; return; }
-  sha_row "$n" "psx-iso blender-mcp.sh" "$pin" https://github.com/ahujasid/blender-mcp; }
+  [[ -n $pin ]] || { err "$n" "gamekit blender-mcp.sh"; return; }
+  sha_row "$n" "gamekit blender-mcp.sh" "$pin" https://github.com/ahujasid/blender-mcp; }
 
-check_unity_mcp() { local n=$1 f pin u=https://github.com/CoplayDev/unity-mcp tag h   # SHA= in psx-iso Tools/mcp/unity-mcp.sh; pinned to a release tag (HEAD is beta)
-  f=${PSX_ISO:-$HOME/unity_projects/psx-iso}/Tools/mcp/unity-mcp.sh
+check_unity_mcp() { local n=$1 f pin u=https://github.com/CoplayDev/unity-mcp tag h   # SHA= in gamekit tools/mcp/unity-mcp.sh; pinned to a release tag (HEAD is beta)
+  f=${GAMEKIT:-$HOME/devel/gamekit}/tools/mcp/unity-mcp.sh
   pin=$(sed -nE 's/^SHA=([0-9a-f]{40}).*/\1/p' "$f" 2>/dev/null)
-  [[ -n $pin ]] || { err "$n" "psx-iso unity-mcp.sh"; return; }
+  [[ -n $pin ]] || { err "$n" "gamekit unity-mcp.sh"; return; }
   tag=$(newest_tag "$u"); [[ -n $tag ]] && h=$(timeout "$TO" git ls-remote "$u" "refs/tags/$tag" "refs/tags/$tag^{}" 2>/dev/null | tail -1 | cut -c1-40)
-  [[ -n ${h:-} ]] || { err "$n" "psx-iso unity-mcp.sh" "${pin:0:8}"; return; }
-  if [[ $h == "$pin" ]]; then row "$n" "psx-iso unity-mcp.sh" "${pin:0:8}" "$tag ${h:0:8}" current; else row "$n" "psx-iso unity-mcp.sh" "${pin:0:8}" "$tag ${h:0:8}" OUTDATED; fi; }
+  [[ -n ${h:-} ]] || { err "$n" "gamekit unity-mcp.sh" "${pin:0:8}"; return; }
+  if [[ $h == "$pin" ]]; then row "$n" "gamekit unity-mcp.sh" "${pin:0:8}" "$tag ${h:0:8}" current; else row "$n" "gamekit unity-mcp.sh" "${pin:0:8}" "$tag ${h:0:8}" OUTDATED; fi; }
 
 # whl_row <slot> <component> <pinned version> <package>: newest <package> on the rocm7.2 index (same index as check_torch)
 whl_row() { local n=$1 c=$2 pin=$3 pkg=$4 new idx=${TORCH_INDEX:-https://download.pytorch.org/whl/rocm7.2/torch/}

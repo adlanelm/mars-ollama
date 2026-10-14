@@ -1,6 +1,6 @@
 # ACE-Step 1.5 on the RX 7800 XT (text → music)
 
-**Status 2026-10-12: works.** First run on gfx1101: an 80 s instrumental takes 12–16 s (DiT only) or 30–38 s (with the 1.7B LM), plus 7 s / 24 s model load, at a whole-card VRAM peak of 13.8 GiB / 14.7 GiB (desktop included). Used for the vertical slice's station music loop (`psx-iso` `Assets/_Project/Audio/Music/station_ambient_loop.wav`, notes in `psx-iso/art-src/Audio/README.md`). Research and licence background: [characters-audio-research.md](characters-audio-research.md) section 4.
+**Status 2026-10-12: works.** First run on gfx1101: an 80 s instrumental takes 12–16 s (DiT only) or 30–38 s (with the 1.7B LM), plus 7 s / 24 s model load, at a whole-card VRAM peak of 13.8 GiB / 14.7 GiB (desktop included). Used for the vertical slice's station music loop (`psx-iso` `Assets/_Project/Audio/Music/station_ambient_loop.wav`, notes in `psx-iso/art-src/Audio/README.md`). Research and licence background: [gamekit docs/characters-audio-research.md](../../gamekit/docs/characters-audio-research.md) section 4.
 
 It runs as a one-shot container (`acestep-rocm:1.5-ca1e85f`, no compose service). It is **not** covered by gpu-guard / gpu_arbiter ([gpu-switching.md](gpu-switching.md)): `acestep/run.sh` refuses to start while a chat model is loaded or a ComfyUI container is up, and kills the job if VRAM goes over 15 GiB.
 

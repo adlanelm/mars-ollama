@@ -2,7 +2,7 @@
 
 Audit date **2026-10-11**. It covers every model, tool and dependency that can put content into the shipped game, or whose code or weights might be redistributed. Each licence was read from the licence text at the revision listed: the LICENSE file, the HF card `license:` field and its linked text, or the licence PDF. The repo name alone was never taken as evidence. **[verify]** marks a point that could not be confirmed from a primary source. This is a hobbyist's engineering audit, not legal advice. Get a lawyer's review before a commercial release.
 
-Related: [game-asset-workflow.md](game-asset-workflow.md) · [trellis.md](trellis.md) · [krita.md](krita.md) · [colibri.md](colibri.md) · `~/unity_projects/psx-iso/art-src/README.md`
+Related: [game-asset-workflow.md](../../gamekit/docs/game-asset-workflow.md) · [trellis.md](trellis.md) · [krita.md](krita.md) · [colibri.md](colibri.md) · `~/unity_projects/psx-iso/art-src/README.md`
 
 ## Policy
 

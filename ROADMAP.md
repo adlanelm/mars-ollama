@@ -4,7 +4,7 @@ Status: **All phases (0-7) done; track closed 2026-10-13** after the Finalisatio
 
 Each phase lists its goal, prerequisites, tasks, acceptance criteria and rollback. Items marked **[verify]** could not be confirmed from primary sources during research. Resolve them during the phase where they appear.
 
-Background docs: [docs/README.md](docs/README.md). Game development track: [ROADMAP-gamedev.md](ROADMAP-gamedev.md).
+Background docs: [docs/README.md](docs/README.md). Game development track: the separate repo `~/devel/gamekit` ([ROADMAP.md](../gamekit/ROADMAP.md)).
 
 | Phase | Goal | Changes the running stack? | Status |
 |---|---|---|---|

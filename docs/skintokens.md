@@ -1,6 +1,6 @@
 # SkinTokens / TokenRig on gfx1101 (feasibility test)
 
-**Result 2026-10-12: works on Linux + RX 7800 XT with PR #14, first try, no patches of our own.** About 33 s per mesh (model load excluded), whole-card VRAM peak 11.0 GiB, output is a skinned `.glb` (skeleton + 4 weights per vertex). The crew humanoid and the high-poly crawler get clean, plausible rigs; the 2.5k-triangle crawler FBX gets a usable but blurrier one. This was a feasibility test only: nothing went into the game repo, and the outputs are kept to compare with the hand rigs. Background and the earlier research: [characters-audio-research.md](characters-audio-research.md) section 1.2.
+**Result 2026-10-12: works on Linux + RX 7800 XT with PR #14, first try, no patches of our own.** About 33 s per mesh (model load excluded), whole-card VRAM peak 11.0 GiB, output is a skinned `.glb` (skeleton + 4 weights per vertex). The crew humanoid and the high-poly crawler get clean, plausible rigs; the 2.5k-triangle crawler FBX gets a usable but blurrier one. This was a feasibility test only: nothing went into the game repo, and the outputs are kept to compare with the hand rigs. Background and the earlier research: [gamekit docs/characters-audio-research.md](../../gamekit/docs/characters-audio-research.md) section 1.2.
 
 ## Recipe
 

@@ -2,7 +2,7 @@
 
 This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-swap + llama.cpp** on `:11435` until cutover) plus docling-proxy. These docs describe the migration and the game-asset workflow built on top of it.
 
-**Status: Phases 0-3 done (2026-10-11).** llama-swap runs side by side with Ollama on `:11435`; the cutover to `:11434` (Phase 4) is pending. Execution order and progress are tracked in [../ROADMAP.md](../ROADMAP.md) (LLM hosting) and [../ROADMAP-gamedev.md](../ROADMAP-gamedev.md) (game development). Measurements: [../bench/llama-swap-results.md](../bench/llama-swap-results.md).
+**Status: Phases 0-3 done (2026-10-11).** llama-swap runs side by side with Ollama on `:11435`; the cutover to `:11434` (Phase 4) is pending. Execution order and progress are tracked in [../ROADMAP.md](../ROADMAP.md) (LLM hosting) and [gamekit ROADMAP.md](../../gamekit/ROADMAP.md) (game development). Measurements: [../bench/llama-swap-results.md](../bench/llama-swap-results.md).
 
 | Doc | What's in it |
 |---|---|
@@ -13,7 +13,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | [clients.md](clients.md) | Reconfiguring Open WebUI (chat, RAG embeddings, reranker), docling and Page Assist; alias table |
 | [colibri.md](colibri.md) | Slow big-model tier: use cases, integration, disk and RAM gates |
 | [gpu-switching.md](gpu-switching.md) | Sharing one 16 GB GPU between LLMs, ComfyUI, docling and editors: automatic llama-swap/ComfyUI arbitration ([gpu-guard + gpu_arbiter](gpu-switching.md#automatic-arbitration-llama-swap---comfyui)), `gpu-mode` override |
-| [game-asset-workflow.md](game-asset-workflow.md) | AI-assisted asset pipeline for the PS1/Signalis-style isometric Unity game |
+| [gamekit](../../gamekit/README.md) (separate repo `~/devel/gamekit`) | Game development: workflow, `game-init`, local agent, asset pipeline ([game-asset-workflow.md](../../gamekit/docs/game-asset-workflow.md)). The services below are what it uses |
 | [trellis.md](trellis.md) | TRELLIS.2 image → textured .glb on ROCm (gfx1101): build, pins, how to run, measurements, licences |
 | [acestep.md](acestep.md) | ACE-Step 1.5 text-to-music on ROCm (gfx1101): container recipe, tier settings, timings, VRAM, licences |
 | [skintokens.md](skintokens.md) | SkinTokens/TokenRig auto-rigging feasibility test on gfx1101 (PR #14): recipe, timings, VRAM, rig quality, licences |
@@ -34,7 +34,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | Roll back to Ollama | Not possible any more: Ollama and its data were removed 2026-10-13 (ROADMAP Phase 5) |
 
 ## Keeping things up to date
-Run `bin/check-updates`: one table of pinned vs latest for models, git pins (ComfyUI and its custom nodes, trellis, colibri), the llama-swap image, torch in `comfyui-rocm` and the Krita plugin and the Blender MCP pin (in psx-iso). It only reports (exit 4 if anything is OUTDATED, 2 on network failure).
+Run `bin/check-updates`: one table of pinned vs latest for models, git pins (ComfyUI and its custom nodes, trellis, colibri), the llama-swap image, torch in `comfyui-rocm` and the Krita plugin and the Blender and Unity MCP pins (in ~/devel/gamekit). It only reports (exit 4 if anything is OUTDATED, 2 on network failure).
 - To update a pin: edit it in the file named in the table's first column, rebuild the image, then run `trellis/licence-check.py` and the smoke test `trellis/run_workflow.py --image concept.png`.
 - Models: `bin/llm-pull update <id>` for GGUFs; edit `comfyui/models.txt` for ComfyUI files, then `bin/comfy-pull`.
 - A ComfyUI update builds a new `comfyui-rocm:<ver>` tag and rebuilds and recreates only `comfyui`; the old tag is kept while TRELLIS uses it (`trellis/Dockerfile` `COMFY_BASE`). TRELLIS moves to a new base only when you choose to: bump `COMFY_BASE`, rebuild, licence-check, smoke test. Remove an old base tag only after nothing uses it.

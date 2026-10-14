@@ -6,7 +6,12 @@ Runs when llama-swap starts a GPU model, before the server process:
   1. wait until every ComfyUI in COMFY_URLS that is up has no running or pending job and no prompt being admitted
      (the gpu_arbiter node's GET /gpu-arbiter; it unloads the LLM before a prompt is queued),
   2. POST /free {"unload_models":true,"free_memory":true} to each and wait until torch has released its VRAM,
-  3. exec the real command (same PID, so llama-swap's SIGTERM reaches the server).
+  3. wait until the host has GPU_GUARD_MIN_AVAIL_GIB (default 12) of RAM available: the chat models also hold
+     ~12 GiB of system RAM (GTT, -lm dio), and ComfyUI's /free moves its weights into RAM,
+  4. exec the real command (same PID, so llama-swap's SIGTERM reaches the server).
+Steps 2-3 never start the model anyway: on 2026-10-15 "starting anyway" after a /free that did not finish put
+qwen3.6 on top of ComfyUI's 12.5 GB, and the host OOM killer took the desktop apps. A ComfyUI that does not
+release within FREE_WAIT (120 s), or RAM that stays short, ends in exit 1 like the busy case.
 A ComfyUI that does not answer (container stopped) has nothing to wait for. After GPU_GUARD_MAX_WAIT seconds
 (default 600) it exits 1: llama-swap fails the start and the request gets an error; healthCheckTimeout covers the wait.
 stdlib only; output goes to the llama-swap log ("upstream").
@@ -15,6 +20,8 @@ import json, os, sys, time, urllib.error, urllib.request
 
 URLS = os.environ.get("COMFY_URLS", "http://comfyui:8188 http://comfyui-trellis:8188").split()
 MAX_WAIT = float(os.environ.get("GPU_GUARD_MAX_WAIT", "600"))
+MIN_AVAIL = float(os.environ.get("GPU_GUARD_MIN_AVAIL_GIB", "12")) * 2**30
+FREE_WAIT = 120
 TORCH_IDLE = 512 * 2**20  # torch reserved below this = models unloaded
 
 
@@ -45,20 +52,29 @@ def jobs(url):
 
 
 def free(url):
+    """True once this ComfyUI holds no VRAM (or is gone). Usually 1-6 s; slow when RAM is short (weights go to RAM)."""
     try:
         call(url + "/free", {"unload_models": True, "free_memory": True})
     except (OSError, ValueError) as e:
         log(f"{url}/free failed: {e}")
-        return
-    end = time.monotonic() + 30  # the prompt worker thread applies the flag within a second or two
+    end = time.monotonic() + FREE_WAIT
     while time.monotonic() < end:
         try:
             if call(url + "/system_stats")["devices"][0]["torch_vram_total"] < TORCH_IDLE:
-                return
+                return True
         except (OSError, ValueError, KeyError, IndexError):
-            return
-        time.sleep(0.25)
-    log(f"{url}: torch still holds VRAM 30 s after /free, starting anyway")
+            return True  # stopped meanwhile
+        time.sleep(0.5)
+    return False
+
+
+def mem_available():
+    """Host MemAvailable in bytes (/proc/meminfo in the container shows the host's)."""
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    return 0
 
 
 def main(argv):
@@ -79,9 +95,22 @@ def main(argv):
             announced = True
         time.sleep(1)
     up = [u for u, n in state.items() if n is not None]
-    for u in up:
-        free(u)
-    log(f"freed ComfyUI {[u.split('//')[-1] for u in up]} in {time.monotonic() - t0:.1f} s; starting {os.path.basename(argv[0])}")
+    stuck = [u.split("//")[-1] for u in up if not free(u)]
+    if stuck:
+        log(f"ComfyUI {stuck} still holds VRAM {FREE_WAIT} s after /free; not starting {os.path.basename(argv[0])}"
+            f" (stop it: docker stop {' '.join(s.split(':')[0] for s in stuck)})")
+        sys.exit(1)
+    while (avail := mem_available()) < MIN_AVAIL:
+        if time.monotonic() - t0 > MAX_WAIT:
+            log(f"giving up after {MAX_WAIT:.0f} s: {avail / 2**30:.1f} GiB RAM available, need {MIN_AVAIL / 2**30:.0f};"
+                f" not starting {os.path.basename(argv[0])}")
+            sys.exit(1)
+        if announced != "ram":
+            log(f"{avail / 2**30:.1f} GiB RAM available, need {MIN_AVAIL / 2**30:.0f}: waiting (max {MAX_WAIT:.0f} s)")
+            announced = "ram"
+        time.sleep(1)
+    log(f"freed ComfyUI {[u.split('//')[-1] for u in up]} in {time.monotonic() - t0:.1f} s,"
+        f" {mem_available() / 2**30:.1f} GiB RAM available; starting {os.path.basename(argv[0])}")
     os.execvp(argv[0], argv)
 
 

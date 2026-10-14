@@ -221,7 +221,33 @@ Each token routes to 10 of 512 experts in each of 48 layers. The draft rows add 
 
 ### Chosen settings
 
-`--cap 44`, `CAP=44`, `OMP_NUM_THREADS=8` (keep `COLI_NO_OMP_TUNE=1`), `--kv-slots 1`, VRAM reserve and streaming at their defaults. The previous config is saved as `llama-swap/config.yaml.bak-2026-10-11-pretune`. Untested headroom: cap 60 would use about 3.3 GiB more RAM (RAM available would drop to ~7 GiB).
+(Superseded on 2026-10-14 by "Capabilities": `--cap 30`, `--ctx 131072`.) `--cap 44`, `CAP=44`, `OMP_NUM_THREADS=8` (keep `COLI_NO_OMP_TUNE=1`), `--kv-slots 1`, VRAM reserve and streaming at their defaults. The previous config is saved as `llama-swap/config.yaml.bak-2026-10-11-pretune`. Untested headroom: cap 60 would use about 3.3 GiB more RAM (RAM available would drop to ~7 GiB).
+
+## Capabilities (2026-10-14)
+
+Speed is already the price of this tier, so the config now uses what the model can do, not what is fastest. Changes in `llama-swap/config.yaml`, measured through llama-swap with `enable_thinking: false`:
+
+| Setting | Before | Now | Why |
+|---|---|---|---|
+| `--ctx` | 8192 | **131072** | Native max is 262144. The KV bank is allocated up front at ~54 KiB/token (12 full-attention layers × (2 KV heads × 256 + 128 index) × f32); 128k = 6.75 GiB. The engine keeps the newest ~20k positions a layer in VRAM and the rest in RAM. 256k (~13.5 GiB) does not fit |
+| `--cap` / `CAP` | 44 | **30** | Pays for most of the bigger bank (−14 slots × 48 layers × 4.69 MiB ≈ −3.1 GiB). cap 33 measured −7% tok/s |
+| `--ngen` | (serve default 8192) | **32768** | A request's `max_tokens` is clamped to this; thinking counts against it |
+| `--temp` | (server default 0.7) | **1.0** | The model's `generation_config.json` (top_p 0.95 / top_k 20 cannot be set server-side; `--topk/--topp` are expert routing, not sampling) |
+| `--allowed-host '*'` | — | added | coli rejects any Host but localhost with 403, and llama-swap forwards the client's (`mars.internal`, `ollama`, an IP). Before this, colibri-big only worked via localhost. coli binds 127.0.0.1, so llama-swap stays its only client |
+| `PYTHONPATH=/colibri/pylib` | — | added | Image input imports Pillow + numpy, which the llama-swap image lacks (the request dropped the connection: 502 EOF). `colibri/pylib.sh` installs pinned wheels into `~/llm/colibri/bin/pylib` (78 MB); `build.sh` runs it |
+
+Tests (one request each, aux models resident, ComfyUI idle):
+
+| Test | Result |
+|---|---|
+| Tool call (`tools`, 300-token prompt) | correct `get_weather({"city": "Stockholm"})`, `finish_reason: tool_calls`, 91 s incl. cold start |
+| Long prompt: 15,724 tokens, code at the start, question at the end | correct (`4417-KESTREL`). Prefill 3,708 s (**~4.2 tok/s**), so 128k of prompt would take ~8.5 h |
+| Image (256×256 PNG, base64 `image_url`) | correct description (red circle, blue shape bottom left, overlapping), 83 s incl. cold start. One image per request; `Q38_MAX_IMAGE_TOKENS` caps the token count |
+| Memory during the long prompt | RAM available min 4.6 GiB, container peak 10.4 GiB, NVMe swap 0 B |
+
+Thinking: the server defaults to `reasoning_effort: xhigh`. It accepts `minimal`/`low`/`medium`/`high`/`xhigh` (`none` is a 400); turn thinking off with top-level `enable_thinking: false`. Pi uses `"compat": {"thinkingFormat": "qwen", "supportsReasoningEffort": true}` for colibri-big (gamekit `pi/models.json`), which sends exactly that.
+
+Prefill is the real limit for agent use: Pi's system prompt and tools are several thousand tokens, so a first turn takes 10–20 min. Later turns reuse the cached prefix (one KV slot, so another conversation in between evicts it).
 
 ## Lore batch and blind comparison (2026-10-11)
 

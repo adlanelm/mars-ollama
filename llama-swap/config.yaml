@@ -138,10 +138,16 @@ models:
       --model /colibri-models/qwen38-flash-next
       --host 127.0.0.1 --port ${PORT}
       --model-id colibri-big
-      --ram 18 --cap 44 --ctx 8192 --kv-slots 1
+      --ram 18 --cap 30 --ctx 131072 --kv-slots 1 --ngen 32768 --temp 1.0
       --max-queue 2 --queue-timeout 3600
+      --allowed-host '*'
     # Tuning 2026-10-11 (docs/colibri.md "Tuning"): --cap 25 -> 44 = what `coli plan` gives for 18 GB once the
     # dense weights live in VRAM (cap 45 measured 3.39 -> 3.85 tok/s warm, RAM available >= 10 GiB, NVMe swap 0).
+    # 2026-10-14 (docs/colibri.md "Capabilities"): capability over speed. --ctx 8192 -> 131072 (KV bank in host RAM,
+    # ~54 KiB/token f32, allocated up front: +6.3 GiB), paid for by --cap 44 -> 30 (-3.1 GiB, cap 33 measured -7% tok/s).
+    # --ngen 32768: serve default is 8192. --temp 1.0: model's generation_config (server default 0.7; top_k not settable).
+    # --allowed-host '*': coli rejects any Host header but localhost, and llama-swap forwards the client's (mars.internal,
+    # ollama, an IP). Safe: coli binds 127.0.0.1 in the container, so llama-swap is its only client.
     # --kv-slots stays 1: 4 slots gave only ~+5-11% aggregate and unload the MTP head (-17% single stream).
     # No cmdStop: llama-swap v263 only documents ${PID} for cmdStop; its default SIGTERM is handled by
     # coli serve (stops the engine child). Give the engine time to exit cleanly before a forced kill.
@@ -153,9 +159,10 @@ models:
       - COLI_NO_OMP_TUNE=1 # no spin-wait; for qwen38 it also skips the physical-core thread count, hence the next line
       - OMP_NUM_THREADS=8 # physical cores; the default 16 (SMT) measured 1.42 tok/s warm, 8 threads 3.39 (same tokens)
       - RAM_GB=18 # same as --ram (used by coli plan; the qwen38 engine itself sizes its cache from --cap)
-      - CAP=44 # coli plan with Vulkan: 18 GB = 1.5 dense + 5.9 runtime + 10.6 warm experts -> cap 44/layer
+      - CAP=30 # same as --cap (coli plan with Vulkan gives 44 at --ctx 8192; lowered to fund the 128k KV bank)
       - RSS_GUARD_GB=22 # read by the GLM engine only; no effect on qwen38
       - PYTHONDONTWRITEBYTECODE=1 # /colibri is mounted read-only
+      - PYTHONPATH=/colibri/pylib # Pillow + numpy for image input (colibri/pylib.sh); the image has neither
       - COLI_PROGRESS_SECS=15 # local patch colibri/patches/0001-progress-log.patch: [progress] line every 15 s while decoding (0 = off)
       # The model mount is read-write because colibri writes .coli_kv / .coli_usage / .coli_ssd into the model dir.
       # To mount it read-only instead, uncomment these (loses warm KV reopen and usage-based pinning):

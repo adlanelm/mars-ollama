@@ -19,3 +19,4 @@ rm -rf /out/*; mkdir -p /out
 cd /work/colibri; rm -rf .git
 cp -a /work/colibri/. /out/
 chown -R 1000:1000 /out
+bash /src/pylib.sh # Pillow + numpy for image input

@@ -15,7 +15,7 @@ Open WebUI runs in the homelab k3s. Its connection, RAG and reranker settings li
    - Add an OpenAI connection with URL `http://<host>:11434/v1`, provider `llama.cpp`, auth None.
 2. **Embeddings** (Admin, Documents):
    - Engine: OpenAI. Base URL: `http://<host>:11434/v1`.
-   - Model: `bge-m3` or `snowflake-arctic-embed2`. Keep what each knowledge base uses today.
+   - Model: `snowflake-arctic-embed2`, with `RAG_EMBEDDING_QUERY_PREFIX="query: "` (env only, set in the homelab manifest). Qwen3-Embedding-0.6B was tested and is about 0.1 nDCG@10 worse on Swedish and 2.5x slower ([../bench/embed-ab-2026-10-16.md](../bench/embed-ab-2026-10-16.md)). `bge-m3` was dropped on 2026-10-16.
    - **Do not re-index** if the cosine check passes (at least 0.999 against the Ollama vectors for all 5 texts, ROADMAP Phase 3). If a model fails the check, re-index the knowledge bases that use it.
 3. **Reranking** (Admin, Documents):
    - Engine: External. URL: `http://<host>:11434/v1/rerank`. Model: `bge-reranker-v2-m3`.
@@ -102,7 +102,7 @@ Old Ollama names keep working through llama-swap aliases, for docling params, sc
 | `gemma4:26b`, `gemma4:26b-64k`, `gemma4:26b-128k` | `gemma4-26b` |
 | `ibm/granite3.3-vision:2b` | `granite-vision` |
 | `ibm/granite-docling:258m` | `granite-docling` |
-| `bge-m3:latest` | `bge-m3` |
+| `bge-m3:latest` | **dropped 2026-10-16, no alias** |
 | `snowflake-arctic-embed2:latest`, `snowflake-arctic-embed2:latest_8192` | `snowflake-arctic-embed2` |
 | `linux6200/bge-reranker-v2-m3:latest` | `bge-reranker-v2-m3` |
 | `qwen3.5:*` | **dropped, no alias** (replaced by `qwen3.6-35b-a3b`) |

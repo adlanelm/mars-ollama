@@ -13,7 +13,7 @@ IN=$(realpath "$1"); OUT=$(realpath -m "$2"); shift 2; mkdir -p "$OUT" ~/llm/ski
 for c in comfyui comfyui-trellis acestep; do
   [[ $(docker inspect -f '{{.State.Running}}' $c 2>/dev/null) == true ]] && { echo "$c is running: stop it first" >&2; exit 1; }
 done
-busy=$(curl -sf "$LLM/running" | python3 -c 'import json,sys; print(" ".join(m["model"] for m in json.load(sys.stdin).get("running",[]) if m["model"] not in ("bge-m3","bge-reranker-v2-m3","snowflake-arctic-embed2")))' || true)
+busy=$(curl -sf "$LLM/running" | python3 -c 'import json,sys; print(" ".join(m["model"] for m in json.load(sys.stdin).get("running",[]) if m["model"] not in ("bge-reranker-v2-m3","snowflake-arctic-embed2")))' || true)
 [[ -z $busy ]] || { echo "llama-swap has $busy loaded: POST $LLM/api/models/unload/<id> first" >&2; exit 1; }
 
 docker rm -f skintokens >/dev/null 2>&1 || true

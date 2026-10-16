@@ -34,9 +34,9 @@ llama-swap replaces the Ollama container **in place**. It keeps host port `11434
           ▼                                             ▼
  group `chat`  (swap: true, exclusive: true)    group `aux`  (persistent)
  one member loaded at a time                    always loaded
- ├─ qwen3.8-27b                                 ├─ bge-m3 (CPU)
- ├─ qwen3.6-35b-a3b                             ├─ snowflake-arctic-embed2 (CPU)
- ├─ gemma4-26b                                  └─ bge-reranker-v2-m3 (GPU, ~370 MiB)
+ ├─ qwen3.8-27b                                 ├─ snowflake-arctic-embed2 (CPU)
+ ├─ qwen3.6-35b-a3b                             └─ bge-reranker-v2-m3 (GPU, ~370 MiB)
+ ├─ gemma4-26b
  ├─ granite-vision
  ├─ granite-docling
  └─ colibri-big  (coli serve, internal ${PORT})
@@ -68,7 +68,7 @@ Usable VRAM is about 14.85 GiB. `--fit` (default on) keeps a 1 GiB margin per de
 | `gemma4-26b` (MoE, QAT UD-Q4_K_XL) | 14.25 GB (13.27 GiB) | 1.19 GB BF16 | about 10.6 KiB/token: 128k, about 1.33 GiB (measured: K and V stored separately) | Measured: experts of blk 24-29 (6 of 30 layers) in host RAM | Picks the split at load time. `--swa-full` stays off |
 | `granite-vision` | 2.69 GB Q8_0 | 0.89 GB | `-c 32768`, `-np 4 --kv-unified` (one image is about 5.2k tokens) | GPU | Chat group member |
 | `granite-docling` | 0.33 GB BF16 | 0.19 GB | `-c 32768`, `-np 4 --kv-unified --special` | GPU | Chat group member |
-| Aux: bge-m3, snowflake | 1.16 GB each (F16) | none | `-c 8192` | **CPU** | n/a |
+| Aux: snowflake (F16; bge-m3 dropped 2026-10-16, Qwen3-Embedding tested and not adopted) | 1.16 GB | none | `-c 8192` | **CPU** | n/a |
 | Aux: bge-reranker-v2-m3 | 0.64 GB Q8_0 | none | `-c 8192` | **GPU**, about 370 MiB VRAM (0.2 s vs about 4 s on the CPU) | n/a |
 
 Qwen3.8 KV note: 32k is about 1.06 GiB and 64k about 2.1 GiB. The 48k entry gets vision because the encoder runs on the CPU.

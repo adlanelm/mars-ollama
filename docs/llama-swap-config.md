@@ -38,11 +38,11 @@ routing:
     settings:
       groups:              # v263: under routing.router.settings
         chat: { swap: true, exclusive: true, members: [qwen3.8-27b, ...] }
-        aux:  { persistent: true, swap: false, exclusive: false, members: [bge-m3, ...] }
+        aux:  { persistent: true, swap: false, exclusive: false, members: [snowflake-arctic-embed2, bge-reranker-v2-m3] }
 
 hooks:
   on_startup:
-    preload: [bge-m3, snowflake-arctic-embed2, bge-reranker-v2-m3]
+    preload: [snowflake-arctic-embed2, bge-reranker-v2-m3]
 ```
 
 ### Flags per entry
@@ -55,7 +55,7 @@ hooks:
 | `granite-vision` | `-np 4 --kv-unified -c 32768 -ngl 99 --temp 0` | One image is about 5.2k tokens (tiling), so the 4 slots share one unified 32k KV pool |
 | `granite-vision-4.1` | `-np 4 --kv-unified -c 32768 -ngl 99 --temp 0` | Same layout as `granite-vision`. docling-proxy's default picture-description model since 2026-10-16 ([../bench/docling-2026-10-16.md](../bench/docling-2026-10-16.md)) |
 | `granite-docling` | `-np 4 --kv-unified --special -c 32768 -ngl 99 --temp 0` | `--special`: the DocTags tags (`<text>`, `<otsl>`, ...) are special tokens; without `--special` the output lacks them |
-| `bge-m3`, `snowflake-arctic-embed2` | `${aux_common} --embeddings` | CPU only (`-dev none -ngl 0`) |
+| `snowflake-arctic-embed2` | `${aux_common} --embeddings` | CPU only (`-dev none -ngl 0`) |
 | `bge-reranker-v2-m3` | `-ngl 99 -fa on -c 8192 -b 8192 -ub 2048 -t 4 -cram 0 --reranking` | **GPU**, about 370 MiB |
 
 ### Flag explanations

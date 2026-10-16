@@ -94,7 +94,6 @@ See [`bin/gpu-mode`](../bin/gpu-mode) (`gpu-mode {llm [--stop]|comfy|status}`). 
 
 ```bash
 # /api/models/unload also unloads the persistent aux group and preload does not re-run: one request each brings them back
-curl -sf "$LLM/v1/embeddings" -H 'Content-Type: application/json' -d '{"model":"bge-m3","input":"warm"}'
 curl -sf "$LLM/v1/embeddings" -H 'Content-Type: application/json' -d '{"model":"snowflake-arctic-embed2","input":"warm"}'
 curl -sf "$LLM/v1/rerank" -H 'Content-Type: application/json' -d '{"model":"bge-reranker-v2-m3","query":"warm","documents":["warm"]}'
 ```

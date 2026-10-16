@@ -16,7 +16,7 @@ name=gen; for ((i = 1; i <= $#; i++)); do [[ ${!i} == --name ]] && { j=$((i + 1)
 for c in comfyui comfyui-trellis; do
   [[ $(docker inspect -f '{{.State.Running}}' $c 2>/dev/null) == true ]] && { echo "$c is running: stop it first" >&2; exit 1; }
 done
-busy=$(curl -sf "$LLM/running" | python3 -c 'import json,sys; print(" ".join(m["model"] for m in json.load(sys.stdin).get("running",[]) if m["model"] not in ("bge-m3","bge-reranker-v2-m3","snowflake-arctic-embed2")))' || true)
+busy=$(curl -sf "$LLM/running" | python3 -c 'import json,sys; print(" ".join(m["model"] for m in json.load(sys.stdin).get("running",[]) if m["model"] not in ("bge-reranker-v2-m3","snowflake-arctic-embed2")))' || true)
 [[ -z $busy ]] || { echo "llama-swap has $busy loaded: POST $LLM/api/models/unload/<id> first" >&2; exit 1; }
 
 docker rm -f acestep >/dev/null 2>&1 || true

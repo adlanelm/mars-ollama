@@ -200,6 +200,7 @@ services:
       DOCLING_PROXY_WARM_CHILD_REAP_INTERVAL_SEC: 5
       DOCLING_PROXY_POLL_INTERVAL_SEC: 2
       DOCLING_PROXY_ARCHIVE_DIR: /var/lib/docling-output
+      DOCLING_PROXY_MD_TABLE_MAX_CHARS: 1500 # split longer md tables at row boundaries, header repeated, so Open WebUI's 1800-char chunks never cut a table mid-row
       DOCLING_PROXY_CHILD_STARTUP_TIMEOUT_SEC: 120
       DOCLING_PROXY_CHILD_REQUEST_TIMEOUT_SEC: 36000
       DOCLING_SERVE_ENABLE_UI: "false"

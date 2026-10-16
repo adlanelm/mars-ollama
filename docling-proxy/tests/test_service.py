@@ -34,7 +34,7 @@ def make_zip_bytes(filename: str, content: str = "ok") -> bytes:
     return buffer.getvalue()
 
 
-def make_merged_result(results, requested_formats, page_break_placeholder=None, include_proxy_meta=False, proxy_meta=None):
+def make_merged_result(results, requested_formats, page_break_placeholder=None, include_proxy_meta=False, proxy_meta=None, compact_tables=False, table_max_chars=0):
     names = [result["document"]["json_content"]["name"] for result in results]
     return ConvertDocumentResponse(
         document=ExportDocumentResponse(
@@ -270,7 +270,7 @@ async def test_split_pdf_merges_chunk_results(monkeypatch, caplog):
 
     monkeypatch.setattr(
         "docling_proxy.service.merge_results",
-        lambda results, requested_formats, page_break_placeholder=None, include_proxy_meta=False, proxy_meta=None: {
+        lambda results, requested_formats, page_break_placeholder=None, include_proxy_meta=False, proxy_meta=None, compact_tables=False, table_max_chars=0: {
             "results": results,
             "requested_formats": requested_formats,
         },

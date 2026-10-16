@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -10,6 +11,7 @@ from docling_proxy.archive import ArchiveStore
 from docling_proxy.config import settings
 from docling_proxy.contracts import ProxySourceRequest
 from docling_proxy.local_docling import LocalDoclingManager
+from docling_proxy.md_tables import rewrite_payload_tables
 from docling_proxy.parsing import normalize_source_request, parse_multipart_form
 from docling_proxy.state import TaskStateStore
 from docling_proxy.service import ProxyService, source_to_normalized_source
@@ -52,8 +54,16 @@ def request_headers(request: Request) -> dict[str, str]:
 
 def relay_httpx_response(response) -> Response:
     content_type = response.headers.get("content-type", "application/json")
+    content = response.content
+    if settings.md_table_max_chars > 0 and content_type.startswith("application/json") and response.status_code == 200:
+        try:
+            payload = json.loads(content)
+        except ValueError:
+            payload = None  # relay as is
+        if rewrite_payload_tables(payload, settings.md_table_max_chars):
+            content = json.dumps(payload, ensure_ascii=False).encode()
     return Response(
-        content=response.content,
+        content=content,
         status_code=response.status_code,
         media_type=content_type.split(";")[0],
         headers={

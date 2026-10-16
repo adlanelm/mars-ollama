@@ -16,6 +16,7 @@ from docling_proxy.archive import ArchiveStore
 from docling_proxy.config import settings
 from docling_proxy.contracts import ConvertDocumentResponse, ProxyOptions, ProxyPartInfo, ProxyTaskMeta, TaskStatusResponse
 from docling_proxy.local_docling import LocalDoclingManager
+from docling_proxy.md_tables import rewrite_payload_tables, truthy
 from docling_proxy.merge import build_batch_zip_response_bytes, build_zip_response_bytes, merge_results
 from docling_proxy.models import FilePayload, NormalizedSource, ProxyJob, cleanup_file_payloads
 from docling_proxy.parsing import decode_file_source, filename_from_url, normalize_requested_formats
@@ -587,6 +588,7 @@ class ProxyService:
         response.raise_for_status()
         if response.headers.get("content-type", "").startswith("application/json"):
             job.result_payload = response.json()
+            rewrite_payload_tables(job.result_payload, settings.md_table_max_chars)
             job.result_zip = None
         else:
             job.result_payload = None
@@ -1171,6 +1173,8 @@ class ProxyService:
             page_break_placeholder=options.get("md_page_break_placeholder"),
             include_proxy_meta=bool(proxy_options and proxy_options.include_proxy_meta),
             proxy_meta=proxy_meta,
+            compact_tables=truthy(options.get("md_compact_tables")),
+            table_max_chars=settings.md_table_max_chars,
         )
 
     def _status_from_job(self, job: ProxyJob) -> TaskStatusResponse:

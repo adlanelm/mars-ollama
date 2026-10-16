@@ -7,6 +7,7 @@ from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from docling_proxy.contracts import ConvertDocumentResponse, ExportDocumentResponse
+from docling_proxy.md_tables import split_long_tables
 
 SUPPORTED_SPLIT_FORMATS = {"md", "json", "html", "text"}
 TEXT_OUTPUTS = {
@@ -34,6 +35,8 @@ def merge_results(
     page_break_placeholder: str | None = None,
     include_proxy_meta: bool = False,
     proxy_meta: dict | None = None,
+    compact_tables: bool = False,
+    table_max_chars: int = 0,
 ) -> ConvertDocumentResponse:
     ensure_supported_formats(requested_formats)
 
@@ -53,7 +56,10 @@ def merge_results(
     merged_doc = docs[0] if len(docs) == 1 else DoclingDocument.concatenate(docs=docs)
 
     document = ExportDocumentResponse(
-        md_content=merged_doc.export_to_markdown(page_break_placeholder=page_break_placeholder)
+        md_content=split_long_tables(
+            merged_doc.export_to_markdown(page_break_placeholder=page_break_placeholder, compact_tables=compact_tables),
+            table_max_chars,
+        )
         if "md" in requested_formats
         else None,
         json_content=merged_doc.export_to_dict() if "json" in requested_formats else None,

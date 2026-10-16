@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     total_job_timeout_sec: float = 36000.0
     temp_dir: Path = Field(default=Path("/tmp/docling-proxy"))
     cleanup_results: bool = False
+    # Split markdown tables longer than this many characters at row boundaries, header repeated (0 = off). See md_tables.py.
+    md_table_max_chars: int = 0
 
     # Deprecated aliases kept for compatibility.
     max_concurrency: int | None = None

@@ -12,7 +12,7 @@ The RX 7800 XT has 16 GB, with about 1.13-1.2 GB used by the desktop at idle.
 |---|---|---|
 | llama-swap chat model | about 12-15 GB | One at a time (exclusive group `chat`) |
 | ComfyUI | measured 14-16 GiB whole-card during generation (Krea 2 Turbo fp8 takes the full card) | Runs as a container |
-| docling-proxy | varies | Layout and OCR also use the GPU. Avoid large jobs while a 14 GB chat model is loaded, or unload first |
+| docling-proxy | about 2-3 GiB during a job, 0 after it | Layout and OCR also use the GPU. Each file runs in a child process that releases its VRAM when it exits (bench/docling-2026-10-16.md). Avoid large jobs while a 14 GB chat model is loaded, or unload first |
 | Desktop | about 1.13-1.2 GB | Frees if the monitor moves to the iGPU |
 | Unity and Blender | another 1-3 GiB | Open while game-dev work is going on |
 

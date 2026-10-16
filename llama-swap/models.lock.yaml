@@ -16,19 +16,6 @@ models:
     sha256: 4b7b2c4ed3162bd9cb323668c188e2324838b8f8ca4f3f9767f16c4c600d43ad
   aliases:
   - ibm/granite-docling:258m
-- id: bge-m3
-  source: ollama
-  ollama:
-    ref: bge-m3:latest
-    blob: sha256-daec91ff
-    blob_sha256: daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c
-  files:
-  - name: bge-m3-F16.gguf
-    role: model
-    size: 1157671200
-    sha256: daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c
-  aliases:
-  - bge-m3:latest
 - id: snowflake-arctic-embed2
   source: ollama
   ollama:

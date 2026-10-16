@@ -108,7 +108,7 @@ models:
       -ngl 99 -c 32768 --temp 0
 
   # ── Aux group (always loaded; embedders on CPU, reranker on GPU) ────────────────────────────
-  # bge-m3 dropped 2026-10-16 (not used by Open WebUI; file kept in ~/llm/models/ollama/bge-m3 until `bin/llm-pull rm bge-m3`)
+  # bge-m3 dropped 2026-10-16 (not used by Open WebUI; file and manifest entry removed 2026-10-17)
   # Qwen3-Embedding-0.6B was tested and removed: about 0.1 nDCG@10 behind snowflake on Swedish, 2.5x slower on the CPU (bench/embed-ab-2026-10-16.md)
 
   "snowflake-arctic-embed2":

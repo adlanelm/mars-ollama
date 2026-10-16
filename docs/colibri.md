@@ -262,7 +262,7 @@ Phase 7 task 5. `bin/colibri-batch colibri/batch/lore-50.txt ~/llm/colibri/batch
 
 NVMe swap stayed 0 B; the batch ran unattended through llama-swap (colibri-big swapped in, chat model swapped out).
 
-**Blind AI judge.** A subagent got only the prompt and two unlabelled answers per item (sides randomised per item, key kept separately) and scored each answer 1–5 on fit (format, length, in-world), atmosphere, craft and usefulness for the game, with a verdict per item. Unblinded per-item results: [bench/colibri-lore-50/judge-verdicts.json](../bench/colibri-lore-50/judge-verdicts.json).
+**Blind AI judge.** A subagent got only the prompt and two unlabelled answers per item (sides randomised per item, key kept separately) and scored each answer 1–5 on fit (format, length, in-world), atmosphere, craft and usefulness for the game, with a verdict per item.
 
 | | colibri | Qwen3.6 |
 |---|---|---|

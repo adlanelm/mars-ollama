@@ -1,7 +1,7 @@
 # Phase 0–3 results (2026-10-11)
 
 Image `ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541` (llama.cpp build 11541, Vulkan, RADV NAVI32).
-Raw outputs: `ollama-baseline.txt`, `qwen3.6-sweep.md`, `smoke-1.txt`, `smoke-granite.txt`, `fullctx-1.txt`.
+Sweep write-up: `qwen3.6-sweep.md`.
 
 ## Generation speed, Phase 0 prompt (512 tokens)
 

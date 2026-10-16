@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 3: generation speed through llama-swap with the Phase 0 prompt (compare with ollama-baseline.txt).
+# Phase 3: generation speed through llama-swap with the Phase 0 prompt (compare with llama-swap-results.md).
 set -euo pipefail
 BASE=${1:-http://localhost:11435}
 shift || true

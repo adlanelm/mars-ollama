@@ -1,6 +1,6 @@
 # Verification of the open llama-swap items (2026-10-13)
 
-Resolves the open **[verify]** items of the LLM hosting migration (Phases 0–7). Raw numbers: `verification-2026-10-13.jsonl`.
+Resolves the open **[verify]** items of the LLM hosting migration (Phases 0–7).
 Scripts: `verify-bench.sh` (throwaway llama-server container, production flags of one model, load time, VRAM,
 3 runs with a fixed prompt), `verify-mtp.sh` (Gemma 4 with and without MTP over `verify-mtp-prompts.json`),
 `verify-ctxcp.sh` (growing multi-turn conversation on slot 0, RSS and checkpoint log lines).

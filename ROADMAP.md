@@ -58,7 +58,7 @@ Background docs: [docs/README.md](docs/README.md). Game development track: the s
 
 **Acceptance criteria:** `bench/` contains the baseline numbers and embedding files, and screenshots of the client settings exist.
 
-**Done (2026-10-11):** baselines in `bench/ollama-baseline.txt` and `bench/embed-baseline-*.json`. The qwen3.5 baseline was **not measured**: Ollama hung ("Stopping..."). Numbers: [bench/llama-swap-results.md](bench/llama-swap-results.md). Whether the screenshot item was done is not recorded **[verify]**.
+**Done (2026-10-11):** baselines measured (raw files since removed). The qwen3.5 baseline was **not measured**: Ollama hung ("Stopping..."). Numbers: [bench/llama-swap-results.md](bench/llama-swap-results.md). Whether the screenshot item was done is not recorded **[verify]**.
 
 ---
 

@@ -15,7 +15,14 @@
   - **Fix: `CHUNK_MIN_SIZE_TARGET=0`** when page citations matter. The cost is some small header-only chunks.
 - One run on a small synthetic set: this shows behaviour, not a quality difference between the templates.
 
-## Scores and answers
+
+## Rerun with `CHUNK_MIN_SIZE_TARGET=0` (same day, same script)
+
+**old 16/17, new 17/17.** Chunks now carry pages 0, 1 and 2, and each question gets 5 chunks instead of 3. The new setup answered q8 with "page 3 of the Q3 report (kestrel-q3-2026-report.pdf) [1]". The old setup has no page metadata, so it still said the page is not in the context. This time the old setup also showed its calculation inputs on q7, which shows the run-to-run variance of a single run.
+
+The single-page PDFs (memo, maintenance plan) have no page: docling emits no `\f`, so Open WebUI stores the whole file as one document without a page key.
+
+## Scores and answers (first run, `CHUNK_MIN_SIZE_TARGET=600`)
 
 | Question | Setup | Checks passed | Details | Time (s) |
 |---|---|---|---|---|
@@ -154,3 +161,138 @@ Based on the provided context, the specific page number is not mentioned. The in
 **Q:** On which page of the Q3 report is the warehouse move described?
 
 It is described on **page 1** of the Q3 report [1] (kestrel-q3-2026-report.pdf). The information appears in the "Logistics" section, which corresponds to the source's `page` index 0 (converted to reader page 1 per the instructions).
+
+
+## Scores and answers (rerun, `CHUNK_MIN_SIZE_TARGET=0`)
+
+| Question | Setup | Checks passed | Details | Time (s) |
+|---|---|---|---|---|
+| q1-number | old | 2/2 | exact 12 438 650 ✓; cites a source ✓ | 34 |
+| q1-number | new | 2/2 | exact 12 438 650 ✓; cites a source ✓ | 52 |
+| q1-number | retrieval | | 5 chunks, page values 0, 1, None | |
+| q2-conflict | old | 3/3 | mentions 214 ✓; mentions 209 ✓; cites a source ✓ | 30 |
+| q2-conflict | new | 3/3 | mentions 214 ✓; mentions 209 ✓; cites a source ✓ | 61 |
+| q2-conflict | retrieval | | 5 chunks, page values 0, 1, None | |
+| q3-absent | old | 2/2 | says not in documents ✓; no invented percentage ✓ | 38 |
+| q3-absent | new | 2/2 | says not in documents ✓; no invented percentage ✓ | 12 |
+| q3-absent | retrieval | | 5 chunks, page values 0, 1, None | |
+| q4-swedish | old | 3/3 | vecka 47 ✓; 385 000 ✓; answers in Swedish ✓ | 17 |
+| q4-swedish | new | 3/3 | vecka 47 ✓; 385 000 ✓; answers in Swedish ✓ | 46 |
+| q4-swedish | retrieval | | 5 chunks, page values 0, 1, None | |
+| q5-crosslang | old | 2/2 | keeps 'Driftteamet' ✓; answers in English ✓ | 28 |
+| q5-crosslang | new | 2/2 | keeps 'Driftteamet' ✓; answers in English ✓ | 16 |
+| q5-crosslang | retrieval | | 5 chunks, page values 0, 1, 2, None | |
+| q6-date | old | 1/1 | exact 2026-11-03 ✓ | 12 |
+| q6-date | new | 1/1 | exact 2026-11-03 ✓ | 41 |
+| q6-date | retrieval | | 5 chunks, page values 0, 1, 2, None | |
+| q7-calc | old | 2/2 | correct sum 21 667 450 ✓; shows inputs ✓ | 34 |
+| q7-calc | new | 2/2 | correct sum 21 667 450 ✓; shows inputs ✓ | 61 |
+| q7-calc | retrieval | | 5 chunks, page values 0, 1, None | |
+| q8-page | old | 1/2 | page 3 ✗; no wrong page ✓ | 31 |
+| q8-page | new | 2/2 | page 3 ✓; no wrong page ✓ | 51 |
+| q8-page | retrieval | | 5 chunks, page values 0, 1, 2, None | |
+
+**old: 16/17 checks** · **new: 17/17 checks**
+
+## Answers
+
+### q1-number · old · run 0
+
+**Q:** What was Region North's revenue in Q3 2026?
+
+Region North's revenue in Q3 2026 was 12,438,650 SEK (approximately 12 million SEK) [1].
+
+### q1-number · new · run 0
+
+**Q:** What was Region North's revenue in Q3 2026?
+
+Region North's revenue in Q3 2026 was 12 438 650 SEK [1] (kestrel-q3-2026-report.pdf, p. 1). The report's table provides the exact figure, while an accompanying bar chart description approximates it at around 12 MSEK [1].
+
+### q2-conflict · old · run 0
+
+**Q:** How many employees did Kestrel Lighting have at the end of Q3 2026?
+
+At the end of Q3 2026, Kestrel Lighting had 209 employees [2]. This corrects an initial report that stated the headcount was 214, as five fixed-term contracts had already expired by September [1], [2].
+
+### q2-conflict · new · run 0
+
+**Q:** How many employees did Kestrel Lighting have at the end of Q3 2026?
+
+Kestrel Lighting initially reported having 214 employees at the end of Q3 2026, but a correction memo clarifies that the actual number was 209 [1][2] (kestrel-q3-2026-report.pdf, p. 1 / kestrel-q3-2026-correction-memo.pdf). The quarterly report originally listed 214 staff members, while the correction notes that five fixed-term contracts had already ended in September.
+
+### q3-absent · old · run 0
+
+**Q:** What is Kestrel Lighting's dividend policy?
+
+Based on the provided context, there is no information regarding Kestrel Lighting's dividend policy. The documents only cover Q3 2026 headcount corrections, regional revenue breakdowns, and a sales overview. I don't have access to their official financial or shareholder payout guidelines. If you have additional documents or another question about the report, please let me know!
+
+### q3-absent · new · run 0
+
+**Q:** What is Kestrel Lighting's dividend policy?
+
+The provided documents do not contain information about Kestrel Lighting's dividend policy.
+
+### q4-swedish · old · run 0
+
+**Q:** När ska fläktarna bytas och vad är budgeten för underhållet?
+
+Enligt underhållsplanen ska byte av takfläktar utföras under vecka 47 [1]. Den totala budgeten för underhållet är 385 000 kr [1].
+
+### q4-swedish · new · run 0
+
+**Q:** När ska fläktarna bytas och vad är budgeten för underhållet?
+
+Takfläktarna ska bytas under **vecka 47** och den totala budgeten för underhållet är **385 000 kr** [1] (Underhållsplan för lagret 2026).
+
+### q5-crosslang · old · run 0
+
+**Q:** Who is responsible for the maintenance plan?
+
+The responsibility for the maintenance plan lies with Driftteamet (the Operations Team) [1].
+
+### q5-crosslang · new · run 0
+
+**Q:** Who is responsible for the maintenance plan?
+
+The **Driftteamet** (Operations team) is responsible for the maintenance plan [1] (*kestrel-underhållsplan-2026.pdf*).
+
+### q6-date · old · run 0
+
+**Q:** On what date does the warehouse move to Västerås take place?
+
+The central warehouse move to Västerås is scheduled for November 3, 2026 [1].
+
+### q6-date · new · run 0
+
+**Q:** On what date does the warehouse move to Västerås take place?
+
+The warehouse move to Västerås takes place on 2026-11-03 [1] (kestrel-q3-2026-report.pdf, p. 2). Deliveries will pause for two working days during the relocation [1] (kestrel-q3-2026-report.pdf, p. 2).
+
+### q7-calc · old · run 0
+
+**Q:** What was the combined Q3 2026 revenue of Region North and Region South?
+
+The combined Q3 2026 revenue for Region North and Region South was 21,667,450 SEK [1]. This total is calculated by adding Region North's revenue of 12,438,650 SEK to Region South's revenue of 9,228,800 SEK.
+
+### q7-calc · new · run 0
+
+**Q:** What was the combined Q3 2026 revenue of Region North and Region South?
+
+The combined Q3 2026 revenue for Region North and Region South was 21 667 450 SEK.
+
+Calculation based on the exact figures from the report [1] (kestrel-q3-2026-report.pdf, p. 1):
+- Region North: 12 438 650 SEK
+- Region South: 9 228 800 SEK
+- Total: 12 438 650 + 9 228 800 = 21 667 450 SEK
+
+### q8-page · old · run 0
+
+**Q:** On which page of the Q3 report is the warehouse move described?
+
+The provided context does not specify a page number for where the warehouse move is described. It only indicates that the information appears under the “Logistics” section of the Q3 2026 report [1]. Please consult the full document to locate the exact page.
+
+### q8-page · new · run 0
+
+**Q:** On which page of the Q3 report is the warehouse move described?
+
+The warehouse move is described on page 3 of the Q3 report (document: kestrel-q3-2026-report.pdf). [1]

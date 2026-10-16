@@ -85,6 +85,17 @@ models:
       -fa on --jinja --no-webui -np 4 --kv-unified
       -ngl 99 -c 32768 --temp 0
 
+  # Granite Vision 4.1 (2026): chart/table/KVP extraction, built for docling; candidate to replace 3.3 for picture description
+  "granite-vision-4.1":
+    name: "Granite Vision 4.1 4B"
+    ttl: 120
+    cmd: |
+      ${gpu_guard} llama-server --port ${PORT}
+      -m /models/ibm-granite/granite-vision-4.1-4b-GGUF/granite-vision-4.1-4b-Q8_0.gguf
+      --mmproj /models/ibm-granite/granite-vision-4.1-4b-GGUF/mmproj-model-f16.gguf
+      -fa on --jinja --no-webui -np 4 --kv-unified
+      -ngl 99 -c 32768 --temp 0
+
   "granite-docling":
     name: "Granite Docling 258M"
     aliases: ["ibm/granite-docling:258m"]
@@ -182,6 +193,7 @@ routing:
             - qwen3.6-35b-a3b
             - gemma4-26b
             - granite-vision
+            - granite-vision-4.1
             - granite-docling
             - colibri-big # slow NVMe-streamed tier (docs/colibri.md)
         aux:

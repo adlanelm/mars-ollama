@@ -47,35 +47,33 @@ Thinking output goes into `reasoning_content` (`--jinja`, `--reasoning-format au
 
 ## Docling
 
-In Open WebUI's `DOCLING_PARAMS` (and any docling-proxy client), point the picture-description API and the VLM API at the in-network alias:
+Open WebUI (jupiter, no GPU) sends documents to **docling-proxy** on mars: `http://mars.internal:8000`. The proxy runs each file in a short-lived docling-serve child on the GPU and keeps one warm child for 30 s. VRAM goes back to the desktop baseline after each job. A plain long-lived docling-serve is not an option on 1.37: it keeps about 2.2 GiB of VRAM, which halves qwen3.8's speed (32.4 → 15.0 tok/s), and every large PDF ratchets its RAM up. Measurements: [../bench/docling-2026-10-16.md](../bench/docling-2026-10-16.md). PDFs over 50 pages are split and merged automatically (`DOCLING_PROXY_MAX_PAGES_PER_PART`).
 
-- URL: `http://ollama:11434/v1/chat/completions` (the `ollama` network alias on the `llama-swap` service)
-- Models: `granite-vision` for picture description, `granite-docling` for the VLM pipeline
+**Picture description is configured on the server.** `DOCLING_SERVE_CUSTOM_PICTURE_DESCRIPTION_PRESETS` and `DOCLING_SERVE_DEFAULT_PICTURE_DESCRIPTION_PRESET` in `docker-compose.yaml` define the preset:
+- Model: `granite-vision-4.1` (Granite Vision 4.1 4B Q8_0) through llama-swap's `/v1/chat/completions`, with 4 concurrent requests, 300 tokens, and pictures of at least 5% of the page.
+- Clients only send `do_picture_description=true`. No escaped JSON is needed in Open WebUI.
+- 4.1 reads chart labels and most values. Small bars tend to come out as 0. Granite Vision 3.3 (`granite-vision`) only says "a bar chart".
+- Running the model locally in docling (preset `granite_vision`, transformers) is no better, and it leaves about 7 GiB of VRAM held in docling.
 
-Indicative `DOCLING_PARAMS` fragment, using the current field names:
+### Open WebUI settings (Admin → Settings → Documents)
 
-```json
-{
-  "picture_description_api": {
-    "url": "http://ollama:11434/v1/chat/completions",
-    "params": { "model": "granite-vision" }
-  },
-  "vlm_pipeline_model_api": {
-    "url": "http://ollama:11434/v1/chat/completions",
-    "params": { "model": "granite-docling" }
-  }
-}
-```
+- Content extraction engine: **Docling**, URL `http://mars.internal:8000`, no API key.
+- `DOCLING_PARAMS` (flat keys only; Open WebUI passes them through as form fields and overrides its own defaults):
+  ```json
+  {"do_ocr": true, "force_ocr": false, "ocr_engine": "easyocr", "ocr_lang": ["en", "sv"],
+   "pdf_backend": "dlparse_v4", "table_mode": "accurate", "do_table_structure": true,
+   "do_picture_description": true}
+  ```
+  - Leave out `image_export_mode`, `to_formats` and `md_page_break_placeholder`. Open WebUI sets them itself (`placeholder`, `md`+`json`, `\f`) and uses the page breaks for per-page documents.
+  - `force_ocr: true` re-OCRs text PDFs as well: 157 s instead of about 10 s for 10 synthetic pages. Use it only for documents with a broken text layer.
+- RAG: keep the Markdown header splitter on, chunk size 1000 / overlap 100, and hybrid search with the `bge-reranker-v2-m3` reranker (threshold 0, see above). Leave full-context mode off, because a large PDF would overflow the context.
+- Timeouts: Open WebUI's request has no client timeout, and the proxy allows `DOCLING_SERVE_MAX_SYNC_WAIT=36000` s. A 200-page synthetic PDF takes about 66 s without picture descriptions.
 
-granite-docling output ends with `<|end_of_text|>` after `</doctag>`. Resolved (2026-10-13, synthetic PDF): docling's granite-docling spec lists both as stop strings, so the converted md, doctags and json contain no `<|end_of_text|>` ([verification](../bench/verification-2026-10-13.md)).
+**Side effect:** granite-vision-4.1 is in the `chat` group, so an upload with pictures unloads the chat model. The next chat message waits about 15-17 s for it to reload, and granite unloads after 120 s.
 
-**Deprecation note.** The docling-serve fields `picture_description_api` and the VLM API fields are deprecated in favour of `picture_description_custom_config` and `vlm_pipeline_custom_config` with engine `"api"`. **[verify the exact JSON]** against the docling-serve usage and configuration docs before use. The field names and nesting in the fragment above are not confirmed.
+### VLM pipeline (granite-docling)
 
-The compose file already sets `DOCLING_SERVE_ALLOW_CUSTOM_VLM_CONFIG` and `DOCLING_SERVE_ALLOW_CUSTOM_PICTURE_DESCRIPTION_CONFIG` to `"true"` and `DOCLING_SERVE_ENABLE_REMOTE_SERVICES` to `"true"` on `docling-proxy`.
-
-Resolved: granite-vision and granite-docling both work in llama.cpp (docling needs `--special`, which is set in the config). **Fallback** if that regresses: use docling-serve's local engine (transformers on the GPU it already uses). That drops the LLM-server dependency.
-
-Granite models are in the `chat` group, so a docling job swaps the chat model out. Avoid large docling jobs while a 14 GB chat model is loaded, or unload first.
+Whole-page conversion through `granite-docling` is still available per request. `pipeline=vlm` with `vlm_pipeline_model_api` → `http://ollama:11434/v1/chat/completions`, model `granite-docling`, `response_format: doctags`. The field is deprecated but works on 1.37. The output is clean: docling strips granite-docling's trailing `<|end_of_text|>` ([verification](../bench/verification-2026-10-13.md)).
 
 ## Page Assist (Firefox)
 

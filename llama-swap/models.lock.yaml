@@ -124,3 +124,17 @@ models:
     sha256: 8971ee4f331ff0a4c609374f32984b3d4e6dc086c0aa35f1d637fad1829e887f
   aliases:
   - qwen3.6
+- id: granite-vision-4.1
+  source: hf
+  repo: ibm-granite/granite-vision-4.1-4b-GGUF
+  revision: b1fa14294b0f5cac04c43076d1c4574091abf117
+  files:
+  - name: granite-vision-4.1-4b-Q8_0.gguf
+    role: model
+    size: 3619700288
+    sha256: 33271b8ab1bfb1bd3a2c1a6f717d52dcb5e938170ffb4d7fdb8f337228e6cca4
+  - name: mmproj-model-f16.gguf
+    role: mmproj
+    size: 1162347936
+    sha256: 573dd2579f6043649299f0b2225000a5691d92f320aabe909fb4c6e75450cad2
+  aliases: []

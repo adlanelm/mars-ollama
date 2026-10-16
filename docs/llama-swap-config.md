@@ -53,6 +53,7 @@ hooks:
 | `qwen3.6-35b-a3b` | `${moe_common} -c 131072` | `-t 8 -tb 8 -ub 2048 -b 2048` (measured, see below). `--fit` puts the experts of blk 20-39 on the CPU |
 | `gemma4-26b` | `${moe_common} -c 131072` | `--fit` puts the experts of blk 24-29 (6 of 30 layers) on the CPU. `--swa-full` stays off |
 | `granite-vision` | `-np 4 --kv-unified -c 32768 -ngl 99 --temp 0` | One image is about 5.2k tokens (tiling), so the 4 slots share one unified 32k KV pool |
+| `granite-vision-4.1` | `-np 4 --kv-unified -c 32768 -ngl 99 --temp 0` | Same layout as `granite-vision`. docling-proxy's default picture-description model since 2026-10-16 ([../bench/docling-2026-10-16.md](../bench/docling-2026-10-16.md)) |
 | `granite-docling` | `-np 4 --kv-unified --special -c 32768 -ngl 99 --temp 0` | `--special`: the DocTags tags (`<text>`, `<otsl>`, ...) are special tokens; without `--special` the output lacks them |
 | `bge-m3`, `snowflake-arctic-embed2` | `${aux_common} --embeddings` | CPU only (`-dev none -ngl 0`) |
 | `bge-reranker-v2-m3` | `-ngl 99 -fa on -c 8192 -b 8192 -ub 2048 -t 4 -cram 0 --reranking` | **GPU**, about 370 MiB |

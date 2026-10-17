@@ -581,7 +581,11 @@ function parentSide(pi: ExtensionAPI) {
 			const log = path.join(path.dirname(run.report), `${run.id}.check${attempt ? `-${attempt}` : ""}.log`);
 			const res = await runCheck(check, run.cwd, log, signal);
 			if (res.code === 0) {
-				const last = res.tail.split("\n").slice(-2).join(" | ");
+				// the lines that say what passed (test totals, exit lines), not just the last two (on psx-iso those were the
+				// main agent's own grep counts, which hid "12/12 passed" and sent it re-verifying for 35 minutes)
+				const lines = res.tail.split("\n").filter((l) => l.trim());
+				const key = lines.filter((l) => /\b(pass(ed)?|fail(ed|ures)?|exit|result|error|green|ok)\b/i.test(l)).slice(-4);
+				const last = (key.length ? key : lines.slice(-2)).join(" | ");
 				return { ...outcome, text: `${outcome.text}\n  check: exit 0 (${last.slice(0, 300)})` };
 			}
 			if (attempt >= CHECK_RETRIES) {

@@ -107,7 +107,7 @@ models:
       -fa on --jinja --no-webui -np 4 --kv-unified --special
       -ngl 99 -c 32768 --temp 0
 
-  # ── Aux group (always loaded; embedders on CPU, reranker on GPU) ────────────────────────────
+  # ── Aux group (always loaded; embedders on CPU, reranker on GPU; GPU embedder on demand) ────────────────────────────
   # bge-m3 dropped 2026-10-16 (not used by Open WebUI; file and manifest entry removed 2026-10-17)
   # Qwen3-Embedding-0.6B was tested and removed: about 0.1 nDCG@10 behind snowflake on Swedish, 2.5x slower on the CPU (bench/embed-ab-2026-10-16.md)
 
@@ -119,6 +119,18 @@ models:
       llama-server --port ${PORT}
       -m /models/ollama/snowflake-arctic-embed2/snowflake-arctic-embed2-F16.gguf
       ${aux_common} --embeddings
+
+  # Same snowflake GGUF on the GPU, for bulk re-indexing: a client switches Open WebUI's embedding model to this
+  # name for the run and back afterwards. Vectors match the CPU entry (bench/compare-embeddings-gpu.py), so
+  # chunks from either entry share one index. -np 4 matches Open WebUI's 4 concurrent embedding requests;
+  # --kv-unified lets one 8192-token input use the whole context. Not preloaded; ttl frees the VRAM when idle.
+  "snowflake-arctic-embed2-gpu":
+    name: "Snowflake Arctic Embed 2 embeddings (GPU, bulk indexing)"
+    ttl: 600
+    cmd: |
+      llama-server --port ${PORT}
+      -m /models/ollama/snowflake-arctic-embed2/snowflake-arctic-embed2-F16.gguf
+      -ngl 99 -c 8192 -b 8192 -ub 8192 -np 4 --kv-unified -t 4 -cram 0 --no-webui --embeddings
 
   # Reranker on the GPU (~370 MiB): 10 RAG chunks rerank in 0.2 s vs ~4 s on the CPU (bench/llama-swap-results.md)
   "bge-reranker-v2-m3":
@@ -196,6 +208,7 @@ routing:
           exclusive: false
           members:
             - snowflake-arctic-embed2
+            - snowflake-arctic-embed2-gpu
             - bge-reranker-v2-m3
 
 hooks:

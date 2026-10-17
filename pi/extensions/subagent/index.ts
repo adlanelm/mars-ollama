@@ -762,6 +762,16 @@ function parentSide(pi: ExtensionAPI) {
 	// Automatic review: before the main agent finishes a prompt that changed files, a read-only reviewer reads
 	// the diff. Its one-line result comes back as a message with one more turn to act on it.
 	pi.on("agent_before_settle", async (event, ctx) => {
+		// a local model sometimes answers "- Read GAME.md" and stops: no tool call at all, a few words. Send it back once.
+		if (toolCalls === 0 && !nudged && event.context.canContinue) {
+			const lastAssistant = [...event.context.llmMessages].reverse().find((m) => m.role === "assistant");
+			const text = lastAssistant ? textOf(lastAssistant.content as any).trim() : "";
+			if (text.length < 300) {
+				nudged = true;
+				const content = "You stopped without doing the task: no tool was called and your answer is only a few words. Do the task now with your tools; do not describe the steps.";
+				return { entries: [{ type: "custom_message", customType: "nudge", content, display: true }], continue: true };
+			}
+		}
 		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS || !event.context.canContinue) return;
 		const agents = discoverAgents(ctx.cwd, "user").agents;
 		if (!agents.some((a) => a.name === "reviewer")) return;
@@ -798,6 +808,8 @@ function parentSide(pi: ExtensionAPI) {
 	const isHandoffRead = (tool: string, input: unknown, cwd: string) =>
 		tool === "read" && path.resolve(cwd, (input as { path?: string }).path ?? "").startsWith(path.resolve(HANDOFF_ROOT) + path.sep);
 	let spent = 0;
+	let toolCalls = 0; // in this user prompt
+	let nudged = false;
 	const edited = new Set<string>();
 	const nextStep = (tool: string, input: unknown, cwd: string) => {
 		const p = (input as { path?: string }).path;
@@ -824,6 +836,10 @@ function parentSide(pi: ExtensionAPI) {
 	};
 
 	pi.on("before_agent_start", async (event) => {
+		if ((event as { messageType?: string }).messageType !== "custom") {
+			toolCalls = 0;
+			nudged = false;
+		}
 		spent = 0;
 		edited.clear();
 		changed.clear();
@@ -833,6 +849,7 @@ function parentSide(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		toolCalls++;
 		if (planOnly && (event.toolName === "edit" || event.toolName === "write")) return { block: true, reason: PLAN_ONLY_REASON };
 		if (planOnly && event.toolName === "bash" && !isCheckCommand((event.input as { command: string }).command, checks)) {
 			const cmd = (event.input as { command: string }).command;

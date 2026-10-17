@@ -42,6 +42,7 @@ so that delegation and context limits are enforced by code, not left to the mode
   defects. Its SUMMARY comes back as a message, with one more turn to fix the issues through a worker or explain
   why not. There are at most 2 reviews per prompt (the second after fixes), none in plan-only prompts, and a
   clean review just lets the main session finish.
+- Nudge: a prompt that ends with no tool call at all and a few words (a local model answering "- Read GAME.md" and stopping) is sent back once to do the task.
 - Block messages name the exact next call, e.g. `subagent({agent: "worker", goal: ..., scope: ["<the file>"]})`.
 - What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself. If a subagent
   leaves out the SUMMARY line, it is resumed once and asked for exactly that line.

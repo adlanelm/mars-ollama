@@ -232,6 +232,24 @@ async def test_small_pdf_passthrough(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_epub_passthrough_is_not_split():
+    local_docling = FakeLocalDocling()
+    archive_store = FakeArchiveStore()
+    service = ProxyService(FakeUpstream(), local_docling, archive_store)
+    data = b"PK\x03\x04" + b"synthetic epub"
+    file = FilePayload("book.epub", data, "application/epub+zip")
+
+    response = await service.process_file_sync([file], {"to_formats": ["md"]}, None, {})
+
+    assert local_docling.calls == []
+    assert len(local_docling.relay_file_calls) == 1
+    forwarded = local_docling.relay_file_calls[0][0]
+    assert len(forwarded) == 1
+    assert (forwarded[0].filename, forwarded[0].content, forwarded[0].content_type) == ("book.epub", data, "application/epub+zip")
+    assert response.json()["status"] == "success"
+
+
+@pytest.mark.asyncio
 async def test_split_pdf_merges_chunk_results(monkeypatch, caplog):
     upstream = FakeUpstream()
     local_docling = FakeLocalDocling()

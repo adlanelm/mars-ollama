@@ -4,7 +4,7 @@ from pypdf import PdfWriter
 from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject
 
 from docling_proxy.contracts import ProxyOptions
-from docling_proxy.pdf_tools import build_split_plan, count_pdf_pages, decide_split, materialize_pdf_chunk, split_pdf
+from docling_proxy.pdf_tools import build_split_plan, count_pdf_pages, decide_split, is_pdf, materialize_pdf_chunk, split_pdf
 
 
 def make_pdf(page_count: int) -> bytes:
@@ -76,3 +76,7 @@ def test_decide_split_uses_only_page_threshold():
     assert decision.should_split is True
     assert decision.reason == "pdf exceeds page threshold"
     assert decision.parts == 2
+
+
+def test_is_pdf_false_for_epub():
+    assert is_pdf("book.epub", "application/epub+zip", b"PK\x03\x04synthetic epub") is False

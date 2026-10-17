@@ -396,6 +396,13 @@ function parentSide(pi: ExtensionAPI) {
 	const finished: { seq: number; scope: string[] }[] = [];
 	let runDir: string | undefined;
 	let counter = 0;
+	const waiting = new Set<string>(); // runs stopped with NEEDS, not yet resumed
+	const deferred = new Set<string>(); // runs whose check was deferred while others waited
+	const track = (run: Run, o: Outcome) => {
+		if (o.status === "needs") waiting.add(run.id);
+		else waiting.delete(run.id);
+		if (o.status === "done" && waiting.size === 0 && /check: exit 0/.test(o.text)) deferred.clear();
+	};
 	// files changed in this prompt (worker scopes and the main agent's own edits) and not reviewed since
 	const changed = new Set<string>();
 	let reviews = 0;
@@ -562,6 +569,13 @@ function parentSide(pi: ExtensionAPI) {
 				}
 			}
 			if (!check) return outcome;
+			// another subagent is waiting mid-change (NEEDS): the project would fail for its half-done work, not ours.
+			// The check runs when that subagent is resumed and finishes.
+			const others = [...waiting].filter((id) => id !== run.id);
+			if (others.length) {
+				deferred.add(run.id);
+				return { ...outcome, text: `${outcome.text}\n  check: deferred (waiting for ${others.join(", ")} to be resumed)` };
+			}
 			// nothing changed (a read-only task given a scope): the check cannot have changed either
 			if (run.touched && run.touched.size === 0) return { ...outcome, text: `${outcome.text}\n  check: skipped (no files changed)` };
 			const log = path.join(path.dirname(run.report), `${run.id}.check${attempt ? `-${attempt}` : ""}.log`);
@@ -678,6 +692,7 @@ function parentSide(pi: ExtensionAPI) {
 		if (spec.check) checks.add(spec.check.trim());
 		run.check = spec.check;
 		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
+		track(run, outcome);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);
 		if (outcome.status === "done" && canWrite) for (const f of run.touched ?? run.scope) changed.add(f);
 		return outcome;
@@ -732,8 +747,12 @@ function parentSide(pi: ExtensionAPI) {
 				const widened = params.scope ? ` Your writable scope is now: ${run.scope.join(", ")}.` : "";
 				const answer = run.answers.length ? `Your request was handled. Read: ${run.answers.join(", ")}.` : "Your request was handled.";
 				run.answers = [];
+				waiting.delete(run.id);
 				const resumed = await launch(run, `${answer}${widened} ${params.message ?? ""}\nContinue your task.`, model, thinking, signal);
-				return reply([await settle(run, resumed, run.check, model, thinking, signal)]);
+				// the resumed run's check also covers the runs whose checks were deferred while it waited
+				const settled = await settle(run, resumed, run.check ?? projectCheck(run.cwd), model, thinking, signal);
+				track(run, settled);
+				return reply([settled]);
 			}
 
 			if (params.chain?.length) {
@@ -835,6 +854,12 @@ function parentSide(pi: ExtensionAPI) {
 				return { entries: [{ type: "custom_message", customType: "paths", content, display: true }], continue: true };
 			}
 		}
+		if (waiting.size && !waitReminded) {
+			waitReminded = true;
+			const ids = [...waiting].join(", ");
+			const content = `Subagents are still waiting for your answer and have unfinished work: ${ids}. Resume each with subagent({resume: "<id>"}) (their checks, and the deferred ones, run then) before you finish.`;
+			return { entries: [{ type: "custom_message", customType: "waiting", content, display: true }], continue: true };
+		}
 		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS) return;
 		const agents = discoverAgents(ctx.cwd, "user").agents;
 		if (!agents.some((a) => a.name === "reviewer")) return;
@@ -877,6 +902,7 @@ function parentSide(pi: ExtensionAPI) {
 	let pathsChecked = false;
 	let lookedAtCode = false; // read a non-Markdown file, searched with bash, or ran a subagent
 	let groundNudged = false;
+	let waitReminded = false;
 	const edited = new Set<string>();
 	const nextStep = (tool: string, input: unknown, cwd: string) => {
 		const p = (input as { path?: string }).path;
@@ -909,6 +935,7 @@ function parentSide(pi: ExtensionAPI) {
 			pathsChecked = false;
 			lookedAtCode = false;
 			groundNudged = false;
+			waitReminded = false;
 		}
 		spent = 0;
 		edited.clear();

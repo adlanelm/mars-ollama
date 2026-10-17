@@ -19,7 +19,7 @@ Strategy:
 3. Identify types, interfaces, key functions
 4. Note dependencies between files
 
-Output format:
+Output format (first line always `SUMMARY: <at most 25 words>`):
 
 ## Files Retrieved
 List with exact line ranges:
@@ -27,25 +27,11 @@ List with exact line ranges:
 2. `path/to/other.ts` (lines 100-150) - Description
 3. ...
 
-## Key Code
-Critical types, interfaces, or functions:
-
-```typescript
-interface Example {
-  // actual code from the files
-}
-```
-
-```typescript
-function keyFunction() {
-  // actual implementation
-}
-```
+## Key Symbols
+Types, functions and their `path:line`, one line each. Quote at most 3 short lines of code in total.
 
 ## Architecture
 Brief explanation of how the pieces connect.
 
 ## Start Here
 Which file to look at first and why.
-
-Keep the final answer under 600 words. Cite `path:line` ranges instead of pasting file contents; the reader has a small context window.

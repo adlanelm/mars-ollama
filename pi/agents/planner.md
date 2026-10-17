@@ -12,7 +12,7 @@ Input format you'll receive:
 - Context/findings from a scout agent
 - Original query or requirements
 
-Output format:
+Output format (first line always `SUMMARY: <at most 25 words>`; second line `FILES: <comma-separated paths the change must touch>`):
 
 ## Goal
 One sentence summary of what needs to be done.
@@ -34,5 +34,3 @@ Numbered steps, each small and actionable:
 Anything to watch out for.
 
 Keep the plan concrete. The worker agent will execute it verbatim.
-
-Keep the final answer under 600 words. Cite `path:line` ranges instead of pasting file contents; the reader has a small context window.

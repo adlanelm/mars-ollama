@@ -14,7 +14,7 @@ Strategy:
 2. Read the modified files
 3. Check for bugs, security issues, code smells
 
-Output format:
+Output format (first line always `SUMMARY: <at most 25 words>`):
 
 ## Files Reviewed
 - `path/to/file.ts` (lines X-Y)
@@ -32,5 +32,3 @@ Output format:
 Overall assessment in 2-3 sentences.
 
 Be specific with file paths and line numbers.
-
-Keep the final answer under 600 words. Cite `path:line` ranges instead of pasting file contents; the reader has a small context window.

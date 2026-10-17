@@ -5,19 +5,43 @@ General config for the [pi](https://pi.dev) coding agent against llama-swap. Ins
 pi start or `/reload`); `settings.json` is copied, because pi writes to it, so re-run after editing it.
 Project-specific skills and prompts go in the project's `.pi/settings.json` (gamekit's game template does this).
 
-## Subagents
+## Subagents (enforced delegation)
 
-`extensions/subagent/` is pi's bundled subagent example (1.3.0), adapted for local models with small windows.
-The main session delegates reading and self-contained edits to `agents/*.md` (scout, planner, worker, reviewer),
-each a fresh `pi` process. Only the short report comes back. Changes from the example:
+`extensions/subagent/` is loaded in every project (the user extensions dir). It is pi's subagent example rewritten
+so that delegation and context limits are enforced by code, not left to the model.
 
-- Subagents get no `model:`, so they inherit the parent's model. llama-swap loads one chat model at a time, so a
-  different model would swap the parent's out (10-20 s each way).
-- `MAX_CONCURRENCY` is 2, matching `-np 2`.
-- Output is capped at 12 KB per task, in every mode, and agents are told to keep the final answer under 600 words.
-- Recursion guard: children run with `PI_SUBAGENT=1` and don't register the tool.
-- Delegation rules go in the tool's `promptGuidelines`, so only the parent sees them. Children also load AGENTS.md.
-- Prompts: `/implement`, `/scout-and-plan`, `/implement-and-review` (chains).
+**Main session**
+- `subagent` tool. Modes: single (`agent`, `goal`, `scope`, `inputs`, `done_when`), `tasks` (parallel, 2 at a time,
+  max 4), `chain` (each step gets the previous report as input; `scope: ["@previous"]` takes the plan's `FILES:`
+  line, or else the existing file paths the report mentions), and `resume` (optionally with a new `scope`).
+- Context guard:
+  - `read` is clamped to 200 lines.
+  - Every read, bash, grep, find and ls result is capped at 6 KB.
+  - After 24 KB of direct output in one prompt, read, grep, find and ls are blocked ("delegate to a scout"), and
+    bash output drops to 1 KB, which is enough for check results. The budget resets on each user prompt.
+- What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself.
+- The delegation rules live in the tool's `promptGuidelines`, which subagents never see.
+
+**Subagents** (`PI_SUBAGENT=1`; they don't get the `subagent` tool, so they can't recurse)
+- Narrow task: the extension builds the task message (GOAL, DONE WHEN, WRITABLE SCOPE, INPUTS, REPORT FORMAT).
+  Each subagent inherits the main session's model, because llama-swap holds only one chat model and a different
+  one would swap.
+- Scope enforcement:
+  - `edit`/`write` calls outside the scope are blocked.
+  - After every run, a git check undoes changes outside the scope, including bash writes. Tracked files are
+    restored and new files are moved to `<run>/quarantine/`. Files that were already dirty before the run and
+    weren't touched are left alone. Build artefacts (`__pycache__`, `node_modules`, `Library`...) are ignored.
+  - Concurrent parallel runs don't undo each other's in-scope work.
+  - Outside git, only the edit/write guard applies.
+- Out of scope: the subagent calls `request {need, why}` and stops (`terminate`). The main session dispatches a
+  helper with `for: "<id>"` (or makes a one-line edit itself), then sends `resume: "<id>"`. The resumed subagent
+  is told where the helper's report is.
+
+**Handoff area**: `$PI_HANDOFF_ROOT` (default `/tmp/pi-handoff`), one folder per main session, holding
+`NN-agent.md` (the report, written by the extension), `NN-agent.jsonl` (the session, for resume),
+`NN-agent.prompt.md` and `quarantine/`. Only paths go through the main session.
+
+Prompts: `/implement` (scout, planner, worker with `@previous` scope), `/scout-and-plan`, `/implement-and-review`.
 
 ## Compaction
 
@@ -25,8 +49,14 @@ each a fresh `pi` process. Only the short report comes back. Changes from the ex
 at about 64k (`reserveTokens` 65536) and keeps 16k. qwen3.8-27b (49152 window) overrides this: reserve 8192 and
 keep 10000, with `maxTokens` 8192.
 
-2026-10-17, qwen3.6: worker reported tools `read, bash, edit, write` with no `subagent`; 3 parallel scouts answered
-correctly in 65 s; no model swap.
+Tests 2026-10-17, qwen3.6, synthetic repos:
+- `/implement` (add a parameter and a test) took one `subagent` call and 2 min. The main session peaked at 3.5k
+  tokens, and the planner's FILES became the worker's scope.
+- A worker scoped to calc.py, told to write main.py and a new file with bash: main.py was restored from HEAD, the
+  new file was quarantined, and the in-scope edit and the uncommitted work that was already there were kept.
+- Out of scope: block, then `request`, then NEEDS, then the main session fixes it, then `resume`, then done. The
+  main session stayed at about 4k tokens.
+- Main session told to read a 55k-token file itself: it was blocked at the budget and peaked at 15k.
 2026-10-17 KV pressure, qwen3.6: parent at 57k plus a read-only subagent at 43k (about 100k in the shared pool).
 No server errors, the subagent's answer was correct, and the parent's next turn re-processed only 185 tokens
 (cacheRead 56983), so its prefix survived the subagent.

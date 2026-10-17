@@ -1,9 +1,9 @@
 ---
-description: Scout gathers context, planner creates implementation plan (no implementation)
+description: Scout gathers context, planner writes a plan (no implementation)
 ---
-Use the subagent tool with the chain parameter to execute this workflow:
+Use the subagent tool in chain mode for: $@
 
-1. First, use the "scout" agent to find all code relevant to: $@
-2. Then, use the "planner" agent to create an implementation plan for "$@" using the context from the previous step (use {previous} placeholder)
+1. scout: goal = find the code relevant to the task above; read-only.
+2. planner: goal = an implementation plan for the task, listing the exact files to change; read-only.
 
-Execute this as a chain, passing output between steps via {previous}. Do NOT implement - just return the plan.
+Do NOT implement. Reply with the plan's report path and its SUMMARY line.

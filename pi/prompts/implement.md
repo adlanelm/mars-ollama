@@ -1,10 +1,10 @@
 ---
-description: Full implementation workflow - scout gathers context, planner creates plan, worker implements
+description: Scout gathers context, planner plans, worker implements (handoff files, narrow scopes)
 ---
-Use the subagent tool with the chain parameter to execute this workflow:
+Use the subagent tool in chain mode for: $@
 
-1. First, use the "scout" agent to find all code relevant to: $@
-2. Then, use the "planner" agent to create an implementation plan for "$@" using the context from the previous step (use {previous} placeholder)
-3. Finally, use the "worker" agent to implement the plan from the previous step (use {previous} placeholder)
+1. scout: goal = find the code relevant to the task above; read-only.
+2. planner: goal = an implementation plan for the task, listing the exact files to change; read-only.
+3. worker: goal = implement the plan; scope = ["@previous"] (the plan's FILES line); done_when = the project's check or test command, if there is one.
 
-Execute this as a chain, passing output between steps via {previous}.
+Each step gets the previous report automatically. If a step returns NEEDS, handle it as your guidelines say, resume the run, and continue with the remaining steps.

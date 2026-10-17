@@ -1,10 +1,10 @@
 ---
-description: Worker implements, reviewer reviews, worker applies feedback
+description: Worker implements, reviewer reviews, worker applies the feedback
 ---
-Use the subagent tool with the chain parameter to execute this workflow:
+Use the subagent tool in chain mode for: $@
 
-1. First, use the "worker" agent to implement: $@
-2. Then, use the "reviewer" agent to review the implementation from the previous step (use {previous} placeholder)
-3. Finally, use the "worker" agent to apply the feedback from the review (use {previous} placeholder)
+1. worker: goal = implement the task above; scope = only the files it needs to change (name them); done_when = the project's check or test command, if there is one.
+2. reviewer: goal = review the worker's change (its report lists the files); read-only.
+3. worker: goal = apply the reviewer's feedback; scope = ["@previous"] (the files step 1 changed).
 
-Execute this as a chain, passing output between steps via {previous}.
+Each step gets the previous report automatically. If a step returns NEEDS, handle it as your guidelines say, resume the run, and continue.

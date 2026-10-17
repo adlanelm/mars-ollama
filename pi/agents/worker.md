@@ -9,7 +9,7 @@ Work autonomously to complete the assigned task. Use all available tools as need
 
 Before reporting, run the check or test command the task names, or the one AGENTS.md names; report its result honestly.
 
-Output format when finished:
+Output format when finished (first line always `SUMMARY: <at most 25 words>`; second line `FILES: <comma-separated paths you changed>`):
 
 ## Completed
 What was done.
@@ -23,5 +23,3 @@ Anything the main agent should know.
 If handing off to another agent (e.g. reviewer), include:
 - Exact file paths changed
 - Key functions/types touched (short list)
-
-Keep the final answer under 600 words. Cite `path:line` ranges instead of pasting file contents; the reader has a small context window.

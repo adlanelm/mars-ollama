@@ -804,6 +804,14 @@ function parentSide(pi: ExtensionAPI) {
 				return { entries: [{ type: "custom_message", customType: "nudge", content, display: true }], continue: true };
 			}
 		}
+		// a plan written without looking at any code (psx-iso: GAME.md and BACKLOG.md only, then new classes next
+		// to the existing Health.cs) goes back once
+		if (planOnly && !lookedAtCode && !groundNudged) {
+			groundNudged = true;
+			const content =
+				"You planned without looking at the code. Read the files you plan to change (or ask a scout what exists, e.g. which classes already handle health or input), then redo the plan with full paths. Reuse what exists.";
+			return { entries: [{ type: "custom_message", customType: "ground", content, display: true }], continue: true };
+		}
 		// a final answer that presents files as existing which do not exist was written without looking at the
 		// code (psx-iso: a plan for "Scripts/Runtime/CrawlerAI.cs" and a new health class next to Health.cs)
 		if (!pathsChecked) {
@@ -867,6 +875,8 @@ function parentSide(pi: ExtensionAPI) {
 	const bashSnaps = new Map<string, Snapshot>();
 	let nudged = false;
 	let pathsChecked = false;
+	let lookedAtCode = false; // read a non-Markdown file, searched with bash, or ran a subagent
+	let groundNudged = false;
 	const edited = new Set<string>();
 	const nextStep = (tool: string, input: unknown, cwd: string) => {
 		const p = (input as { path?: string }).path;
@@ -897,6 +907,8 @@ function parentSide(pi: ExtensionAPI) {
 			toolCalls = 0;
 			nudged = false;
 			pathsChecked = false;
+			lookedAtCode = false;
+			groundNudged = false;
 		}
 		spent = 0;
 		edited.clear();
@@ -908,6 +920,9 @@ function parentSide(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		toolCalls++;
+		if (event.toolName === "subagent" || event.toolName === "grep" || event.toolName === "find") lookedAtCode = true;
+		if (event.toolName === "read" && !/\.(md|txt|toml)$/i.test((event.input as { path?: string }).path ?? "")) lookedAtCode = true;
+		if (event.toolName === "bash" && /\b(grep|rg|find|ls|cat|sed|head)\b/.test((event.input as { command?: string }).command ?? "")) lookedAtCode = true;
 		if (event.toolName === "bash") {
 			const cmd = (event.input as { command: string }).command;
 			if (GIT_WRITE.test(cmd)) {

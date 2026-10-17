@@ -671,7 +671,10 @@ function parentSide(pi: ExtensionAPI) {
 		// a writing task without a check gets the project's check (.pi/check), so verification never depends on
 		// the main agent remembering to ask for it
 		const canWrite = !run.agent.tools || run.agent.tools.some((t) => t === "edit" || t === "write");
-		if (!spec.check && run.scope.length && canWrite) spec = { ...spec, check: projectCheck(run.cwd) };
+		// the project check always runs for writing tasks; a task check adds to it, never replaces it (psx-iso: the
+		// main agent passed check: "echo done" for a worker editing 3 files)
+		const pc = run.scope.length && canWrite ? projectCheck(run.cwd) : undefined;
+		if (pc && spec.check?.trim() !== pc) spec = { ...spec, check: spec.check ? `${pc} && { ${spec.check}; }` : pc };
 		if (spec.check) checks.add(spec.check.trim());
 		run.check = spec.check;
 		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
@@ -696,6 +699,11 @@ function parentSide(pi: ExtensionAPI) {
 			"Ask scouts questions, not for file contents: \"where is X handled and what does it take\", not \"return lines 365-410\".",
 			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and `check`: the command that proves the work (tests, build check). The extension runs it, retries the subagent on failure and tells you the exit code.",
 			"Trust the check result, not a subagent's claims. Do not re-run checks yourself after a passing `check`.",
+			...(projectCheck(process.cwd())
+				? [
+						"This project has .pi/check (its build check and tests). It runs automatically after every subagent that changes files and cannot be replaced; pass `check` only for something it does not cover. When the user asks for checks to pass, that is what verifies them.",
+					]
+				: []),
 			"Pass information between subagents as handoff report paths in inputs; read a report yourself only when you must decide something from it (handoff reads always work, capped).",
 			"If a subagent returns NEEDS, dispatch another subagent for that need with for set to the waiting run id, then call subagent with resume set to that id. Never do the out-of-scope work by stretching the first subagent's task.",
 			"Do one-line or single-file edits yourself; delegate anything that needs reading more than ~2 files.",

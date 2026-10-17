@@ -34,7 +34,7 @@ so that delegation and context limits are enforced by code, not left to the mode
 - Plan-only prompts: a prompt containing `[plan-only]` (`/plan`, `/scout-and-plan`, gamekit's `/backlog-item`)
   can read and run scouts and planners (a scope given to a read-only agent is dropped), but edit/write, writing bash, worker tasks and resumes with a scope are
   blocked until the next user prompt. "Wait for my OK" therefore always holds.
-- Project check: a writing task without `check` gets `bash <project>/.pi/check` if that file exists (searched
+- Project check: the project check always runs for writing tasks, and a task `check` is added to it, never replaces it (the main session once passed `check: "echo done"`). A writing task without `check` gets `bash <project>/.pi/check` if that file exists (searched
   from the task cwd up to the git root). Verification doesn't depend on the main session remembering to ask for
   it. gamekit's templates add one: Unity runs Tools/check plus the PlayMode tests, Godot runs Tools/check.
 - Automatic review: when a prompt that changed files is about to finish (`agent_before_settle`), the reviewer

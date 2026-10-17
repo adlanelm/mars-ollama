@@ -12,6 +12,9 @@ COPY src /app/src
 
 RUN python -m pip install --no-cache-dir .
 
+# granite-docling (VLM pipeline) is not in the base image MODELS_LIST
+RUN docling-tools models download -o "${DOCLING_SERVE_ARTIFACTS_PATH}" granitedocling
+
 EXPOSE 8080
 
 CMD ["python", "-m", "docling_proxy"]

@@ -235,7 +235,6 @@ services:
       DOCLING_NUM_THREADS: 16
       DOCLING_SERVE_ENG_LOC_NUM_WORKERS: 2
       DOCLING_SERVE_ENABLE_MANAGEMENT_ENDPOINTS: "false"
-      DOCLING_SERVE_ARTIFACTS_PATH:
     devices:
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd

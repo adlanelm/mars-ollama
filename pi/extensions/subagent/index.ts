@@ -29,7 +29,29 @@ const SUMMARY_CAP = 600; // chars of the report returned inline to the main agen
 const PARENT_READ_MAX_LINES = 200; // main agent: read calls are clamped to this many lines
 const PARENT_RESULT_CAP = 6 * 1024; // main agent: bytes per read/bash/grep/find/ls result
 const PARENT_TURN_BUDGET = 24 * 1024; // main agent: direct output bytes per user prompt, then reads are blocked
-const PARENT_BASH_AFTER_BUDGET = 1024; // bash still works for checks, with this much output
+const PARENT_BASH_AFTER_BUDGET = 1024; // check commands still work after the budget, with this much output
+const PARENT_MAX_EDIT_FILES = 2; // main agent: distinct files it may edit/write per user prompt; more = delegate
+const PARENT_HANDOFF_READ_CAP = 4 * 1024; // main agent: handoff reports stay readable after the budget, capped
+const CHECK_RETRIES = 2; // a failed `check` resumes the subagent with the failure this many times
+const CHECK_TIMEOUT_MS = Number(process.env.PI_SUBAGENT_CHECK_TIMEOUT_MS) || 30 * 60 * 1000;
+const CHECK_TAIL_LINES = 15;
+
+// after the budget, bash is limited to checks (no sed/cat paging through files)
+const CHECK_CORE = /^(\.\/)?(Tools\/check|git (status|diff --stat|log --oneline)|python3? -m pytest|pytest|npm (test|run (test|check|lint))|cargo (test|check)|go test|dotnet test|make (test|check))\b[^;&|<>]*$/;
+
+/** True for a check command, also when wrapped: `cd X &&`, `timeout N`, `bash`, `2>&1`, `> log`, `| tail -N`. */
+function isCheckCommand(cmd: string, extra: Set<string>): boolean {
+	if (extra.has(cmd.trim())) return true;
+	let c = cmd.trim();
+	c = c.replace(/^cd\s+\S+\s*&&\s*/, "");
+	c = c.replace(/^timeout\s+\d+[smh]?\s+/, "");
+	c = c.replace(/^(bash|sh)\s+/, "");
+	for (let prev = ""; prev !== c; ) {
+		prev = c;
+		c = c.replace(/\s*(2>&1|>\s*\S+|\|\s*(tail|head)(\s+-n)?(\s+-?\d+)?)\s*$/, "");
+	}
+	return extra.has(c) || CHECK_CORE.test(c);
+}
 const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 
 // ---------- shared helpers ----------
@@ -71,8 +93,28 @@ function filesFromReports(reports: string[], cwd: string): string[] {
 // untracked build artefacts a subagent's check run may create; never treated as scope violations
 const ARTEFACT = /(^|\/)(__pycache__|\.pytest_cache|\.mypy_cache|node_modules|\.venv|target|build|dist|obj|Library|Temp|Logs|\.godot)(\/|$)|\.pyc$/;
 
+function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): Promise<{ code: number; tail: string }> {
+	return new Promise((resolve) => {
+		const proc = spawn("bash", ["-c", cmd], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+		let out = "";
+		proc.stdout.on("data", (d) => (out += d.toString()));
+		proc.stderr.on("data", (d) => (out += d.toString()));
+		const kill = () => proc.kill("SIGTERM");
+		const timer = setTimeout(kill, CHECK_TIMEOUT_MS);
+		signal?.addEventListener("abort", kill, { once: true });
+		proc.on("close", (code) => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", kill);
+			fs.writeFileSync(log, out);
+			const tail = out.trimEnd().split("\n").slice(-CHECK_TAIL_LINES).join("\n").slice(-1536);
+			resolve({ code: code ?? 1, tail });
+		});
+	});
+}
+
 function inScope(file: string, cwd: string, scope: string[]): boolean {
-	const abs = path.resolve(cwd, file);
+	// Unity writes <asset>.meta next to every asset: it belongs to the asset's scope
+	const abs = path.resolve(cwd, file).replace(/\.meta$/, "");
 	return scope.some((s) => abs === s || abs.startsWith(s.endsWith(path.sep) ? s : s + path.sep));
 }
 
@@ -212,17 +254,20 @@ interface Run {
 	report: string;
 	promptFile: string;
 	answers: string[]; // reports produced for this run's requests, injected on resume
+	check?: string;
 }
 
 interface Outcome {
 	id: string;
-	status: "done" | "needs" | "error";
+	status: "done" | "needs" | "error" | "failed";
 	text: string;
 	contextTokens: number;
+	out?: string; // done: the subagent's final message
+	scopeNote?: string;
 }
 
 const TaskSpec = Type.Object({
-	agent: Type.String({ description: "Agent name" }),
+	agent: Type.Optional(Type.String({ description: "Agent name; default worker when scope is set, else scout" })),
 	goal: Type.String({ description: "The narrow task, self-contained: the subagent has not seen this conversation" }),
 	scope: Type.Optional(
 		Type.Array(Type.String(), {
@@ -230,7 +275,12 @@ const TaskSpec = Type.Object({
 		}),
 	),
 	inputs: Type.Optional(Type.Array(Type.String(), { description: "Handoff reports or files to read first" })),
-	done_when: Type.Optional(Type.String({ description: "Acceptance check, e.g. a command that must pass" })),
+	done_when: Type.Optional(Type.String({ description: "Acceptance criteria in words" })),
+	check: Type.Optional(
+		Type.String({
+			description: `Shell command run by the extension (not the subagent) after it finishes; exit 0 = pass. On failure the subagent is resumed with the output, up to ${CHECK_RETRIES} times. You get the exit code and the last lines.`,
+		}),
+	),
 	for: Type.Optional(Type.String({ description: "Run id whose request this task answers; its report is handed to that run on resume" })),
 	cwd: Type.Optional(Type.String()),
 });
@@ -241,6 +291,7 @@ const Params = Type.Object({
 	scope: Type.Optional(Type.Array(Type.String())),
 	inputs: Type.Optional(Type.Array(Type.String())),
 	done_when: Type.Optional(Type.String()),
+	check: Type.Optional(Type.String()),
 	for: Type.Optional(Type.String()),
 	cwd: Type.Optional(Type.String()),
 	tasks: Type.Optional(Type.Array(TaskSpec, { description: `Independent tasks, run ${MAX_CONCURRENCY} at a time` })),
@@ -250,7 +301,16 @@ const Params = Type.Object({
 	message: Type.Optional(Type.String({ description: "With resume: extra note for the subagent" })),
 });
 
-type Spec = { agent: string; goal: string; scope?: string[]; inputs?: string[]; done_when?: string; for?: string; cwd?: string };
+type Spec = {
+	agent?: string;
+	goal: string;
+	scope?: string[];
+	inputs?: string[];
+	done_when?: string;
+	check?: string;
+	for?: string;
+	cwd?: string;
+};
 
 const CONTRACT = (id: string, scope: string[]) => `
 
@@ -268,6 +328,7 @@ function parentSide(pi: ExtensionAPI) {
 	const finished: { seq: number; scope: string[] }[] = [];
 	let runDir: string | undefined;
 	let counter = 0;
+	const checks = new Set<string>(); // check commands given to subagents; the main agent may run them too
 
 	const ensureRunDir = () => {
 		if (!runDir) {
@@ -372,20 +433,79 @@ function parentSide(pi: ExtensionAPI) {
 					return;
 				}
 				fs.writeFileSync(run.report, out + "\n");
-				// SUMMARY line if the agent wrote one, else the first line that is not a heading or blank
-				const summary = (
-					out.match(/^SUMMARY:.*$/m)?.[0] ??
-					out.split("\n").find((l) => l.trim() && !/^\s*(#|---)/.test(l)) ??
-					""
-				).slice(0, SUMMARY_CAP);
-				resolve({ id: run.id, status: "done", contextTokens, text: `[${run.id}] done, report: ${run.report}\n  ${summary}${scopeNote}` });
+				resolve({ id: run.id, status: "done", contextTokens, out, scopeNote, text: doneText(run, out, scopeNote) });
 			});
 		});
 	}
 
+	const hasSummary = (out: string) => /^\W*SUMMARY:/m.test(out);
+
+	function doneText(run: Run, out: string, scopeNote: string): string {
+		// SUMMARY line if the agent wrote one, else the first line that is not a heading or blank
+		const summary = (
+			out.match(/^\W*SUMMARY:.*$/m)?.[0] ??
+			out.split("\n").find((l) => l.trim() && !/^\s*(#|---)/.test(l)) ??
+			""
+		)
+			.trim()
+			.slice(0, SUMMARY_CAP);
+		return `[${run.id}] done, report: ${run.report}\n  ${summary}${scopeNote}`;
+	}
+
+	/**
+	 * After a subagent finishes: ask once for a missing SUMMARY line, then run the task's check (by the extension,
+	 * so the result does not depend on the subagent's claims) and resume the subagent with failures.
+	 */
+	async function settle(run: Run, outcome: Outcome, check: string | undefined, model?: string, thinking?: string, signal?: AbortSignal) {
+		for (let attempt = 0; ; attempt++) {
+			if (outcome.status !== "done") return outcome;
+			if (!hasSummary(outcome.out ?? "")) {
+				const original = outcome.out ?? "";
+				const fix = await launch(
+					run,
+					"Your report is missing its first lines. Reply with exactly two lines and nothing else: `SUMMARY: <at most 25 words>` and `FILES: <paths you changed, or none>`.",
+					model,
+					thinking,
+					signal,
+				);
+				if (fix.status === "done" && hasSummary(fix.out ?? "")) {
+					const merged = `${fix.out!.trim()}\n\n${original}`;
+					fs.writeFileSync(run.report, merged + "\n");
+					const note = (outcome.scopeNote ?? "") + (fix.scopeNote ?? "");
+					outcome = { ...outcome, out: merged, scopeNote: note, text: doneText(run, merged, note) };
+				} else {
+					fs.writeFileSync(run.report, original + "\n"); // keep the real report
+				}
+			}
+			if (!check) return outcome;
+			const log = path.join(path.dirname(run.report), `${run.id}.check${attempt ? `-${attempt}` : ""}.log`);
+			const res = await runCheck(check, run.cwd, log, signal);
+			if (res.code === 0) {
+				const last = res.tail.split("\n").slice(-2).join(" | ");
+				return { ...outcome, text: `${outcome.text}\n  check: exit 0 (${last.slice(0, 300)})` };
+			}
+			if (attempt >= CHECK_RETRIES) {
+				const last = res.tail.split("\n").slice(-4).join("\n    ");
+				return {
+					...outcome,
+					status: "failed",
+					text: `${outcome.text}\n  check: FAILED (exit ${res.code}) after ${CHECK_RETRIES} retries, log: ${log}\n    ${last.slice(0, 600)}`,
+				};
+			}
+			outcome = await launch(
+				run,
+				`The check \`${check}\` failed (exit ${res.code}). Its last lines:\n${res.tail}\nFull log: ${log}\nFix the cause within your scope, then report again.`,
+				model,
+				thinking,
+				signal,
+			);
+		}
+	}
+
 	function newRun(spec: Spec, defaultCwd: string, agents: AgentConfig[]): Run | string {
-		const agent = agents.find((a) => a.name === spec.agent);
-		if (!agent) return `Unknown agent "${spec.agent}". Available: ${agents.map((a) => a.name).join(", ")}`;
+		const name = spec.agent ?? (spec.scope?.length ? "worker" : "scout");
+		const agent = agents.find((a) => a.name === name);
+		if (!agent) return `Unknown agent "${name}". Available: ${agents.map((a) => a.name).join(", ")}`;
 		if (spec.for && !runs.has(spec.for)) return `Unknown run id "${spec.for}" in for`;
 		const dir = ensureRunDir();
 		const id = `${String(++counter).padStart(2, "0")}-${agent.name}`;
@@ -401,6 +521,7 @@ function parentSide(pi: ExtensionAPI) {
 	function taskMessage(spec: Spec, run: Run): string {
 		const lines = [`GOAL: ${spec.goal}`];
 		if (spec.done_when) lines.push(`DONE WHEN: ${spec.done_when}`);
+		if (spec.check) lines.push(`CHECK (run automatically after you finish; it must pass): ${spec.check}`);
 		lines.push(`WRITABLE SCOPE: ${run.scope.length ? run.scope.join(", ") : "none (read-only)"}`);
 		if (spec.inputs?.length) lines.push(`INPUTS (read these first): ${spec.inputs.join(", ")}`);
 		lines.push(
@@ -412,7 +533,9 @@ function parentSide(pi: ExtensionAPI) {
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
 		const run = newRun(spec, defaultCwd, agents);
 		if (typeof run === "string") return { id: "-", status: "error", text: run, contextTokens: 0 } as Outcome;
-		const outcome = await launch(run, taskMessage(spec, run), model, thinking, signal);
+		if (spec.check) checks.add(spec.check.trim());
+		run.check = spec.check;
+		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);
 		return outcome;
 	}
@@ -425,13 +548,14 @@ function parentSide(pi: ExtensionAPI) {
 		description: [
 			"Delegate a narrow task to a subagent with a fresh context. Results are written to handoff files; you get a status, the report path and a one-line summary.",
 			`Agents: ${agentsAtLoad.map((a) => `${a.name} (${a.description})`).join("; ")}.`,
-			"Modes: single (agent+goal), tasks (parallel, independent), chain (sequential, each step gets the previous report), resume (continue a subagent that stopped with NEEDS).",
+			"Modes: single (goal, optional agent), tasks (parallel, independent), chain (sequential, each step gets the previous report), resume (continue a subagent that stopped with NEEDS).",
 		].join(" "),
 		parameters: Params,
 		promptGuidelines: [
 			"Your context is small and compaction loses detail. Keep this conversation for decisions; subagents do the reading and the doing. Your own read and bash output is capped.",
-			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and done_when (the check command).",
-			"Pass information between subagents as handoff report paths in inputs; do not read reports yourself unless you must decide something from them.",
+			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and `check`: the command that proves the work (tests, build check). The extension runs it, retries the subagent on failure and tells you the exit code.",
+			"Trust the check result, not a subagent's claims. Do not re-run checks yourself after a passing `check`.",
+			"Pass information between subagents as handoff report paths in inputs; read a report yourself only when you must decide something from it (handoff reads always work, capped).",
 			"If a subagent returns NEEDS, dispatch another subagent for that need with for set to the waiting run id, then call subagent with resume set to that id. Never do the out-of-scope work by stretching the first subagent's task.",
 			"Do one-line or single-file edits yourself; delegate anything that needs reading more than ~2 files.",
 		],
@@ -456,7 +580,8 @@ function parentSide(pi: ExtensionAPI) {
 				const widened = params.scope ? ` Your writable scope is now: ${run.scope.join(", ")}.` : "";
 				const answer = run.answers.length ? `Your request was handled. Read: ${run.answers.join(", ")}.` : "Your request was handled.";
 				run.answers = [];
-				return reply([await launch(run, `${answer}${widened} ${params.message ?? ""}\nContinue your task.`, model, thinking, signal)]);
+				const resumed = await launch(run, `${answer}${widened} ${params.message ?? ""}\nContinue your task.`, model, thinking, signal);
+				return reply([await settle(run, resumed, run.check, model, thinking, signal)]);
 			}
 
 			if (params.chain?.length) {
@@ -498,27 +623,43 @@ function parentSide(pi: ExtensionAPI) {
 				return reply(outs);
 			}
 
-			if (params.agent && params.goal) {
+			if (params.goal) {
 				return reply([await runSpec(params as Spec, ctx.cwd, agents, model, thinking, signal)]);
 			}
-			return reply([{ id: "-", status: "error", text: "Provide agent+goal, tasks, chain, or resume.", contextTokens: 0 }]);
+			return reply([{ id: "-", status: "error", text: "Provide goal (single), tasks, chain, or resume.", contextTokens: 0 }]);
 		},
 	});
 
 	// Context guard: the main agent cannot pull large outputs into its own context. Per call, output is capped;
 	// per user prompt, direct output is budgeted, after which reads are blocked and bash output shrinks.
 	const DIRECT = ["read", "bash", "grep", "find", "ls"];
+	const isHandoffRead = (tool: string, input: unknown, cwd: string) =>
+		tool === "read" && path.resolve(cwd, (input as { path?: string }).path ?? "").startsWith(path.resolve(HANDOFF_ROOT) + path.sep);
 	let spent = 0;
+	const edited = new Set<string>();
 	pi.on("before_agent_start", async () => {
 		spent = 0;
+		edited.clear();
 	});
 
-	pi.on("tool_call", async (event) => {
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName === "edit" || event.toolName === "write") {
+			const file = path.resolve(ctx.cwd, (event.input as { path: string }).path);
+			if (!edited.has(file) && edited.size >= PARENT_MAX_EDIT_FILES) {
+				return {
+					block: true,
+					reason: `You already edited ${PARENT_MAX_EDIT_FILES} files in this prompt. Delegate the rest to a worker subagent with a scope listing the files.`,
+				};
+			}
+			edited.add(file);
+			return;
+		}
 		if (!DIRECT.includes(event.toolName)) return;
-		if (spent >= PARENT_TURN_BUDGET && event.toolName !== "bash") {
+		const isCheck = event.toolName === "bash" && isCheckCommand((event.input as { command: string }).command, checks);
+		if (spent >= PARENT_TURN_BUDGET && !isCheck && !isHandoffRead(event.toolName, event.input, ctx.cwd)) {
 			return {
 				block: true,
-				reason: `Context budget for this prompt is used up (${PARENT_TURN_BUDGET} bytes of direct output). Delegate the reading to a scout subagent.`,
+				reason: `Context budget for this prompt is used up (${PARENT_TURN_BUDGET} bytes of direct output). Delegate reading to a scout and changes to a worker; only check commands (Tools/check, tests, git status) still run.`,
 			};
 		}
 		if (event.toolName === "read") {
@@ -527,13 +668,14 @@ function parentSide(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("tool_result", async (event) => {
+	pi.on("tool_result", async (event, ctx) => {
 		if (!DIRECT.includes(event.toolName)) return;
 		const text = textOf(event.content as any);
 		const bytes = Buffer.byteLength(text, "utf8");
-		const cap = spent >= PARENT_TURN_BUDGET ? PARENT_BASH_AFTER_BUDGET : PARENT_RESULT_CAP;
+		const handoff = isHandoffRead(event.toolName, event.input, ctx.cwd);
+		const cap = handoff ? PARENT_HANDOFF_READ_CAP : spent >= PARENT_TURN_BUDGET ? PARENT_BASH_AFTER_BUDGET : PARENT_RESULT_CAP;
 		const keptBytes = Math.min(bytes, cap);
-		spent += keptBytes;
+		if (!handoff) spent += keptBytes; // reports are the handoff channel; they never use up the budget
 		if (bytes <= cap) return;
 		const kept = Buffer.from(text, "utf8").subarray(0, cap).toString("utf8");
 		return {

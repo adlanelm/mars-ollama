@@ -11,15 +11,25 @@ Project-specific skills and prompts go in the project's `.pi/settings.json` (gam
 so that delegation and context limits are enforced by code, not left to the model.
 
 **Main session**
-- `subagent` tool. Modes: single (`agent`, `goal`, `scope`, `inputs`, `done_when`), `tasks` (parallel, 2 at a time,
+- `subagent` tool. Modes: single (`goal`, `agent` (default: worker if there is a scope, else scout), `scope`, `inputs`,
+  `done_when`, `check`), `tasks` (parallel, 2 at a time,
   max 4), `chain` (each step gets the previous report as input; `scope: ["@previous"]` takes the plan's `FILES:`
   line, or else the existing file paths the report mentions), and `resume` (optionally with a new `scope`).
 - Context guard:
   - `read` is clamped to 200 lines.
   - Every read, bash, grep, find and ls result is capped at 6 KB.
-  - After 24 KB of direct output in one prompt, read, grep, find and ls are blocked ("delegate to a scout"), and
-    bash output drops to 1 KB, which is enough for check results. The budget resets on each user prompt.
-- What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself.
+  - After 24 KB of direct output in one prompt, read, grep, find, ls and bash are blocked ("delegate"). The
+    exceptions are check commands: Tools/check, test runners, git status/diff --stat, and any `check` given to a
+    subagent. They may be wrapped in `cd X &&`, `timeout N`, `bash`, `2>&1`, `> log` or `| tail`, and their output
+    is cut to 1 KB. Reads of handoff reports always work (capped at 4 KB) and don't count toward the budget. The
+    budget resets on each user prompt.
+  - The main session may edit at most 2 distinct files per prompt; more has to go to a worker.
+- What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself. If a subagent
+  leaves out the SUMMARY line, it is resumed once and asked for exactly that line.
+- `check`: a command the extension runs itself after the subagent finishes, logged to `NN-agent.check.log`. Exit 0
+  is a pass. On failure the subagent is resumed with the last lines, up to 2 times, then the task is reported as
+  `failed` with the log path. Verification doesn't depend on what the subagent says (on psx-iso a worker
+  reported "both checks pass" while a PlayMode test was failing).
 - The delegation rules live in the tool's `promptGuidelines`, which subagents never see.
 
 **Subagents** (`PI_SUBAGENT=1`; they don't get the `subagent` tool, so they can't recurse)
@@ -32,7 +42,7 @@ so that delegation and context limits are enforced by code, not left to the mode
     restored and new files are moved to `<run>/quarantine/`. Files that were already dirty before the run and
     weren't touched are left alone. Build artefacts (`__pycache__`, `node_modules`, `Library`...) are ignored.
   - Concurrent parallel runs don't undo each other's in-scope work.
-  - Outside git, only the edit/write guard applies.
+  - Outside git, only the edit/write guard applies. `<file>.meta` belongs to `<file>`'s scope (Unity).
 - Out of scope: the subagent calls `request {need, why}` and stops (`terminate`). The main session dispatches a
   helper with `for: "<id>"` (or makes a one-line edit itself), then sends `resume: "<id>"`. The resumed subagent
   is told where the helper's report is.

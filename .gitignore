@@ -1,4 +1,3 @@
-docling-serve
 .worktrees/
 **/*/.idea
 **/*/__pycache__

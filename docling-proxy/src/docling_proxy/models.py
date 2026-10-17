@@ -89,4 +89,3 @@ class ProxyJob:
     result_payload_path: Path | None = None
     result_zip_path: Path | None = None
     archive_path: str | None = None
-    passthrough_upstream_task_id: str | None = None

@@ -65,36 +65,7 @@ class FakeResponse:
 
 
 class FakeUpstream:
-    def __init__(self):
-        self.sync_calls = 0
-        self.async_submits = []
-        self.status_calls = {}
-
-    async def relay_file_sync(self, endpoint, files, data, headers):
-        self.sync_calls += 1
-        return FakeResponse(payload={"ok": True})
-
-    async def submit_file_async(self, files, data, headers):
-        task_id = f"task-{len(self.async_submits)}"
-        self.async_submits.append((files, data))
-        self.status_calls[task_id] = 0
-        return {"task_id": task_id, "task_status": "pending"}
-
-    async def status(self, task_id, headers):
-        self.status_calls[task_id] += 1
-        if self.status_calls[task_id] > 1:
-            return {"task_id": task_id, "task_status": "success"}
-        return {"task_id": task_id, "task_status": "started"}
-
-    async def result(self, task_id, headers):
-        index = int(task_id.split("-")[-1]) + 1
-        return FakeResponse(
-            payload={
-                "document": {"json_content": {"name": f"chunk-{index}"}},
-                "errors": [],
-                "processing_time": 1.0,
-            }
-        )
+    pass
 
 
 class FakeLocalDocling:
@@ -254,7 +225,6 @@ async def test_small_pdf_passthrough(monkeypatch):
     file = FilePayload("small.pdf", make_pdf(1), "application/pdf")
 
     response = await service.process_file_sync([file], {"to_formats": ["md"]}, None, {})
-    assert upstream.sync_calls == 0
     assert local_docling.calls == []
     assert len(local_docling.relay_file_calls) == 1
     assert len(archive_store.payload_calls) == 1

@@ -17,7 +17,6 @@ class Settings(BaseSettings):
     archive_dir: Path | None = None
     state_dir: Path | None = None
     uvicorn_workers: int = 1
-    upstream_url: str = "http://docling:5001/v1"
     max_pages_per_part: int = 25
     work_concurrency: int | None = None
     active_child_limit: int | None = None

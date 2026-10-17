@@ -49,7 +49,7 @@ The proxy is a FastAPI application with a small set of focused modules:
 - `src/docling_proxy/state.py` persists async task metadata, split plans, and per-chunk checkpoint payloads so long-running jobs can resume after proxy restarts.
 - `src/docling_proxy/service.py` decides whether to split, starts one-shot local docling instances for isolated conversions, merges split results, and stores async task state.
 - `src/docling_proxy/pdf_tools.py` detects PDF inputs, counts pages, computes split plans, and materializes per-chunk PDF byte streams lazily.
-- `src/docling_proxy/upstream.py` is now only used for helper downloads such as resolving HTTP PDF sources before split evaluation.
+- `src/docling_proxy/upstream.py` only downloads URL sources (such as resolving HTTP PDF sources before split evaluation); there is no external upstream docling-serve instance.
 - `src/docling_proxy/local_docling.py` manages the short-lived child `docling-serve` processes used for both split and non-split conversions, maintains an optional warm pool of ready child instances, inherits child `DOCLING_SERVE_*` settings from the container environment, streams child logs into the proxy logs, and keeps a stderr tail for startup failures.
 - `src/docling_proxy/merge.py` merges chunk results into a single `DoclingDocument` and exports the final formats.
 - `src/docling_proxy/store.py` holds in-memory async proxy jobs.
@@ -208,7 +208,7 @@ The proxy currently splits only when all of the following are true:
 - that document is a PDF
 - the PDF exceeds the page threshold or split is forced
 
-Requests outside those rules still go through docling-compatible processing, but they use one isolated local child server instead of an external long-lived upstream instance.
+Requests outside those rules still go through docling-compatible processing, but they use one isolated local child server instead of a long-lived shared instance.
 
 ## Notes on behavior
 

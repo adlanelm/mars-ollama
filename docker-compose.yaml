@@ -143,6 +143,9 @@ services:
 
   # Test only, not for clients: plain long-lived docling-serve for bench/docling-leak.sh. On 1.37 it keeps ~2.2 GiB VRAM and ratchets RAM
   # per large PDF, so docling-proxy stays (bench/docling-2026-10-16.md). Re-run on a new release: `docker compose --profile docling-plain up -d docling`.
+  # DOCLING_LEAK_TESTED=v1.37.0  (bin/check-updates flags a newer docling-serve release). Re-test: free the GPU (stop ComfyUI, no chat model),
+  # `docker compose pull docling docling-proxy`, `--profile docling-plain up -d docling`, bench/docling-leak.sh on bench/make-synthetic-pdf.py
+  # PDFs, write bench/docling-YYYY-MM-DD.md, bump the marker, stop docling. Fixed (idle VRAM back to baseline, RAM levels off) -> consider dropping the proxy's child lifecycle.
   docling:
     profiles: ["docling-plain"]
     image: ghcr.io/docling-project/docling-serve-rocm:main

@@ -606,7 +606,11 @@ function parentSide(pi: ExtensionAPI) {
 	function taskMessage(spec: Spec, run: Run): string {
 		const lines = [`GOAL: ${spec.goal}`];
 		if (spec.done_when) lines.push(`DONE WHEN: ${spec.done_when}`);
-		if (spec.check) lines.push(`CHECK (run automatically after you finish; it must pass): ${spec.check}`);
+		if (spec.check) {
+			lines.push(
+				`CHECK: \`${spec.check}\` runs automatically when you finish and must pass. Do not run it yourself (it can take minutes); if it fails you are resumed with its output.`,
+			);
+		}
 		lines.push(`WRITABLE SCOPE: ${run.scope.length ? run.scope.join(", ") : "none (read-only)"}`);
 		if (spec.inputs?.length) lines.push(`INPUTS (read these first): ${spec.inputs.join(", ")}`);
 		lines.push(

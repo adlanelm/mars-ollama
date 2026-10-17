@@ -27,3 +27,6 @@ keep 10000, with `maxTokens` 8192.
 
 2026-10-17, qwen3.6: worker reported tools `read, bash, edit, write` with no `subagent`; 3 parallel scouts answered
 correctly in 65 s; no model swap.
+2026-10-17 KV pressure, qwen3.6: parent at 57k plus a read-only subagent at 43k (about 100k in the shared pool).
+No server errors, the subagent's answer was correct, and the parent's next turn re-processed only 185 tokens
+(cacheRead 56983), so its prefix survived the subagent.

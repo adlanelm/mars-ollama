@@ -23,7 +23,7 @@ so that delegation and context limits are enforced by code, not left to the mode
 - Context guard:
   - `read` is clamped to 200 lines.
   - Every read, bash, grep, find and ls result is capped at 6 KB.
-  - After 24 KB of direct output in one prompt, read, grep, find, ls and bash are blocked ("delegate"). The
+  - After 48 KB of direct output in one prompt (24 KB was too small to plan a psx-iso item: the files involved are 43 KB, and the model worked around it with verbatim-copy scouts), read, grep, find, ls and bash are blocked ("delegate"). The
     exceptions are check commands: Tools/check, test runners, git status/diff --stat, and any `check` given to a
     subagent. They may be wrapped in `cd X &&`, `timeout N`, `bash`, `2>&1`, `> log` or `| tail`, and their output
     is cut to 1 KB. Reads of handoff reports always work (capped at 4 KB) and don't count toward the budget. The
@@ -42,6 +42,7 @@ so that delegation and context limits are enforced by code, not left to the mode
   defects. Its SUMMARY comes back as a message, with one more turn to fix the issues through a worker or explain
   why not. There are at most 2 reviews per prompt (the second after fixes), none in plan-only prompts, and a
   clean review just lets the main session finish.
+- Subagent tasks asking for files "verbatim" or "in full" are refused without spawning; subagents report findings.
 - Nudge: a prompt that ends with no tool call at all and a few words (a local model answering "- Read GAME.md" and stopping) is sent back once to do the task.
 - Block messages name the exact next call, e.g. `subagent({agent: "worker", goal: ..., scope: ["<the file>"]})`.
 - What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself. If a subagent

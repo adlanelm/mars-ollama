@@ -28,7 +28,7 @@ const MAX_PARALLEL_TASKS = 4;
 const SUMMARY_CAP = 600; // chars of the report returned inline to the main agent
 const PARENT_READ_MAX_LINES = 200; // main agent: read calls are clamped to this many lines
 const PARENT_RESULT_CAP = 6 * 1024; // main agent: bytes per read/bash/grep/find/ls result
-const PARENT_TURN_BUDGET = 24 * 1024; // main agent: direct output bytes per user prompt, then reads are blocked
+const PARENT_TURN_BUDGET = 48 * 1024; // main agent: direct output bytes per user prompt, then reads are blocked
 const PARENT_BASH_AFTER_BUDGET = 1024; // check commands still work after the budget, with this much output
 const PARENT_MAX_EDIT_FILES = 2; // main agent: distinct files it may edit/write per user prompt; more = delegate
 const PARENT_SKILL_READ_CAP = 16 * 1024; // main agent: SKILL.md files are instructions, read whole, not budgeted
@@ -644,6 +644,16 @@ function parentSide(pi: ExtensionAPI) {
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
 		const served = reportFetch(spec);
 		if (served) return served;
+		// a subagent asked to copy files out costs minutes of generation (46 KB reports on psx-iso) and the
+		// main context gets them anyway: refuse before spawning
+		if (/\b(verbatim|full (file )?contents?|entire (file|contents?)|in full|whole file|complete contents?)\b/i.test(spec.goal)) {
+			return {
+				id: "-",
+				status: "error",
+				contextTokens: 0,
+				text: "Refused: subagents report findings, not file contents. Ask a question (what X does, where Y is, which fields/methods exist and at which path:line), or read the file yourself with read.",
+			} as Outcome;
+		}
 		if (planOnly) {
 			const name = spec.agent ?? (spec.scope?.length ? "worker" : "scout");
 			const a = agents.find((x) => x.name === name);

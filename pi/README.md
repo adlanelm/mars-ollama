@@ -45,7 +45,8 @@ so that delegation and context limits are enforced by code, not left to the mode
 - The main session's bash runs commands but cannot change files: each bash call is bracketed by a git snapshot, and any file it changed is undone (tracked files restored, new files quarantined, commits reset), with a note telling it to use edit or a worker. Git commands that change state are blocked. On psx-iso it had patched 3 files with heredoc Python scripts and committed the user's uncommitted settings.
 - Subagent tasks asking for files "verbatim" or "in full" are refused without spawning; subagents report findings.
 - Path check: before a prompt finishes, file paths in the final answer that are presented as existing (not on a "new"/"create" line) and do not exist send the session back once to look at the code. On psx-iso a plan read only GAME.md and BACKLOG.md and named wrong paths.
-- Nudge: a prompt that ends with no tool call at all and a few words (a local model answering "- Read GAME.md" and stopping) is sent back once to do the task.
+- Nudge: a prompt that ends with no tool call and a short answer that announces an action ("- Read GAME.md", "Let me…") is sent back once to do it.
+- Settle hooks (nudge, path check, review) add a custom message and continue; they must not gate on `event.context.canContinue`, which is false whenever the assistant spoke last (always, at settle). Until 2026-10-17 that gate silently disabled all three. `PI_SUBAGENT_DEBUG=<file>` logs each settle.
 - Block messages name the exact next call, e.g. `subagent({agent: "worker", goal: ..., scope: ["<the file>"]})`.
 - What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself. If a subagent
   leaves out the SUMMARY line, it is resumed once and asked for exactly that line.

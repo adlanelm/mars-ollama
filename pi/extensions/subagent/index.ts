@@ -776,12 +776,21 @@ function parentSide(pi: ExtensionAPI) {
 
 	// Automatic review: before the main agent finishes a prompt that changed files, a read-only reviewer reads
 	// the diff. Its one-line result comes back as a message with one more turn to act on it.
+	// (event.context.canContinue describes the context before our entries; it is false whenever the assistant spoke
+	// last, i.e. always here. pi re-checks after committing the custom_message, which makes continuing valid.)
 	pi.on("agent_before_settle", async (event, ctx) => {
+		if (process.env.PI_SUBAGENT_DEBUG) {
+			fs.appendFileSync(
+				process.env.PI_SUBAGENT_DEBUG,
+				JSON.stringify({ t: Date.now(), canContinue: event.context?.canContinue, toolCalls, nudged, pathsChecked, msgs: event.context?.llmMessages?.length, roles: event.context?.llmMessages?.map((m) => m.role).slice(-4) }) + "\n",
+			);
+		}
 		// a local model sometimes answers "- Read GAME.md" and stops: no tool call at all, a few words. Send it back once.
-		if (toolCalls === 0 && !nudged && event.context.canContinue) {
+		if (toolCalls === 0 && !nudged) {
 			const lastAssistant = [...event.context.llmMessages].reverse().find((m) => m.role === "assistant");
 			const text = lastAssistant ? textOf(lastAssistant.content as any).trim() : "";
-			if (text.length < 300) {
+			// only when the answer announces an action instead of doing it; a short reply can be the whole task
+			if (text.length < 300 && /^\W*(read|let me|i'?ll|i will|first|now i|next|step \d|checking|looking)\b/i.test(text)) {
 				nudged = true;
 				const content = "You stopped without doing the task: no tool was called and your answer is only a few words. Do the task now with your tools; do not describe the steps.";
 				return { entries: [{ type: "custom_message", customType: "nudge", content, display: true }], continue: true };
@@ -789,13 +798,14 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		// a final answer that presents files as existing which do not exist was written without looking at the
 		// code (psx-iso: a plan for "Scripts/Runtime/CrawlerAI.cs" and a new health class next to Health.cs)
-		if (!pathsChecked && event.context.canContinue) {
+		if (!pathsChecked) {
 			pathsChecked = true;
 			const lastAssistant = [...event.context.llmMessages].reverse().find((m) => m.role === "assistant");
 			const text = lastAssistant ? textOf(lastAssistant.content as any) : "";
 			const missing = new Set<string>();
 			for (const line of text.split("\n")) {
 				if (/\b(new|create[sd]?|creating|add(s|ed)? a)\b/i.test(line)) continue;
+				if (/\b(not exist|doesn'?t exist|does not exist|missing|not found|no such)\b/i.test(line)) continue;
 				for (const m of line.matchAll(/(?:~|\/)?[\w.-]+(?:\/[\w.-]+)+\.\w{1,8}\b/g)) {
 					const f = m[0].replace(/^~(?=\/)/, os.homedir());
 					if (f.startsWith(path.resolve(HANDOFF_ROOT))) continue;
@@ -809,7 +819,7 @@ function parentSide(pi: ExtensionAPI) {
 				return { entries: [{ type: "custom_message", customType: "paths", content, display: true }], continue: true };
 			}
 		}
-		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS || !event.context.canContinue) return;
+		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS) return;
 		const agents = discoverAgents(ctx.cwd, "user").agents;
 		if (!agents.some((a) => a.name === "reviewer")) return;
 		const files = [...changed].map((f) => path.relative(ctx.cwd, f) || f);

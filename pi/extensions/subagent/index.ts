@@ -15,6 +15,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -786,6 +787,28 @@ function parentSide(pi: ExtensionAPI) {
 				return { entries: [{ type: "custom_message", customType: "nudge", content, display: true }], continue: true };
 			}
 		}
+		// a final answer that presents files as existing which do not exist was written without looking at the
+		// code (psx-iso: a plan for "Scripts/Runtime/CrawlerAI.cs" and a new health class next to Health.cs)
+		if (!pathsChecked && event.context.canContinue) {
+			pathsChecked = true;
+			const lastAssistant = [...event.context.llmMessages].reverse().find((m) => m.role === "assistant");
+			const text = lastAssistant ? textOf(lastAssistant.content as any) : "";
+			const missing = new Set<string>();
+			for (const line of text.split("\n")) {
+				if (/\b(new|create[sd]?|creating|add(s|ed)? a)\b/i.test(line)) continue;
+				for (const m of line.matchAll(/(?:~|\/)?[\w.-]+(?:\/[\w.-]+)+\.\w{1,8}\b/g)) {
+					const f = m[0].replace(/^~(?=\/)/, os.homedir());
+					if (f.startsWith(path.resolve(HANDOFF_ROOT))) continue;
+					if (!fs.existsSync(path.resolve(ctx.cwd, f))) missing.add(m[0]);
+				}
+			}
+			if (missing.size) {
+				const content =
+					`These files in your answer do not exist: ${[...missing].slice(0, 8).join(", ")}. ` +
+					"Look at the actual code (read, or a scout with a question) before answering, and correct the paths and the plan. Mark files that are genuinely new as (new).";
+				return { entries: [{ type: "custom_message", customType: "paths", content, display: true }], continue: true };
+			}
+		}
 		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS || !event.context.canContinue) return;
 		const agents = discoverAgents(ctx.cwd, "user").agents;
 		if (!agents.some((a) => a.name === "reviewer")) return;
@@ -825,6 +848,7 @@ function parentSide(pi: ExtensionAPI) {
 	let toolCalls = 0; // in this user prompt
 	const bashSnaps = new Map<string, Snapshot>();
 	let nudged = false;
+	let pathsChecked = false;
 	const edited = new Set<string>();
 	const nextStep = (tool: string, input: unknown, cwd: string) => {
 		const p = (input as { path?: string }).path;
@@ -854,6 +878,7 @@ function parentSide(pi: ExtensionAPI) {
 		if ((event as { messageType?: string }).messageType !== "custom") {
 			toolCalls = 0;
 			nudged = false;
+			pathsChecked = false;
 		}
 		spent = 0;
 		edited.clear();

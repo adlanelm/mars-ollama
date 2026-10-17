@@ -44,6 +44,7 @@ so that delegation and context limits are enforced by code, not left to the mode
   clean review just lets the main session finish.
 - The main session's bash runs commands but cannot change files: each bash call is bracketed by a git snapshot, and any file it changed is undone (tracked files restored, new files quarantined, commits reset), with a note telling it to use edit or a worker. Git commands that change state are blocked. On psx-iso it had patched 3 files with heredoc Python scripts and committed the user's uncommitted settings.
 - Subagent tasks asking for files "verbatim" or "in full" are refused without spawning; subagents report findings.
+- Path check: before a prompt finishes, file paths in the final answer that are presented as existing (not on a "new"/"create" line) and do not exist send the session back once to look at the code. On psx-iso a plan read only GAME.md and BACKLOG.md and named wrong paths.
 - Nudge: a prompt that ends with no tool call at all and a few words (a local model answering "- Read GAME.md" and stopping) is sent back once to do the task.
 - Block messages name the exact next call, e.g. `subagent({agent: "worker", goal: ..., scope: ["<the file>"]})`.
 - What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself. If a subagent

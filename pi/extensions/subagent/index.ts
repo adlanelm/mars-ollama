@@ -629,7 +629,8 @@ function parentSide(pi: ExtensionAPI) {
 		].join(" "),
 		parameters: Params,
 		promptGuidelines: [
-			"Your context is small and compaction loses detail. Keep this conversation for decisions; subagents do the reading and the doing. Your own read and bash output is capped.",
+			"Your context is small and compaction loses detail. Keep this conversation for decisions; subagents do the reading and the doing. Your own read and bash output is capped, and your read/bash/edit tools are withdrawn once you have used your share for this prompt: from then on use subagent (tasks get their check run automatically).",
+			"Ask scouts questions, not for file contents: \"where is X handled and what does it take\", not \"return lines 365-410\".",
 			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and `check`: the command that proves the work (tests, build check). The extension runs it, retries the subagent on failure and tells you the exit code.",
 			"Trust the check result, not a subagent's claims. Do not re-run checks yourself after a passing `check`.",
 			"Pass information between subagents as handoff report paths in inputs; read a report yourself only when you must decide something from it (handoff reads always work, capped).",
@@ -755,12 +756,32 @@ function parentSide(pi: ExtensionAPI) {
 		const target = p ? ` in ${path.relative(cwd, path.resolve(cwd, p))}` : tool === "bash" ? ` (you tried: ${(input as { command?: string }).command?.slice(0, 80)})` : "";
 		return `subagent({agent: "scout", goal: "<the question you wanted answered${target}>"}) for information, or subagent({agent: "worker", goal: "<the change>", scope: ["<files>"]}) to change files.`;
 	};
+	// Tools the model cannot use are not offered at all: a blocked call reads to a local model as "try a variation"
+	// (29 blocked calls in one psx-iso run), a missing tool does not. The guards below stay as a fallback.
+	let fullTools: string[] | undefined;
+	let lastSet = "";
+	const applyTools = () => {
+		fullTools ??= pi.getActiveTools();
+		const off = new Set<string>(["write"]); // the main agent never creates or overwrites files
+		if (planOnly) off.add("edit");
+		if (edited.size >= PARENT_MAX_EDIT_FILES) off.add("edit");
+		if (spent >= PARENT_TURN_BUDGET) for (const t of DIRECT) off.add(t);
+		const next = fullTools.filter((t) => !off.has(t));
+		if (!next.includes("subagent")) next.push("subagent");
+		const key = next.join(",");
+		if (key !== lastSet) {
+			pi.setActiveTools(next);
+			lastSet = key;
+		}
+	};
+
 	pi.on("before_agent_start", async (event) => {
 		spent = 0;
 		edited.clear();
 		changed.clear();
 		reviews = 0;
 		if ((event as { messageType?: string }).messageType !== "custom") planOnly = PLAN_ONLY.test((event as { prompt?: string }).prompt ?? "");
+		applyTools();
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -789,6 +810,7 @@ function parentSide(pi: ExtensionAPI) {
 			}
 			edited.add(file);
 			changed.add(file);
+			applyTools();
 			return;
 		}
 		if (!DIRECT.includes(event.toolName)) return;
@@ -822,6 +844,7 @@ function parentSide(pi: ExtensionAPI) {
 					: PARENT_RESULT_CAP;
 		const keptBytes = Math.min(bytes, cap);
 		if (!handoff && !skill) spent += keptBytes; // reports and skills never use up the budget
+		applyTools();
 		if (bytes <= cap) return;
 		const kept = Buffer.from(text, "utf8").subarray(0, cap).toString("utf8");
 		return {

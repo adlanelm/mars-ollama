@@ -15,6 +15,11 @@ so that delegation and context limits are enforced by code, not left to the mode
   `done_when`, `check`), `tasks` (parallel, 2 at a time,
   max 4), `chain` (each step gets the previous report as input; `scope: ["@previous"]` takes the plan's `FILES:`
   line, or else the existing file paths the report mentions), and `resume` (optionally with a new `scope`).
+- Tools are withdrawn, not just blocked: the main session's active tool set (`setActiveTools`) never includes
+  `write`, loses `edit` in plan-only prompts and after 2 edited files, and loses read, bash, grep, find and ls
+  once the budget is used up. The full set comes back on the next user prompt. A blocked call reads to a local
+  model as "try a variation" (29 blocked calls in one psx-iso run); a missing tool doesn't. The guards below
+  remain as a fallback.
 - Context guard:
   - `read` is clamped to 200 lines.
   - Every read, bash, grep, find and ls result is capped at 6 KB.

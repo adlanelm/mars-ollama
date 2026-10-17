@@ -514,7 +514,7 @@ function parentSide(pi: ExtensionAPI) {
 		)
 			.trim()
 			.slice(0, SUMMARY_CAP);
-		return `[${run.id}] done, report: ${run.report}\n  ${summary}${scopeNote}`;
+		return `[${run.id}] done, report: ${run.report} (read it yourself with read if you need more than the summary)\n  ${summary}${scopeNote}`;
 	}
 
 	/**
@@ -595,7 +595,35 @@ function parentSide(pi: ExtensionAPI) {
 		return lines.join("\n");
 	}
 
+	/**
+	 * "Return the full content of the report" as a subagent task: answered from the handoff file, no subagent.
+	 * (The main agent spawned three subagents in a row for this on psx-iso.)
+	 */
+	function reportFetch(spec: Spec): Outcome | undefined {
+		if (spec.scope?.length) return undefined;
+		const g = spec.goal.trim();
+		if (g.length > 200 || !/\b(return|show|give|read|print|output|fetch|get)\b[^.]*\b(report|content|text)\b/i.test(g)) return undefined;
+		// any file named in the goal must be a handoff report; "read the content of README.md" is real work
+		const files = g.match(/[\w./~-]*\.\w{1,5}\b/g) ?? [];
+		const handoffRoot = path.resolve(HANDOFF_ROOT) + path.sep;
+		if (files.some((f) => !f.startsWith(handoffRoot))) return undefined;
+		const named = files[0];
+		const latest = [...runs.values()].reverse().find((r) => fs.existsSync(r.report))?.report;
+		const file = named && named.startsWith(path.resolve(HANDOFF_ROOT) + path.sep) ? named : !named ? latest : undefined;
+		if (!file || !fs.existsSync(file)) return undefined;
+		const text = fs.readFileSync(file, "utf8");
+		const kept = Buffer.from(text, "utf8").subarray(0, PARENT_HANDOFF_READ_CAP).toString("utf8");
+		return {
+			id: "-",
+			status: "done",
+			contextTokens: 0,
+			text: `[report ${file}, served directly; you can read handoff reports yourself]\n${kept}${text.length > kept.length ? "\n[truncated]" : ""}`,
+		};
+	}
+
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
+		const served = reportFetch(spec);
+		if (served) return served;
 		if (planOnly) {
 			const name = spec.agent ?? (spec.scope?.length ? "worker" : "scout");
 			const a = agents.find((x) => x.name === name);

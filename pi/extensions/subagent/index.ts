@@ -660,7 +660,7 @@ function parentSide(pi: ExtensionAPI) {
 			} as Outcome;
 		}
 		if (planOnly) {
-			const name = spec.agent ?? (spec.scope?.length ? "worker" : "scout");
+			const name = spec.agent ?? "scout"; // nothing writes in a plan-only prompt: an unnamed agent is a scout
 			const a = agents.find((x) => x.name === name);
 			const writes = !a?.tools || a.tools.some((t) => t === "edit" || t === "write");
 			if (writes) return { id: "-", status: "error", text: PLAN_ONLY_REASON, contextTokens: 0 } as Outcome;

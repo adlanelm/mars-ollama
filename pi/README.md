@@ -32,6 +32,12 @@ so that delegation and context limits are enforced by code, not left to the mode
 - Project check: a writing task without `check` gets `bash <project>/.pi/check` if that file exists (searched
   from the task cwd up to the git root). Verification doesn't depend on the main session remembering to ask for
   it. gamekit's templates add one: Unity runs Tools/check plus the PlayMode tests, Godot runs Tools/check.
+- Automatic review: when a prompt that changed files is about to finish (`agent_before_settle`), the reviewer
+  agent reads the diff of exactly those files (worker scopes plus the main session's edits) and lists concrete
+  defects. Its SUMMARY comes back as a message, with one more turn to fix the issues through a worker or explain
+  why not. There are at most 2 reviews per prompt (the second after fixes), none in plan-only prompts, and a
+  clean review just lets the main session finish.
+- Block messages name the exact next call, e.g. `subagent({agent: "worker", goal: ..., scope: ["<the file>"]})`.
 - What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself. If a subagent
   leaves out the SUMMARY line, it is resumed once and asked for exactly that line.
 - `check`: a command the extension runs itself after the subagent finishes, logged to `NN-agent.check.log`. Exit 0

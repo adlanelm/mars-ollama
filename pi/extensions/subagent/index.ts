@@ -33,6 +33,7 @@ const PARENT_BASH_AFTER_BUDGET = 1024; // check commands still work after the bu
 const PARENT_MAX_EDIT_FILES = 2; // main agent: distinct files it may edit/write per user prompt; more = delegate
 const PARENT_SKILL_READ_CAP = 16 * 1024; // main agent: SKILL.md files are instructions, read whole, not budgeted
 const PARENT_HANDOFF_READ_CAP = 4 * 1024; // main agent: handoff reports stay readable after the budget, capped
+const MAX_REVIEWS = 2; // automatic reviews per user prompt (a second one after fixes)
 const CHECK_RETRIES = 2; // a failed `check` resumes the subagent with the failure this many times
 const CHECK_TIMEOUT_MS = Number(process.env.PI_SUBAGENT_CHECK_TIMEOUT_MS) || 30 * 60 * 1000;
 const CHECK_TAIL_LINES = 15;
@@ -382,6 +383,9 @@ function parentSide(pi: ExtensionAPI) {
 	const finished: { seq: number; scope: string[] }[] = [];
 	let runDir: string | undefined;
 	let counter = 0;
+	// files changed in this prompt (worker scopes and the main agent's own edits) and not reviewed since
+	const changed = new Set<string>();
+	let reviews = 0;
 	// a prompt containing [plan-only] (e.g. /plan, /backlog-item) may read and plan but not change anything
 	let planOnly = false;
 	const checks = new Set<string>(); // check commands given to subagents; the main agent may run them too
@@ -609,6 +613,7 @@ function parentSide(pi: ExtensionAPI) {
 		run.check = spec.check;
 		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);
+		if (outcome.status === "done" && canWrite) for (const f of run.scope) changed.add(f);
 		return outcome;
 	}
 
@@ -705,6 +710,38 @@ function parentSide(pi: ExtensionAPI) {
 		},
 	});
 
+	// Automatic review: before the main agent finishes a prompt that changed files, a read-only reviewer reads
+	// the diff. Its one-line result comes back as a message with one more turn to act on it.
+	pi.on("agent_before_settle", async (event, ctx) => {
+		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS || !event.context.canContinue) return;
+		const agents = discoverAgents(ctx.cwd, "user").agents;
+		if (!agents.some((a) => a.name === "reviewer")) return;
+		const files = [...changed].map((f) => path.relative(ctx.cwd, f) || f);
+		changed.clear();
+		reviews++;
+		const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+		const out = await runSpec(
+			{
+				agent: "reviewer",
+				goal:
+					`Review the uncommitted changes to: ${files.join(", ")}. Read them with \`git diff -- <file>\` (new files: read them whole). ` +
+					"List concrete defects only: bugs, ignored parameters, dead or duplicate code, behavior nobody asked for, missing edge cases, tests that do not test what they claim. " +
+					"No style nits. Start with `SUMMARY: <N> issues: <the worst one>` (N = 0 when there are none).",
+			},
+			ctx.cwd,
+			agents,
+			model,
+			pi.getThinkingLevel?.(),
+		);
+		const clean = out.status === "done" && /SUMMARY:\W*(0|no|zero)\s+(issues|problems|defects)/i.test(out.text);
+		const content =
+			`[auto-review ${reviews}/${MAX_REVIEWS} of ${files.join(", ")}]\n${out.text}\n` +
+			(clean
+				? "No issues: finish your answer to the user."
+				: "Fix the real issues with a worker (scope = the affected files; read the report path for details) or tell the user why not, then finish.");
+		return { entries: [{ type: "custom_message", customType: "auto-review", content, display: true }], continue: !clean };
+	});
+
 	// Context guard: the main agent cannot pull large outputs into its own context. Per call, output is capped;
 	// per user prompt, direct output is budgeted, after which reads are blocked and bash output shrinks.
 	const DIRECT = ["read", "bash", "grep", "find", "ls"];
@@ -713,9 +750,16 @@ function parentSide(pi: ExtensionAPI) {
 		tool === "read" && path.resolve(cwd, (input as { path?: string }).path ?? "").startsWith(path.resolve(HANDOFF_ROOT) + path.sep);
 	let spent = 0;
 	const edited = new Set<string>();
+	const nextStep = (tool: string, input: unknown, cwd: string) => {
+		const p = (input as { path?: string }).path;
+		const target = p ? ` in ${path.relative(cwd, path.resolve(cwd, p))}` : tool === "bash" ? ` (you tried: ${(input as { command?: string }).command?.slice(0, 80)})` : "";
+		return `subagent({agent: "scout", goal: "<the question you wanted answered${target}>"}) for information, or subagent({agent: "worker", goal: "<the change>", scope: ["<files>"]}) to change files.`;
+	};
 	pi.on("before_agent_start", async (event) => {
 		spent = 0;
 		edited.clear();
+		changed.clear();
+		reviews = 0;
 		if ((event as { messageType?: string }).messageType !== "custom") planOnly = PLAN_ONLY.test((event as { prompt?: string }).prompt ?? "");
 	});
 
@@ -738,10 +782,13 @@ function parentSide(pi: ExtensionAPI) {
 			if (!edited.has(file) && edited.size >= PARENT_MAX_EDIT_FILES) {
 				return {
 					block: true,
-					reason: `You already edited ${PARENT_MAX_EDIT_FILES} files in this prompt. Delegate the rest to a worker subagent with a scope listing the files.`,
+					reason:
+						`You already edited ${PARENT_MAX_EDIT_FILES} files in this prompt. Next step, exactly: ` +
+						`subagent({agent: "worker", goal: "<the change you were making, self-contained>", scope: ["${path.relative(ctx.cwd, file)}"]})`,
 				};
 			}
 			edited.add(file);
+			changed.add(file);
 			return;
 		}
 		if (!DIRECT.includes(event.toolName)) return;
@@ -749,7 +796,9 @@ function parentSide(pi: ExtensionAPI) {
 		if (spent >= PARENT_TURN_BUDGET && !isCheck && !isHandoffRead(event.toolName, event.input, ctx.cwd) && !isSkillRead(event.toolName, event.input)) {
 			return {
 				block: true,
-				reason: `Context budget for this prompt is used up (${PARENT_TURN_BUDGET} bytes of direct output). Delegate reading to a scout and changes to a worker; only check commands (Tools/check, tests, git status) still run.`,
+				reason:
+					`Context budget for this prompt is used up (${PARENT_TURN_BUDGET} bytes of direct output); only check commands still run. Next step, exactly: ` +
+					nextStep(event.toolName, event.input, ctx.cwd),
 			};
 		}
 		if (event.toolName === "read" && !isSkillRead(event.toolName, event.input)) {

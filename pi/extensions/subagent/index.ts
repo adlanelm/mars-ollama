@@ -819,6 +819,7 @@ function parentSide(pi: ExtensionAPI) {
 		tool === "read" && path.resolve(cwd, (input as { path?: string }).path ?? "").startsWith(path.resolve(HANDOFF_ROOT) + path.sep);
 	let spent = 0;
 	let toolCalls = 0; // in this user prompt
+	const bashSnaps = new Map<string, Snapshot>();
 	let nudged = false;
 	const edited = new Set<string>();
 	const nextStep = (tool: string, input: unknown, cwd: string) => {
@@ -860,6 +861,15 @@ function parentSide(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		toolCalls++;
+		if (event.toolName === "bash") {
+			const cmd = (event.input as { command: string }).command;
+			if (GIT_WRITE.test(cmd)) {
+				return { block: true, reason: "You do not change git state (commit, add, reset, checkout, stash, ...); the user owns git." };
+			}
+			// the main agent's bash may run things, not change files: snapshot now, undo any file change after
+			const snap = snapshot(ctx.cwd);
+			if (snap) bashSnaps.set(event.toolCallId, snap);
+		}
 		if (planOnly && (event.toolName === "edit" || event.toolName === "write")) return { block: true, reason: PLAN_ONLY_REASON };
 		if (planOnly && event.toolName === "bash" && !isCheckCommand((event.input as { command: string }).command, checks)) {
 			const cmd = (event.input as { command: string }).command;
@@ -905,7 +915,20 @@ function parentSide(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
-		if (!DIRECT.includes(event.toolName)) return;
+		let undoNote = "";
+		const snap = event.toolName === "bash" ? bashSnaps.get(event.toolCallId) : undefined;
+		if (snap) {
+			bashSnaps.delete(event.toolCallId);
+			try {
+				const undone = enforceScope(snap, [], ctx.cwd, path.join(ensureRunDir(), "quarantine", "main-bash"));
+				if (undone.length) {
+					undoNote = `\n[undone: your bash changed ${undone.join(", ")}. Change existing files with edit (at most ${PARENT_MAX_EDIT_FILES}) or delegate to a worker with a scope.]`;
+				}
+			} catch (e) {
+				undoNote = `\n[file-change check failed: ${(e as Error).message.slice(0, 120)}]`;
+			}
+		}
+		if (!DIRECT.includes(event.toolName)) return undoNote ? { content: [...(event.content as any), { type: "text" as const, text: undoNote }] } : undefined;
 		const text = textOf(event.content as any);
 		const bytes = Buffer.byteLength(text, "utf8");
 		const handoff = isHandoffRead(event.toolName, event.input, ctx.cwd);
@@ -920,13 +943,13 @@ function parentSide(pi: ExtensionAPI) {
 		const keptBytes = Math.min(bytes, cap);
 		if (!handoff && !skill) spent += keptBytes; // reports and skills never use up the budget
 		applyTools();
-		if (bytes <= cap) return;
+		if (bytes <= cap) return undoNote ? { content: [{ type: "text" as const, text: text + undoNote }] } : undefined;
 		const kept = Buffer.from(text, "utf8").subarray(0, cap).toString("utf8");
 		return {
 			content: [
 				{
 					type: "text" as const,
-					text: `${kept}\n[context guard: ${bytes - cap} bytes omitted. Delegate broad reading to a scout subagent.]`,
+					text: `${kept}\n[context guard: ${bytes - cap} bytes omitted. Delegate broad reading to a scout subagent.]${undoNote}`,
 				},
 			],
 		};

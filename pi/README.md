@@ -42,6 +42,7 @@ so that delegation and context limits are enforced by code, not left to the mode
   defects. Its SUMMARY comes back as a message, with one more turn to fix the issues through a worker or explain
   why not. There are at most 2 reviews per prompt (the second after fixes), none in plan-only prompts, and a
   clean review just lets the main session finish.
+- The main session's bash runs commands but cannot change files: each bash call is bracketed by a git snapshot, and any file it changed is undone (tracked files restored, new files quarantined, commits reset), with a note telling it to use edit or a worker. Git commands that change state are blocked. On psx-iso it had patched 3 files with heredoc Python scripts and committed the user's uncommitted settings.
 - Subagent tasks asking for files "verbatim" or "in full" are refused without spawning; subagents report findings.
 - Nudge: a prompt that ends with no tool call at all and a few words (a local model answering "- Read GAME.md" and stopping) is sent back once to do the task.
 - Block messages name the exact next call, e.g. `subagent({agent: "worker", goal: ..., scope: ["<the file>"]})`.

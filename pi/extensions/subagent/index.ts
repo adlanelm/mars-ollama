@@ -582,7 +582,8 @@ function parentSide(pi: ExtensionAPI) {
 		if (typeof run === "string") return { id: "-", status: "error", text: run, contextTokens: 0 } as Outcome;
 		// a writing task without a check gets the project's check (.pi/check), so verification never depends on
 		// the main agent remembering to ask for it
-		if (!spec.check && run.scope.length) spec = { ...spec, check: projectCheck(run.cwd) };
+		const canWrite = !run.agent.tools || run.agent.tools.some((t) => t === "edit" || t === "write");
+		if (!spec.check && run.scope.length && canWrite) spec = { ...spec, check: projectCheck(run.cwd) };
 		if (spec.check) checks.add(spec.check.trim());
 		run.check = spec.check;
 		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);

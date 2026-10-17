@@ -23,9 +23,11 @@ so that delegation and context limits are enforced by code, not left to the mode
     subagent. They may be wrapped in `cd X &&`, `timeout N`, `bash`, `2>&1`, `> log` or `| tail`, and their output
     is cut to 1 KB. Reads of handoff reports always work (capped at 4 KB) and don't count toward the budget. The
     budget resets on each user prompt.
-  - The main session may edit at most 2 distinct files per prompt; more has to go to a worker.
+  - The main session may edit at most 2 existing files per prompt and never creates or overwrites files
+    (`write`); new files go to a worker. SKILL.md reads are whole (up to 16 KB) and don't count toward the
+    budget.
 - Plan-only prompts: a prompt containing `[plan-only]` (`/plan`, `/scout-and-plan`, gamekit's `/backlog-item`)
-  can read and run scouts and planners, but edit/write, writing bash, worker tasks and resumes with a scope are
+  can read and run scouts and planners (a scope given to a read-only agent is dropped), but edit/write, writing bash, worker tasks and resumes with a scope are
   blocked until the next user prompt. "Wait for my OK" therefore always holds.
 - Project check: a writing task without `check` gets `bash <project>/.pi/check` if that file exists (searched
   from the task cwd up to the git root). Verification doesn't depend on the main session remembering to ask for
@@ -46,7 +48,7 @@ so that delegation and context limits are enforced by code, not left to the mode
   - `edit`/`write` calls outside the scope are blocked.
   - After every run, a git check undoes changes outside the scope, including bash writes. Tracked files are
     restored and new files are moved to `<run>/quarantine/`. Files that were already dirty before the run and
-    weren't touched are left alone. Build artefacts (`__pycache__`, `node_modules`, `Library`...) are ignored.
+    weren't touched are left alone. Build artefacts (`__pycache__`, `node_modules`, `Library`...) and Unity-generated `.meta` files next to an existing asset are ignored. Quarantine moves work across filesystems, and a failing scope check is reported instead of crashing pi.
   - Concurrent parallel runs don't undo each other's in-scope work.
   - Subagents can't change git state: commit, reset, checkout, stash, add, rebase, push and the like are blocked
     in bash. If HEAD moves anyway, it is moved back with `reset --soft` before the scope check, so a commit can't

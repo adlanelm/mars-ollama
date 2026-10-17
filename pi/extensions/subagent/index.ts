@@ -31,6 +31,7 @@ const PARENT_RESULT_CAP = 6 * 1024; // main agent: bytes per read/bash/grep/find
 const PARENT_TURN_BUDGET = 24 * 1024; // main agent: direct output bytes per user prompt, then reads are blocked
 const PARENT_BASH_AFTER_BUDGET = 1024; // check commands still work after the budget, with this much output
 const PARENT_MAX_EDIT_FILES = 2; // main agent: distinct files it may edit/write per user prompt; more = delegate
+const PARENT_SKILL_READ_CAP = 16 * 1024; // main agent: SKILL.md files are instructions, read whole, not budgeted
 const PARENT_HANDOFF_READ_CAP = 4 * 1024; // main agent: handoff reports stay readable after the budget, capped
 const CHECK_RETRIES = 2; // a failed `check` resumes the subagent with the failure this many times
 const CHECK_TIMEOUT_MS = Number(process.env.PI_SUBAGENT_CHECK_TIMEOUT_MS) || 30 * 60 * 1000;
@@ -180,6 +181,17 @@ function snapshot(cwd: string): Snapshot | undefined {
 
 const hash = (s: string | null) => (s === null ? "-" : crypto.createHash("sha1").update(s, "latin1").digest("hex"));
 
+/** rename, or copy + unlink across filesystems (the handoff area is on /tmp, often tmpfs) */
+function moveFile(src: string, dest: string) {
+	try {
+		fs.renameSync(src, dest);
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+		fs.copyFileSync(src, dest);
+		fs.unlinkSync(src);
+	}
+}
+
 /** Restores files changed outside scope since the snapshot; new untracked files are moved to quarantine. */
 function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: string): string[] {
 	const fixed: string[] = [];
@@ -207,13 +219,13 @@ function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: 
 		} else if (tracked.has(p)) {
 			git(snap.root, ["checkout", "HEAD", "--", p]);
 			fixed.push(`${p} (restored from HEAD)`);
-		} else if (now !== null && !ARTEFACT.test(p)) {
+		} else if (now !== null && !ARTEFACT.test(p) && !(p.endsWith(".meta") && fs.existsSync(abs.slice(0, -5)))) {
 			try {
 				git(snap.root, ["reset", "-q", "--", p]); // unstage a new file that a commit/add brought in
 			} catch {}
 			const dest = path.join(quarantine, p);
 			fs.mkdirSync(path.dirname(dest), { recursive: true });
-			fs.renameSync(abs, dest);
+			moveFile(abs, dest);
 			fixed.push(`${p} (new file moved to ${dest})`);
 		}
 	}
@@ -443,7 +455,12 @@ function parentSide(pi: ExtensionAPI) {
 					...finished.filter((f) => f.seq > startSeq).flatMap((f) => f.scope),
 				];
 				finished.push({ seq: ++seq, scope: run.scope });
-				const violations = snap ? enforceScope(snap, allowed, run.cwd, path.join(path.dirname(run.report), "quarantine", run.id)) : [];
+				let violations: string[] = [];
+				try {
+					if (snap) violations = enforceScope(snap, allowed, run.cwd, path.join(path.dirname(run.report), "quarantine", run.id));
+				} catch (e) {
+					violations = [`scope check failed (${(e as Error).message.slice(0, 200)}); review git status`];
+				}
 				const shown = violations.slice(0, 5).join(", ") + (violations.length > 5 ? `, +${violations.length - 5} more` : "");
 				const scopeNote = violations.length
 					? `\n  SCOPE VIOLATION, undone: ${shown}. Widen the scope (resume with scope) or delegate those files.`
@@ -575,8 +592,12 @@ function parentSide(pi: ExtensionAPI) {
 	}
 
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
-		if (planOnly && (spec.scope?.length || spec.agent === "worker")) {
-			return { id: "-", status: "error", text: PLAN_ONLY_REASON, contextTokens: 0 } as Outcome;
+		if (planOnly) {
+			const name = spec.agent ?? (spec.scope?.length ? "worker" : "scout");
+			const a = agents.find((x) => x.name === name);
+			const writes = !a?.tools || a.tools.some((t) => t === "edit" || t === "write");
+			if (writes) return { id: "-", status: "error", text: PLAN_ONLY_REASON, contextTokens: 0 } as Outcome;
+			spec = { ...spec, agent: name, scope: [] }; // read-only agent: a scope means nothing, drop it
 		}
 		const run = newRun(spec, defaultCwd, agents);
 		if (typeof run === "string") return { id: "-", status: "error", text: run, contextTokens: 0 } as Outcome;
@@ -687,6 +708,7 @@ function parentSide(pi: ExtensionAPI) {
 	// Context guard: the main agent cannot pull large outputs into its own context. Per call, output is capped;
 	// per user prompt, direct output is budgeted, after which reads are blocked and bash output shrinks.
 	const DIRECT = ["read", "bash", "grep", "find", "ls"];
+	const isSkillRead = (tool: string, input: unknown) => tool === "read" && path.basename((input as { path?: string }).path ?? "") === "SKILL.md";
 	const isHandoffRead = (tool: string, input: unknown, cwd: string) =>
 		tool === "read" && path.resolve(cwd, (input as { path?: string }).path ?? "").startsWith(path.resolve(HANDOFF_ROOT) + path.sep);
 	let spent = 0;
@@ -705,6 +727,12 @@ function parentSide(pi: ExtensionAPI) {
 				return { block: true, reason: PLAN_ONLY_REASON };
 			}
 		}
+		if (event.toolName === "write" && !isHandoffRead("read", event.input, ctx.cwd)) {
+			return {
+				block: true,
+				reason: "You do not create or overwrite files. Delegate it to a worker subagent whose scope lists the new file; you may make small edits to existing files.",
+			};
+		}
 		if (event.toolName === "edit" || event.toolName === "write") {
 			const file = path.resolve(ctx.cwd, (event.input as { path: string }).path);
 			if (!edited.has(file) && edited.size >= PARENT_MAX_EDIT_FILES) {
@@ -718,13 +746,13 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		if (!DIRECT.includes(event.toolName)) return;
 		const isCheck = event.toolName === "bash" && isCheckCommand((event.input as { command: string }).command, checks);
-		if (spent >= PARENT_TURN_BUDGET && !isCheck && !isHandoffRead(event.toolName, event.input, ctx.cwd)) {
+		if (spent >= PARENT_TURN_BUDGET && !isCheck && !isHandoffRead(event.toolName, event.input, ctx.cwd) && !isSkillRead(event.toolName, event.input)) {
 			return {
 				block: true,
 				reason: `Context budget for this prompt is used up (${PARENT_TURN_BUDGET} bytes of direct output). Delegate reading to a scout and changes to a worker; only check commands (Tools/check, tests, git status) still run.`,
 			};
 		}
-		if (event.toolName === "read") {
+		if (event.toolName === "read" && !isSkillRead(event.toolName, event.input)) {
 			const input = event.input as { limit?: number };
 			if (!input.limit || input.limit > PARENT_READ_MAX_LINES) input.limit = PARENT_READ_MAX_LINES;
 		}
@@ -735,9 +763,16 @@ function parentSide(pi: ExtensionAPI) {
 		const text = textOf(event.content as any);
 		const bytes = Buffer.byteLength(text, "utf8");
 		const handoff = isHandoffRead(event.toolName, event.input, ctx.cwd);
-		const cap = handoff ? PARENT_HANDOFF_READ_CAP : spent >= PARENT_TURN_BUDGET ? PARENT_BASH_AFTER_BUDGET : PARENT_RESULT_CAP;
+		const skill = isSkillRead(event.toolName, event.input);
+		const cap = handoff
+			? PARENT_HANDOFF_READ_CAP
+			: skill
+				? PARENT_SKILL_READ_CAP
+				: spent >= PARENT_TURN_BUDGET
+					? PARENT_BASH_AFTER_BUDGET
+					: PARENT_RESULT_CAP;
 		const keptBytes = Math.min(bytes, cap);
-		if (!handoff) spent += keptBytes; // reports are the handoff channel; they never use up the budget
+		if (!handoff && !skill) spent += keptBytes; // reports and skills never use up the budget
 		if (bytes <= cap) return;
 		const kept = Buffer.from(text, "utf8").subarray(0, cap).toString("utf8");
 		return {

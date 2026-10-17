@@ -1,0 +1,17 @@
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "mars": {
+      "baseUrl": "http://mars.internal:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "none",
+      "models": [
+        { "id": "qwen3.6-35b-a3b", "name": "Qwen 3.6 35B-A3B (mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 131072, "maxTokens": 32768 },
+        { "id": "gemma4-26b", "name": "Gemma 4 26B (mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 131072, "maxTokens": 32768 },
+        { "id": "qwen3.8-27b", "name": "Qwen 3.8 27B (mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 49152, "maxTokens": 8192 },
+        { "id": "colibri-big", "name": "Qwen 3.8 Flash-Next (colibri, slow, mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 131072, "maxTokens": 32768,
+          "compat": { "thinkingFormat": "qwen", "supportsReasoningEffort": true } }
+      ]
+    }
+  }
+}

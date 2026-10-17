@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# pi-setup: install mars's general pi config (pi/) into the pi agent dir.
+# models.json, extensions/, agents/, prompts/ are symlinked (repo edits apply live);
+# settings.json is copied because pi writes to it (lastChangelogVersion). Re-run after editing it.
+# Project-specific additions go in <project>/.pi/settings.json (e.g. gamekit's game template).
+set -euo pipefail
+SRC=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../pi" && pwd)
+PI_DIR=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+mkdir -p "$PI_DIR"
+
+backup() { [[ -e $1 && ! -L $1 ]] && mv "$1" "$1.bak.$(date +%Y%m%d-%H%M%S)" && echo "backed up $1"; return 0; }
+
+for f in models.json extensions agents prompts; do
+  backup "$PI_DIR/$f"
+  ln -sfn "$SRC/$f" "$PI_DIR/$f"
+done
+[[ -f $PI_DIR/settings.json ]] && cp "$PI_DIR/settings.json" "$PI_DIR/settings.json.bak"
+install -m 600 "$SRC/settings.json" "$PI_DIR/settings.json"
+echo "installed pi config from $SRC into $PI_DIR"

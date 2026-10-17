@@ -1,0 +1,20 @@
+{
+  "defaultProvider": "mars",
+  "defaultModel": "qwen3.6-35b-a3b",
+  "defaultThinkingLevel": "low",
+  "enableInstallTelemetry": false,
+  "enableAnalytics": false,
+  "extensions": [
+    "-builtin:mcp",
+    "-builtin:codemode",
+    "-builtin:tool-search",
+    "-builtin:llama.cpp"
+  ],
+  "compaction": {
+    "reserveTokens": 65536,
+    "keepRecentTokens": 16000,
+    "modelOverrides": {
+      "mars/qwen3.8-27b": { "reserveTokens": 8192, "keepRecentTokens": 10000 }
+    }
+  }
+}

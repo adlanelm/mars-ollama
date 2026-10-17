@@ -245,7 +245,7 @@ Tests (one request each, aux models resident, ComfyUI idle):
 | Image (256×256 PNG, base64 `image_url`) | correct description (red circle, blue shape bottom left, overlapping), 83 s incl. cold start. One image per request; `Q38_MAX_IMAGE_TOKENS` caps the token count |
 | Memory during the long prompt | RAM available min 4.6 GiB, container peak 10.4 GiB, NVMe swap 0 B |
 
-Thinking: the server defaults to `reasoning_effort: xhigh`. It accepts `minimal`/`low`/`medium`/`high`/`xhigh` (`none` is a 400); turn thinking off with top-level `enable_thinking: false`. Pi uses `"compat": {"thinkingFormat": "qwen", "supportsReasoningEffort": true}` for colibri-big (gamekit `pi/models.json`), which sends exactly that.
+Thinking: the server defaults to `reasoning_effort: xhigh`. It accepts `minimal`/`low`/`medium`/`high`/`xhigh` (`none` is a 400); turn thinking off with top-level `enable_thinking: false`. Pi uses `"compat": {"thinkingFormat": "qwen", "supportsReasoningEffort": true}` for colibri-big (`pi/models.json`), which sends exactly that.
 
 Prefill is the real limit for agent use: Pi's system prompt and tools are several thousand tokens, so a first turn takes 10–20 min. Later turns reuse the cached prefix (one KV slot, so another conversation in between evicts it).
 

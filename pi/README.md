@@ -45,7 +45,7 @@ so that delegation and context limits are enforced by code, not left to the mode
 - Block messages name the exact next call, e.g. `subagent({agent: "worker", goal: ..., scope: ["<the file>"]})`.
 - What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself. If a subagent
   leaves out the SUMMARY line, it is resumed once and asked for exactly that line.
-- `check`: a command the extension runs itself after the subagent finishes, logged to `NN-agent.check.log`. Exit 0
+- `check`: a command the extension runs itself after the subagent finishes (skipped when the run changed no files), logged to `NN-agent.check.log`. Exit 0
   is a pass. On failure the subagent is resumed with the last lines, up to 2 times, then the task is reported as
   `failed` with the log path. Verification doesn't depend on what the subagent says (on psx-iso a worker
   reported "both checks pass" while a PlayMode test was failing).

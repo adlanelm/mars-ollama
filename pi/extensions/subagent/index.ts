@@ -193,6 +193,17 @@ function moveFile(src: string, dest: string) {
 	}
 }
 
+/** Files whose content differs from the snapshot (after scope enforcement): what the run really changed. */
+function touchedFiles(snap: Snapshot): string[] {
+	const out: string[] = [];
+	for (const p of changedPaths(snap.root)) {
+		const abs = path.join(snap.root, p);
+		const now = fs.existsSync(abs) && fs.statSync(abs).isFile() ? fs.readFileSync(abs, "latin1") : null;
+		if (!snap.dirty.has(p) || hash(snap.dirty.get(p)!) !== hash(now)) out.push(abs);
+	}
+	return out;
+}
+
 /** Restores files changed outside scope since the snapshot; new untracked files are moved to quarantine. */
 function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: string): string[] {
 	const fixed: string[] = [];
@@ -310,6 +321,7 @@ interface Run {
 	promptFile: string;
 	answers: string[]; // reports produced for this run's requests, injected on resume
 	check?: string;
+	touched?: Set<string>; // files this run changed (all launches); undefined outside git = unknown
 }
 
 interface Outcome {
@@ -498,6 +510,12 @@ function parentSide(pi: ExtensionAPI) {
 					return;
 				}
 				fs.writeFileSync(run.report, out + "\n");
+				if (snap) {
+					run.touched ??= new Set();
+					try {
+						for (const f of touchedFiles(snap)) if (!ARTEFACT.test(f) && !f.endsWith(".meta")) run.touched.add(f);
+					} catch {}
+				}
 				resolve({ id: run.id, status: "done", contextTokens, out, scopeNote, text: doneText(run, out, scopeNote) });
 			});
 		});
@@ -543,6 +561,8 @@ function parentSide(pi: ExtensionAPI) {
 				}
 			}
 			if (!check) return outcome;
+			// nothing changed (a read-only task given a scope): the check cannot have changed either
+			if (run.touched && run.touched.size === 0) return { ...outcome, text: `${outcome.text}\n  check: skipped (no files changed)` };
 			const log = path.join(path.dirname(run.report), `${run.id}.check${attempt ? `-${attempt}` : ""}.log`);
 			const res = await runCheck(check, run.cwd, log, signal);
 			if (res.code === 0) {
@@ -641,7 +661,7 @@ function parentSide(pi: ExtensionAPI) {
 		run.check = spec.check;
 		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);
-		if (outcome.status === "done" && canWrite) for (const f of run.scope) changed.add(f);
+		if (outcome.status === "done" && canWrite) for (const f of run.touched ?? run.scope) changed.add(f);
 		return outcome;
 	}
 

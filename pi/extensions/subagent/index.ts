@@ -53,6 +53,9 @@ function isCheckCommand(cmd: string, extra: Set<string>): boolean {
 	return extra.has(c) || CHECK_CORE.test(c);
 }
 const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const PLAN_ONLY = /\[plan-only\]/i;
+const PLAN_ONLY_REASON =
+	"This prompt is plan-only: no edits, no writing subagents. Present the plan (files and why) and stop; the user replies with OK to implement.";
 
 // ---------- shared helpers ----------
 
@@ -93,6 +96,19 @@ function filesFromReports(reports: string[], cwd: string): string[] {
 // untracked build artefacts a subagent's check run may create; never treated as scope violations
 const ARTEFACT = /(^|\/)(__pycache__|\.pytest_cache|\.mypy_cache|node_modules|\.venv|target|build|dist|obj|Library|Temp|Logs|\.godot)(\/|$)|\.pyc$/;
 
+/** `.pi/check` in the task cwd or a parent (up to the git root): the project's check, run as `bash <file>`. */
+function projectCheck(cwd: string): string | undefined {
+	let root = "/";
+	try {
+		root = git(cwd, ["rev-parse", "--show-toplevel"]).trim();
+	} catch {}
+	for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+		const f = path.join(d, ".pi", "check");
+		if (fs.existsSync(f) && fs.statSync(f).isFile()) return `bash ${f}`;
+		if (d === root || d === path.dirname(d)) return undefined;
+	}
+}
+
 function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): Promise<{ code: number; tail: string }> {
 	return new Promise((resolve) => {
 		const proc = spawn("bash", ["-c", cmd], { cwd, stdio: ["ignore", "pipe", "pipe"] });
@@ -122,6 +138,7 @@ function inScope(file: string, cwd: string, scope: string[]): boolean {
 
 interface Snapshot {
 	root: string;
+	head: string; // HEAD before the run ("" in a repo without commits)
 	dirty: Map<string, string | null>; // repo-relative path -> content before the run (null: did not exist)
 }
 
@@ -146,12 +163,16 @@ function changedPaths(root: string): string[] {
 function snapshot(cwd: string): Snapshot | undefined {
 	try {
 		const root = git(cwd, ["rev-parse", "--show-toplevel"]).trim();
+		let head = "";
+		try {
+			head = git(root, ["rev-parse", "HEAD"]).trim();
+		} catch {}
 		const dirty = new Map<string, string | null>();
 		for (const p of changedPaths(root)) {
 			const abs = path.join(root, p);
 			dirty.set(p, fs.existsSync(abs) && fs.statSync(abs).isFile() ? fs.readFileSync(abs, "latin1") : null);
 		}
-		return { root, dirty };
+		return { root, head, dirty };
 	} catch {
 		return undefined; // not a git repo: only the edit/write guard applies
 	}
@@ -164,7 +185,12 @@ function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: 
 	const fixed: string[] = [];
 	let tracked: Set<string>;
 	try {
-		tracked = new Set(git(snap.root, ["ls-files", "-z"]).split("\0").filter(Boolean));
+		// commits would hide changes from `git status`: move HEAD back, keeping the changes in the worktree
+		if (snap.head && git(snap.root, ["rev-parse", "HEAD"]).trim() !== snap.head) {
+			git(snap.root, ["reset", "-q", "--soft", snap.head]);
+			fixed.push(`commits since ${snap.head.slice(0, 8)} (undone with reset --soft; changes kept and checked below)`);
+		}
+		tracked = new Set(snap.head ? git(snap.root, ["ls-tree", "-r", "-z", "--name-only", "HEAD"]).split("\0").filter(Boolean) : []);
 	} catch {
 		return fixed;
 	}
@@ -179,9 +205,12 @@ function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: 
 			else fs.writeFileSync(abs, before, "latin1");
 			fixed.push(`${p} (restored)`);
 		} else if (tracked.has(p)) {
-			git(snap.root, ["checkout", "--", p]);
+			git(snap.root, ["checkout", "HEAD", "--", p]);
 			fixed.push(`${p} (restored from HEAD)`);
 		} else if (now !== null && !ARTEFACT.test(p)) {
+			try {
+				git(snap.root, ["reset", "-q", "--", p]); // unstage a new file that a commit/add brought in
+			} catch {}
 			const dest = path.join(quarantine, p);
 			fs.mkdirSync(path.dirname(dest), { recursive: true });
 			fs.renameSync(abs, dest);
@@ -203,6 +232,9 @@ function piInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 // ---------- subagent side ----------
+
+const GIT_WRITE =
+	/\bgit\b[^|;&\n]*\s(commit|push|pull|fetch|reset|checkout|switch|restore|stash|rebase|merge|cherry-pick|revert|am|apply|clean|rm|mv|add|tag|update-ref|worktree|branch\s+-[dDmM])\b/;
 
 function childSide(pi: ExtensionAPI) {
 	const id = process.env.PI_SUBAGENT_ID ?? "subagent";
@@ -232,6 +264,16 @@ function childSide(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName === "bash") {
+			const cmd = (event.input as { command: string }).command;
+			if (GIT_WRITE.test(cmd)) {
+				return {
+					block: true,
+					reason: "Subagents do not change git state (commit, reset, checkout, stash, ...). The main agent and the user own git; edit files in your scope instead.",
+				};
+			}
+			return;
+		}
 		if (event.toolName !== "edit" && event.toolName !== "write") return;
 		const file = (event.input as { path: string }).path;
 		if (inScope(file, ctx.cwd, scope)) return;
@@ -328,6 +370,8 @@ function parentSide(pi: ExtensionAPI) {
 	const finished: { seq: number; scope: string[] }[] = [];
 	let runDir: string | undefined;
 	let counter = 0;
+	// a prompt containing [plan-only] (e.g. /plan, /backlog-item) may read and plan but not change anything
+	let planOnly = false;
 	const checks = new Set<string>(); // check commands given to subagents; the main agent may run them too
 
 	const ensureRunDir = () => {
@@ -531,8 +575,14 @@ function parentSide(pi: ExtensionAPI) {
 	}
 
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
+		if (planOnly && (spec.scope?.length || spec.agent === "worker")) {
+			return { id: "-", status: "error", text: PLAN_ONLY_REASON, contextTokens: 0 } as Outcome;
+		}
 		const run = newRun(spec, defaultCwd, agents);
 		if (typeof run === "string") return { id: "-", status: "error", text: run, contextTokens: 0 } as Outcome;
+		// a writing task without a check gets the project's check (.pi/check), so verification never depends on
+		// the main agent remembering to ask for it
+		if (!spec.check && run.scope.length) spec = { ...spec, check: projectCheck(run.cwd) };
 		if (spec.check) checks.add(spec.check.trim());
 		run.check = spec.check;
 		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
@@ -572,6 +622,9 @@ function parentSide(pi: ExtensionAPI) {
 
 			if (params.resume) {
 				const run = runs.get(params.resume);
+				if (planOnly && (run?.scope.length || params.scope?.length)) {
+					return reply([{ id: params.resume, status: "error", text: PLAN_ONLY_REASON, contextTokens: 0 }]);
+				}
 				if (!run) return reply([{ id: params.resume, status: "error", text: `Unknown run id "${params.resume}"`, contextTokens: 0 }]);
 				if (params.scope) {
 					run.scope = params.scope.map((s) => path.resolve(run.cwd, s));
@@ -637,12 +690,20 @@ function parentSide(pi: ExtensionAPI) {
 		tool === "read" && path.resolve(cwd, (input as { path?: string }).path ?? "").startsWith(path.resolve(HANDOFF_ROOT) + path.sep);
 	let spent = 0;
 	const edited = new Set<string>();
-	pi.on("before_agent_start", async () => {
+	pi.on("before_agent_start", async (event) => {
 		spent = 0;
 		edited.clear();
+		if ((event as { messageType?: string }).messageType !== "custom") planOnly = PLAN_ONLY.test((event as { prompt?: string }).prompt ?? "");
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		if (planOnly && (event.toolName === "edit" || event.toolName === "write")) return { block: true, reason: PLAN_ONLY_REASON };
+		if (planOnly && event.toolName === "bash" && !isCheckCommand((event.input as { command: string }).command, checks)) {
+			const cmd = (event.input as { command: string }).command;
+			if (/(^|[^<>2&])>[^&]|\b(sed\s+-i|tee|rm|mv|cp|mkdir|touch|chmod|ln|truncate|patch|git\s+(commit|reset|checkout|stash|add|apply))\b/.test(cmd)) {
+				return { block: true, reason: PLAN_ONLY_REASON };
+			}
+		}
 		if (event.toolName === "edit" || event.toolName === "write") {
 			const file = path.resolve(ctx.cwd, (event.input as { path: string }).path);
 			if (!edited.has(file) && edited.size >= PARENT_MAX_EDIT_FILES) {

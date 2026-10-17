@@ -24,6 +24,12 @@ so that delegation and context limits are enforced by code, not left to the mode
     is cut to 1 KB. Reads of handoff reports always work (capped at 4 KB) and don't count toward the budget. The
     budget resets on each user prompt.
   - The main session may edit at most 2 distinct files per prompt; more has to go to a worker.
+- Plan-only prompts: a prompt containing `[plan-only]` (`/plan`, `/scout-and-plan`, gamekit's `/backlog-item`)
+  can read and run scouts and planners, but edit/write, writing bash, worker tasks and resumes with a scope are
+  blocked until the next user prompt. "Wait for my OK" therefore always holds.
+- Project check: a writing task without `check` gets `bash <project>/.pi/check` if that file exists (searched
+  from the task cwd up to the git root). Verification doesn't depend on the main session remembering to ask for
+  it. gamekit's templates add one: Unity runs Tools/check plus the PlayMode tests, Godot runs Tools/check.
 - What comes back is a status line, a report path and the `SUMMARY:` line, never the report itself. If a subagent
   leaves out the SUMMARY line, it is resumed once and asked for exactly that line.
 - `check`: a command the extension runs itself after the subagent finishes, logged to `NN-agent.check.log`. Exit 0
@@ -42,6 +48,9 @@ so that delegation and context limits are enforced by code, not left to the mode
     restored and new files are moved to `<run>/quarantine/`. Files that were already dirty before the run and
     weren't touched are left alone. Build artefacts (`__pycache__`, `node_modules`, `Library`...) are ignored.
   - Concurrent parallel runs don't undo each other's in-scope work.
+  - Subagents can't change git state: commit, reset, checkout, stash, add, rebase, push and the like are blocked
+    in bash. If HEAD moves anyway, it is moved back with `reset --soft` before the scope check, so a commit can't
+    hide changes outside the scope.
   - Outside git, only the edit/write guard applies. `<file>.meta` belongs to `<file>`'s scope (Unity).
 - Out of scope: the subagent calls `request {need, why}` and stops (`terminate`). The main session dispatches a
   helper with `for: "<id>"` (or makes a one-line edit itself), then sends `resume: "<id>"`. The resumed subagent

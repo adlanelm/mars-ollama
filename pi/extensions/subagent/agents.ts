@@ -13,6 +13,7 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	thinking?: string; // pi thinking level for this agent's tasks (minimal..high); default: the main session's
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -35,6 +36,7 @@ type AgentFrontmatter = {
 	name?: unknown;
 	description?: unknown;
 	tools?: unknown;
+	thinking?: unknown;
 	model?: unknown;
 };
 
@@ -96,6 +98,10 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			description: frontmatter.description,
 			tools: parseToolList(frontmatter.tools),
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			thinking:
+				typeof frontmatter.thinking === "string" && /^(off|minimal|low|medium|high|xhigh)$/.test(frontmatter.thinking)
+					? frontmatter.thinking
+					: undefined,
 			systemPrompt: body,
 			source,
 			filePath,

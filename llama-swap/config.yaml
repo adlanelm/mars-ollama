@@ -17,8 +17,11 @@ macros:
   # --kv-unified: with an explicit -np, slots otherwise get c/np each (48k -> 2x24k).
   # -lm dio (direct I/O, no mmap): CPU-side weights stay resident; with mmap, page-cache eviction after a
   # model swap made qwen3.6 re-read experts from NVMe mid-inference (3.8 tok/s prompt instead of 700+).
+  # --reasoning-budget-message: pi sends thinking_budget_tokens per thinking level (pi/models.json); when a budget
+  # runs out the server closes the reasoning, and this line makes the model act instead of trailing off.
   chat_common: >-
     -fa on -ctk q8_0 -ctv q8_0 -np 2 --kv-unified -ctxcp 8 -cram 2048 -lm dio --jinja --no-webui
+    --reasoning-budget-message "Thinking budget reached. Act now with what I have."
   # MoE models: physical cores (6-12 threads measured equal); ub 2048 = +40% prompt speed (bench/qwen3.6-sweep.md)
   moe_common: >-
     -t 8 -tb 8 -ub 2048 -b 2048

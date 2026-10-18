@@ -1,5 +1,6 @@
 ---
 name: worker
+thinking: low
 description: General-purpose subagent with full capabilities, isolated context
 ---
 

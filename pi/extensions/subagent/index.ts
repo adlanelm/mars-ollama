@@ -58,6 +58,8 @@ function isCheckCommand(cmd: string, extra: Set<string>): boolean {
 	return extra.has(c) || CHECK_CORE.test(c);
 }
 const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const LEVELS = ["off", "minimal", "low", "medium", "high"];
+const raiseLevel = (l?: string) => LEVELS[Math.min(LEVELS.indexOf(l ?? "low") + 1, LEVELS.length - 1)] ?? "medium";
 const PLAN_ONLY = /\[plan-only\]/i;
 const PLAN_ONLY_REASON =
 	"This prompt is plan-only: no edits, no writing subagents. Present the plan (files and why) and stop; the user replies with OK to implement.";
@@ -341,6 +343,7 @@ interface Run {
 	promptFile: string;
 	answers: string[]; // reports produced for this run's requests, injected on resume
 	check?: string;
+	level?: string; // raised thinking level after a failed check
 	touched?: Set<string>; // files this run changed (all launches); undefined outside git = unknown
 }
 
@@ -451,7 +454,10 @@ function parentSide(pi: ExtensionAPI) {
 		const args = ["--mode", "json", "-p", "--session", run.session, "--tools", tools.join(",")];
 		const model_ = run.agent.model ?? model;
 		if (model_) args.push("--model", model_);
-		if (!run.agent.model && thinking) args.push("--thinking", thinking);
+		// thinking level per task: a retry's raised level, else the agent's own (scouts think little, planners and
+		// reviewers more), else the main session's. The level selects the reasoning budget in models.json.
+		const level = run.level ?? run.agent.thinking ?? thinking;
+		if (!run.agent.model && level) args.push("--thinking", level);
 		args.push("--append-system-prompt", run.promptFile, message);
 
 		const snap = snapshot(run.cwd);
@@ -623,6 +629,8 @@ function parentSide(pi: ExtensionAPI) {
 					text: `${outcome.text}\n  check: FAILED (exit ${res.code}) after ${CHECK_RETRIES} retries, log: ${log}\n    ${last.slice(0, 600)}`,
 				};
 			}
+			// a failed check is where reasoning pays: think one level higher on the retry
+			run.level = raiseLevel(run.level ?? run.agent.thinking ?? thinking);
 			outcome = await launch(
 				run,
 				`The check \`${check}\` failed (exit ${res.code}). Its last lines:\n${res.tail}\nFull log: ${log}\nFix the cause within your scope, then report again.`,

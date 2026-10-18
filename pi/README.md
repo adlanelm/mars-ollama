@@ -92,6 +92,23 @@ so that delegation and context limits are enforced by code, not left to the mode
 
 Prompts: `/implement` (scout, planner, worker with `@previous` scope), `/scout-and-plan`, `/implement-and-review`.
 
+## Thinking per task
+
+The harness picks the thinking level per task, and the level picks a reasoning budget:
+- Agents declare `thinking:` in their frontmatter: scout `minimal`, worker `low`, planner and reviewer `medium`;
+  the main session keeps its own level. A worker retried after a failed check thinks one level higher (up to
+  `high`).
+- `models.json` sends `thinking_budget_tokens` per level (`samplingParamsByThinkingLevel`): minimal 256, low
+  1024, medium 3072, high 8192. qwen3.6 ignores `reasoning_effort` (minimal reasoned the most), so the budget is
+  the real control.
+- At the limit llama-server closes the reasoning (a hard cut; the model does not plan for it) after injecting
+  `--reasoning-budget-message` (llama-swap `chat_common`): "Thinking budget reached. Act now with what I have."
+
+Synthetic shop task (2026-10-18, qwen3.6): reasoning across subagents dropped from 23.6k to 16.1k chars (max per
+turn 5.5k to 3.5k), with the same result, no budget cuts and the same wall time (~9 min). The automatic review
+fired for the first time: review 1 found a missing bounds check, which was fixed; review 2 raised out-of-scope
+nits and the 2-review cap ended it.
+
 ## Compaction
 
 `-np 2 --kv-unified` means the parent and a subagent share one 131072-token KV pool. The parent therefore compacts

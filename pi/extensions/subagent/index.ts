@@ -96,7 +96,7 @@ const CHECK_CORE = /^(\.\/)?(Tools\/check|git (status|diff --stat|log --oneline)
 function isCheckCommand(cmd: string, extra: Set<string>): boolean {
 	if (extra.has(cmd.trim())) return true;
 	let c = cmd.trim();
-	c = c.replace(/^cd\s+\S+\s*&&\s*/, "");
+	c = c.replace(/^cd\s+(?:'[^']*'|\\.|[^\s'\\])+\s*&&\s*/, ""); // the path may be shq-quoted
 	c = c.replace(/^timeout\s+\d+[smh]?\s+/, "");
 	c = c.replace(/^(bash|sh)\s+/, "");
 	for (let prev = ""; prev !== c; ) {
@@ -113,11 +113,21 @@ const raiseLevel = (l?: string) => {
 	const i = LEVELS.indexOf(l ?? "low");
 	return i < 0 || i >= RAISE_CAP ? (l ?? "medium") : LEVELS[i + 1];
 };
+/** An agent's own level: frontmatter `thinking:`, else the `:level` suffix of its own `model:` (provider/id:high). */
+const ownLevel = (a: AgentConfig) => {
+	const suffix = a.model?.match(/:(\w+)$/)?.[1];
+	return a.thinking ?? (suffix && (LEVELS.includes(suffix) || suffix === "max") ? suffix : undefined);
+};
+/** An agent with edit or write (no `tools:` list = all tools). */
+const agentWrites = (a?: AgentConfig) => !a?.tools || a.tools.some((t) => t === "edit" || t === "write");
 const PLAN_ONLY = /\[plan-only\]/i;
 const PLAN_ONLY_REASON =
 	"This prompt is plan-only: no edits, no writing subagents. Present the plan (files and why) and stop; the user replies with OK to implement.";
 
 // ---------- shared helpers ----------
+
+/** Single-quoted for bash: nothing inside expands ($, backticks, \); a ' becomes '\''. */
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 function textOf(content: { type: string; text?: string }[] | undefined): string {
 	return (content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n");
@@ -165,6 +175,38 @@ function filesFromReports(reports: string[], cwd: string): string[] {
 	return [...found];
 }
 
+/**
+ * Which report a subagent goal asks for, when it only asks for one: undefined = real work; `file` = a named handoff
+ * file; `id` = that run's report; neither = the latest report. Needs report intent (a handoff file, "handoff", or
+ * "report" in a phrase about a subagent's report): a run id alone is not enough ("read the function 03-worker
+ * changed" is real work). With several run ids, the one next to "report" is served, or none.
+ */
+function reportGoal(goal: string, ids: string[], handoffRoot: string): { file?: string; id?: string } | undefined {
+	const g = goal.trim();
+	if (g.length > 200 || !/\b(return|show|give|read|print|output|fetch|get)\b/i.test(g)) return undefined;
+	// any file named in the goal must be a handoff report; "read the content of README.md" is real work
+	const files = g.match(/[\w./~-]*\.\w{1,5}\b/g) ?? [];
+	const root = path.resolve(handoffRoot) + path.sep;
+	if (files.some((f) => !f.startsWith(root))) return undefined;
+	const named = ids.filter((id) => new RegExp(`\\b${id}\\b`).test(g));
+	// "01-scout's report", "01-scout report", "the report of/from/by 01-scout"
+	const nextTo = named.filter((id) =>
+		new RegExp(`\\b${id}(?:'s)?\\s+(?:full\\s+|final\\s+)?reports?\\b|\\breports?\\s+(?:of|from|by)\\s+${id}\\b`, "i").test(g),
+	);
+	const aboutReport =
+		files.length > 0 ||
+		nextTo.length > 0 ||
+		/\bhandoff\b/i.test(g) ||
+		/\b(last|latest|previous|its|their|subagent'?s?|scout'?s?|worker'?s?|reviewer'?s?|planner'?s?)\s+(full\s+|final\s+)?reports?\b/i.test(g) ||
+		// "the report" only as a noun phrase of its own, not "the report generator in src/"
+		/\b(the|that)\s+(full\s+|final\s+)?report\b(?=\s*([.,;:!?]|$|\s+(from|by)\b))/i.test(g);
+	if (!aboutReport) return undefined;
+	if (files.length) return { file: files[0] };
+	if (nextTo.length === 1) return { id: nextTo[0] };
+	if (named.length === 1 && nextTo.length === 0) return { id: named[0] };
+	return named.length ? undefined : {}; // several ids and none (or several) next to "report": ambiguous
+}
+
 // untracked build artefacts a subagent's check run may create; never treated as scope violations
 const ARTEFACT = /(^|\/)(__pycache__|\.pytest_cache|\.mypy_cache|node_modules|\.venv|target|build|dist|obj|Library|Temp|Logs|\.godot)(\/|$)|\.pyc$/;
 
@@ -176,7 +218,7 @@ function projectFile(cwd: string, name: string): string | undefined {
 	} catch {}
 	for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
 		const f = path.join(d, ".pi", name);
-		if (fs.existsSync(f) && fs.statSync(f).isFile()) return `bash ${JSON.stringify(f)}`;
+		if (fs.existsSync(f) && fs.statSync(f).isFile()) return `bash ${shq(f)}`;
 		if (d === root || d === path.dirname(d)) return undefined;
 	}
 }
@@ -197,7 +239,7 @@ function detectChecks(cwd: string): Detected | undefined {
 	const root = gitRoot(cwd) ?? path.resolve(cwd);
 	if (detectCache.has(root)) return detectCache.get(root);
 	const has = (f: string) => fs.existsSync(path.join(root, f));
-	const inRoot = (c: string) => `cd ${JSON.stringify(root)} && ${c}`;
+	const inRoot = (c: string) => `cd ${shq(root)} && ${c}`;
 	let d: Detected | undefined;
 	if (HC.check || HC.fullCheck) {
 		d = { fast: HC.check && inRoot(HC.check), full: HC.fullCheck && inRoot(HC.fullCheck), source: ".pi/harness.json" };
@@ -595,6 +637,8 @@ function parentSide(pi: ExtensionAPI) {
 	let runDir: string | undefined;
 	let counter = 0;
 	const waiting = new Set<string>(); // runs stopped with NEEDS, not yet resumed
+	// runs whose check was deferred because another run was waiting; run when the waiting set empties
+	const deferred = new Map<string, { run: Run; check: string }>();
 	const baselines = new Map<string, { code: number; errors: Set<string> }>(); // per check, before this prompt's first step
 	let writeChain: Promise<unknown> = Promise.resolve();
 	const serialWrite = <T,>(f: () => Promise<T>): Promise<T> => {
@@ -602,7 +646,7 @@ function parentSide(pi: ExtensionAPI) {
 		writeChain = next.catch(() => {});
 		return next;
 	};
-	const unverified = new Set<string>(); // files changed since the last full check (kept until one has run on them)
+	const unverified = new Set<string>(); // files changed and not yet covered by a full check (kept until one has run on them)
 	let fullChecks = 0;
 	const track = (run: Run, o: Outcome) => {
 		if (o.status === "needs") waiting.add(run.id);
@@ -610,10 +654,12 @@ function parentSide(pi: ExtensionAPI) {
 	};
 	// files changed in this prompt (worker scopes and the main agent's own edits) and not reviewed since
 	const changed = new Set<string>();
-	/** A writing run that finished: its files (all launches) go to the auto-review and the full check. */
+	/**
+	 * A writing run that ended (done, failed or error): its files (all launches) go to the auto-review and the full
+	 * check. NEEDS is still in progress and is recorded when it is resumed.
+	 */
 	const recordChanges = (run: Run, o: Outcome) => {
-		const canWrite = !run.agent.tools || run.agent.tools.some((t) => t === "edit" || t === "write");
-		if (o.status !== "done" || !canWrite) return;
+		if (o.status === "needs" || !agentWrites(run.agent)) return;
 		for (const f of run.touched ?? run.scope) {
 			changed.add(f);
 			unverified.add(f);
@@ -623,6 +669,12 @@ function parentSide(pi: ExtensionAPI) {
 	// a prompt containing [plan-only] (e.g. /plan, /backlog-item) may read and plan but not change anything
 	let planOnly = false;
 	const checks = new Set<string>(); // check commands given to subagents; the main agent may run them too
+
+	/** Scopes of runs active now or finished since `startSeq`: their in-scope changes are not a violation. */
+	const concurrentScopes = (startSeq: number) => [
+		...[...active].flatMap((r) => r.scope),
+		...finished.filter((f) => f.seq > startSeq).flatMap((f) => f.scope),
+	];
 
 	const ensureRunDir = () => {
 		if (!runDir) {
@@ -640,7 +692,8 @@ function parentSide(pi: ExtensionAPI) {
 		if (model_) args.push("--model", model_);
 		// thinking level per task: a retry's raised level, else the agent's own (scouts think little, planners and
 		// reviewers more), else the main session's. The level selects the reasoning budget in models.json.
-		// An agent with its own model does not inherit the session's level (its model may carry a `:level` suffix).
+		// An agent with its own model never gets the session's level: only its frontmatter level or one raised from
+		// its own level (see settle); with neither, nothing is passed and its model's `:level` suffix applies.
 		const level = run.level ?? run.agent.thinking ?? (run.agent.model ? undefined : thinking);
 		if (level) args.push("--thinking", level);
 		args.push("--append-system-prompt", run.promptFile, message);
@@ -691,11 +744,7 @@ function parentSide(pi: ExtensionAPI) {
 				signal?.removeEventListener("abort", kill);
 				if (buf.trim()) onLine(buf);
 				active.delete(run);
-				const allowed = [
-					...run.scope,
-					...[...active].flatMap((r) => r.scope),
-					...finished.filter((f) => f.seq > startSeq).flatMap((f) => f.scope),
-				];
+				const allowed = [...run.scope, ...concurrentScopes(startSeq)];
 				finished.push({ seq: ++seq, scope: run.scope });
 				let violations: string[] = [];
 				let headMoved: string | undefined;
@@ -791,17 +840,19 @@ function parentSide(pi: ExtensionAPI) {
 			}
 			if (!check) {
 				// a writing run with no check at all: say so, or the change looks verified
-				const writes = run.scope.length && (!run.agent.tools || run.agent.tools.some((t) => t === "edit" || t === "write"));
+				const writes = run.scope.length && agentWrites(run.agent);
 				return writes ? { ...outcome, text: `${outcome.text}\n  check: none (no check detected; add .pi/check or pass check)` } : outcome;
-			}
-			// another subagent is waiting mid-change (NEEDS): the project would fail for its half-done work, not ours.
-			// The check runs when that subagent is resumed and finishes.
-			const others = [...waiting].filter((id) => id !== run.id);
-			if (others.length) {
-				return { ...outcome, text: `${outcome.text}\n  check: deferred (waiting for ${others.join(", ")} to be resumed)` };
 			}
 			// nothing changed (a read-only task given a scope): the check cannot have changed either
 			if (run.touched && run.touched.size === 0) return { ...outcome, text: `${outcome.text}\n  check: skipped (no files changed)` };
+			// another subagent is waiting mid-change (NEEDS): the project would fail for its half-done work, not ours.
+			// The check is recorded and runs once no run is waiting (runDeferred, after the last resume ends).
+			const others = [...waiting].filter((id) => id !== run.id);
+			if (others.length) {
+				deferred.set(run.id, { run, check });
+				return { ...outcome, text: `${outcome.text}\n  check: deferred (runs when ${others.join(", ")} is resumed and finishes)` };
+			}
+			deferred.delete(run.id); // a resumed run that had a deferred check: this one covers it
 			const log = path.join(path.dirname(run.report), `${run.id}.check${attempt ? `-${attempt}` : ""}.log`);
 			const res = await runCheck(check, run.cwd, log, signal);
 			// the project was already failing before this prompt's first step: only new errors count
@@ -833,8 +884,11 @@ function parentSide(pi: ExtensionAPI) {
 					text: `${outcome.text}\n  check: FAILED (exit ${res.code}) after ${CHECK_RETRIES} retries, log: ${log}\n    ${last.slice(0, 600)}`,
 				};
 			}
-			// a failed check is where reasoning pays: think one level higher on the retry
-			run.level = raiseLevel(run.level ?? run.agent.thinking ?? thinking);
+			// a failed check is where reasoning pays: think one level higher on the retry. An agent with its own model
+			// raises from its own level (frontmatter, else the model's `:level` suffix), never the session's; with
+			// neither it is left alone
+			const from = run.level ?? (run.agent.model ? ownLevel(run.agent) : (run.agent.thinking ?? thinking));
+			if (from || !run.agent.model) run.level = raiseLevel(from);
 			outcome = await launch(
 				run,
 				newErrors
@@ -845,6 +899,39 @@ function parentSide(pi: ExtensionAPI) {
 				signal,
 			);
 		}
+	}
+
+	/**
+	 * Once no run is waiting: the checks deferred meanwhile (one run per distinct command and cwd). Reported, not
+	 * retried: those subagents are done, and the main agent sends a fix step for a failure.
+	 */
+	async function runDeferred(signal?: AbortSignal): Promise<Outcome[]> {
+		if (waiting.size || !deferred.size) return [];
+		const groups = new Map<string, { check: string; rs: Run[] }>();
+		for (const { run, check } of deferred.values()) {
+			const key = `${run.cwd}\0${check}`;
+			if (!groups.has(key)) groups.set(key, { check, rs: [] });
+			groups.get(key)!.rs.push(run);
+		}
+		deferred.clear();
+		const outs: Outcome[] = [];
+		for (const { check, rs } of groups.values()) {
+			const run = rs[0];
+			const ids = rs.map((r) => r.id).join(", ");
+			const log = path.join(path.dirname(run.report), `${run.id}.check-deferred.log`);
+			const res = await runCheck(check, run.cwd, log, signal);
+			const base = baselines.get(check);
+			const newErrors = res.code !== 0 && base && base.code !== 0 ? [...errorLines(res.out, run.cwd)].filter((e) => !base.errors.has(e)) : undefined;
+			const result =
+				res.code === 0
+					? "exit 0"
+					: newErrors?.length === 0
+						? `no new failures (baseline was already failing). Log: ${log}`
+						: `FAILED (exit ${res.code}), log: ${log}\n    ${(newErrors ? `new errors: ${newErrors.slice(0, 4).join(" | ")}` : res.tail.split("\n").slice(-4).join("\n    ")).slice(0, 600)}`;
+			const ok = res.code === 0 || newErrors?.length === 0;
+			outs.push({ id: run.id, status: ok ? "done" : "failed", contextTokens: 0, text: `[${ids}] deferred check: ${result}` });
+		}
+		return outs;
 	}
 
 	function newRun(spec: Spec, defaultCwd: string, agents: AgentConfig[]): Run | string {
@@ -885,24 +972,9 @@ function parentSide(pi: ExtensionAPI) {
 	 */
 	function reportFetch(spec: Spec): Outcome | undefined {
 		if (spec.scope?.length) return undefined;
-		const g = spec.goal.trim();
-		if (g.length > 200 || !/\b(return|show|give|read|print|output|fetch|get)\b/i.test(g)) return undefined;
-		// any file named in the goal must be a handoff report; "read the content of README.md" is real work
-		const files = g.match(/[\w./~-]*\.\w{1,5}\b/g) ?? [];
-		const handoffRoot = path.resolve(HANDOFF_ROOT) + path.sep;
-		if (files.some((f) => !f.startsWith(handoffRoot))) return undefined;
-		// only a goal that is clearly about a subagent's report: a handoff file, a run id, "handoff", or "the
-		// last/scout's/... report" ("read how the parser handles text input" is real work)
-		const byId = [...runs.values()].find((r) => new RegExp(`\\b${r.id}\\b`).test(g));
-		const aboutReport =
-			files.length > 0 ||
-			byId ||
-			/\bhandoff\b/i.test(g) ||
-			/\b(last|latest|previous|its|their|subagent'?s?|scout'?s?|worker'?s?|reviewer'?s?|planner'?s?)\s+(full\s+|final\s+)?reports?\b/i.test(g) ||
-			// "the report" only as a noun phrase of its own, not "the report generator in src/"
-			/\b(the|that)\s+(full\s+|final\s+)?report\b(?=\s*([.,;:!?]|$|\s+(from|by)\b))/i.test(g);
-		if (!aboutReport) return undefined;
-		const named = files[0] ?? byId?.report;
+		const target = reportGoal(spec.goal, [...runs.keys()], HANDOFF_ROOT);
+		if (!target) return undefined;
+		const named = target.file ?? (target.id ? runs.get(target.id)?.report : undefined);
 		const latest = [...runs.values()].reverse().find((r) => fs.existsSync(r.report))?.report;
 		const file = named ?? latest;
 		if (!file || !fs.existsSync(file)) return undefined;
@@ -931,17 +1003,14 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		if (planOnly) {
 			const name = spec.agent ?? "scout"; // nothing writes in a plan-only prompt: an unnamed agent is a scout
-			const a = agents.find((x) => x.name === name);
-			const writes = !a?.tools || a.tools.some((t) => t === "edit" || t === "write");
-			if (writes) return { id: "-", status: "error", text: PLAN_ONLY_REASON, contextTokens: 0 } as Outcome;
+			if (agentWrites(agents.find((x) => x.name === name))) return { id: "-", status: "error", text: PLAN_ONLY_REASON, contextTokens: 0 } as Outcome;
 			spec = { ...spec, agent: name, scope: [] }; // read-only agent: a scope means nothing, drop it
 		}
 		{
 			// one step = at most MAX_STEP_FILES files (psx-iso: a 4-file task left a compile error spread over the AI,
 			// the scene builder and the tests, and the fix broke the shared test setup)
 			const name = spec.agent ?? (spec.scope?.length ? "worker" : "scout");
-			const a = agents.find((x) => x.name === name);
-			const writes = !a?.tools || a.tools.some((t) => t === "edit" || t === "write");
+			const writes = agentWrites(agents.find((x) => x.name === name));
 			const cwd0 = path.resolve(defaultCwd, spec.cwd ?? ".");
 			const dirs = (spec.scope ?? []).filter((f) => {
 				const abs = path.resolve(cwd0, f);
@@ -970,7 +1039,7 @@ function parentSide(pi: ExtensionAPI) {
 		if (typeof run === "string") return { id: "-", status: "error", text: run, contextTokens: 0 } as Outcome;
 		// a writing task without a check gets the project's check (.pi/check), so verification never depends on
 		// the main agent remembering to ask for it
-		const canWrite = !run.agent.tools || run.agent.tools.some((t) => t === "edit" || t === "write");
+		const canWrite = agentWrites(run.agent);
 		// the project check always runs for writing tasks; a task check adds to it, never replaces it (psx-iso: the
 		// main agent passed check: "echo done" for a worker editing 3 files)
 		const pc = run.scope.length && canWrite ? projectCheck(run.cwd) : undefined;
@@ -1046,12 +1115,14 @@ function parentSide(pi: ExtensionAPI) {
 				waiting.delete(run.id);
 				const settled = await serialWrite(async () => {
 					const resumed = await launch(run, `${answer}${widened} ${params.message ?? ""}\nContinue your task.`, model, thinking, signal);
-					// the resumed run's check also covers the runs whose checks were deferred while it waited
 					return settle(run, resumed, run.check ?? projectCheck(run.cwd), model, thinking, signal);
 				});
 				track(run, settled);
 				recordChanges(run, settled);
-				return reply([settled]);
+				// whatever the resume's outcome (done, failed, error, skipped): once no run waits, the checks deferred
+				// while one did run now, and come back in this result
+				const late = await serialWrite(() => runDeferred(signal));
+				return reply([settled, ...late]);
 			}
 
 			if (params.chain?.length) {
@@ -1156,7 +1227,7 @@ function parentSide(pi: ExtensionAPI) {
 		if (waiting.size && !waitReminded) {
 			waitReminded = true;
 			const ids = [...waiting].join(", ");
-			const content = `Subagents are still waiting for your answer and have unfinished work: ${ids}. Resume each with subagent({resume: "<id>"}) (their checks, and the deferred ones, run then) before you finish.`;
+			const content = `Subagents are still waiting for your answer and have unfinished work: ${ids}. Resume each with subagent({resume: "<id>"}) before you finish: their checks run then, and the checks deferred while they waited run once none is waiting.`;
 			return { entries: [{ type: "custom_message", customType: "waiting", content, display: true }], continue: true };
 		}
 		// full check (tests) once the steps are done: per-step checks were the fast ones
@@ -1164,10 +1235,12 @@ function parentSide(pi: ExtensionAPI) {
 		if (!planOnly && full && unverified.size && fullChecks < MAX_FULL_CHECKS) {
 			fullChecks++;
 			const log = path.join(ensureRunDir(), `full-check-${fullChecks}.log`);
+			const covered = [...unverified];
 			const res = await runCheck(full, ctx.cwd, log);
-			if (res.code === 0) {
-				unverified.clear();
-			} else {
+			// the files this check covered, pass or fail (a failure is reported below); files changed after it
+			// started stay unverified, also into the next prompt
+			for (const f of covered) unverified.delete(f);
+			if (res.code !== 0) {
 				const content =
 					`[full check ${fullChecks}/${MAX_FULL_CHECKS}] \`${full}\` failed (exit ${res.code}) after your steps. Last lines:\n${res.tail}\nLog: ${log}\n` +
 					"Fix it with a worker step (scope = the 1-2 files at fault), then finish; the full check runs again.";
@@ -1255,9 +1328,8 @@ function parentSide(pi: ExtensionAPI) {
 			edited.clear();
 			changed.clear();
 			reviews = 0;
-			// the previous prompt's full check ran on these files (and its failure was reported): a question-only
-			// prompt must not run it again. Files no full check has seen yet stay, and are checked once.
-			if (fullChecks > 0) unverified.clear();
+			// `unverified` is kept: a full check removes the files it covered (its failure was reported), so a
+			// question-only prompt does not run it again, and files no full check has seen yet are checked once
 			fullChecks = 0;
 			baselines.clear();
 		}
@@ -1335,9 +1407,8 @@ function parentSide(pi: ExtensionAPI) {
 			bashSnaps.delete(event.toolCallId);
 			// a subagent running (or finished) alongside this call changes its scope meanwhile: that is not this bash's
 			// doing, so those files are left to the subagent's own scope check
-			const subagentScopes = [...[...active].flatMap((r) => r.scope), ...finished.filter((f) => f.seq > entry.startSeq).flatMap((f) => f.scope)];
 			try {
-				const { fixed: undone, headMoved } = enforceScope(entry.snap, subagentScopes, ctx.cwd, path.join(ensureRunDir(), "quarantine", "main-bash"));
+				const { fixed: undone, headMoved } = enforceScope(entry.snap, concurrentScopes(entry.startSeq), ctx.cwd, path.join(ensureRunDir(), "quarantine", "main-bash"));
 				if (undone.length) {
 					undoNote = `\n[undone: your bash changed ${undone.join(", ")}. Change existing files with edit (at most ${PARENT_MAX_EDIT_FILES}) or delegate to a worker with a scope.]`;
 				}

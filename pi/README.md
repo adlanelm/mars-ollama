@@ -2,7 +2,8 @@
 
 General config for the [pi](https://pi.dev) coding agent against llama-swap. Install with `bin/pi-setup`:
 `models.json`, `extensions/`, `agents/` and `prompts/` are symlinked into `~/.pi/agent/` (edits apply on the next
-pi start or `/reload`); `settings.json` is copied, because pi writes to it, so re-run after editing it.
+pi start or `/reload`); `settings.json` is copied, because pi writes to it, so re-run after editing it (a live copy that differs is
+kept as `settings.json.bak.<timestamp>` first).
 Project-specific skills and prompts go in the project's `.pi/settings.json` (gamekit's game template does this).
 
 ## Any project
@@ -88,7 +89,8 @@ so that delegation and context limits are enforced by code, not left to the mode
   from the task cwd up to the git root). Verification doesn't depend on the main session remembering to ask for
   it. gamekit's templates add one: Unity runs Tools/check plus the PlayMode tests, Godot runs Tools/check.
 - Automatic review: when a prompt that changed files is about to finish (`agent_before_settle`), the reviewer
-  agent reads the diff of exactly those files (worker scopes plus the main session's edits) and lists concrete
+  agent reads the diff of exactly those files (the files writing runs touched, also failed ones, plus the main
+  session's edits) and lists concrete
   defects. Its SUMMARY comes back as a message, with one more turn to fix the issues through a worker or explain
   why not. There are at most 2 reviews per prompt (the second after fixes), none in plan-only prompts, and a
   clean review just lets the main session finish.
@@ -102,9 +104,10 @@ so that delegation and context limits are enforced by code, not left to the mode
 - A subagent whose final message has no answer text (reasoning only) reports its last reasoning, marked as such, instead of "no output".
 - Writing subagents run one at a time (also across parallel tool calls); read-only scouts stay parallel. Two writers at once fail each other's checks.
 - Two check levels: `.pi/check-fast` (build/validate) after every step; `.pi/check` (full tests) once before
-  the prompt finishes while files are unverified, at most 2 fix rounds, before the review. Without a
-  check-fast, `.pi/check` runs per step as before.
-- Waiting runs: while a subagent waits with NEEDS, other runs' project checks are deferred (its half-done change would fail them) and run when it is resumed; a prompt that would finish with runs still waiting is sent back once to resume them.
+  the prompt finishes while files are unverified, at most 2 fix rounds, before the review. A full check marks
+  the files it covered as verified, pass or fail (a failure is reported); files changed after it started stay
+  unverified, also into the next prompt. Without a check-fast, `.pi/check` runs per step as before.
+- Waiting runs: while a subagent waits with NEEDS, other runs' checks are deferred (its half-done change would fail them) and recorded with their command. When the last waiting run's resume ends (whatever its outcome), each deferred check runs once and its result comes back in that resume's tool result (reported, not retried). A prompt that would finish with runs still waiting is sent back once to resume them.
 - Grounding: a plan-only prompt that finishes without having looked at code (no non-Markdown read, search or subagent) is sent back once.
 - Path check: before a prompt finishes, file paths in the final answer that are presented as existing (not on a "new"/"create" line) and do not exist send the session back once to look at the code. On psx-iso a plan read only GAME.md and BACKLOG.md and named wrong paths.
 - Nudge: a prompt that ends with no tool call and a short answer that announces an action ("- Read GAME.md", "Let me…") is sent back once to do it.
@@ -148,6 +151,9 @@ The harness picks the thinking level per task, and the level picks a reasoning b
 - Agents declare `thinking:` in their frontmatter: scout `minimal`, worker `low`, planner and reviewer `medium`;
   the main session keeps its own level. A worker retried after a failed check thinks one level higher (up to
   `high`).
+- An agent with its own `model:` never gets the main session's level: it gets its frontmatter `thinking:`, or
+  nothing (its model's `:level` suffix applies). A retry raises from its own level (frontmatter, else the
+  `:level` suffix); with neither, the retry passes nothing either.
 - `models.json` sends `thinking_budget_tokens` per level (`samplingParamsByThinkingLevel`): minimal 256, low
   1024, medium 3072, high 8192. qwen3.6 ignores `reasoning_effort` (minimal reasoned the most), so the budget is
   the real control.

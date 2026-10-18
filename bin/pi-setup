@@ -9,11 +9,19 @@ PI_DIR=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
 mkdir -p "$PI_DIR"
 
 backup() { [[ -e $1 && ! -L $1 ]] && mv "$1" "$1.bak.$(date +%Y%m%d-%H%M%S)" && echo "backed up $1"; return 0; }
+# copy variant for settings.json (installed, not symlinked): a timestamped copy of $1 unless it equals $2.
+# An if, not &&, so a failing cp stops the script (set -e).
+backup_copy() {
+  if [[ -f $1 && ! -L $1 ]] && ! cmp -s "$1" "$2"; then
+    cp "$1" "$1.bak.$(date +%Y%m%d-%H%M%S)"
+    echo "backed up $1"
+  fi
+}
 
 for f in models.json extensions agents prompts; do
   backup "$PI_DIR/$f"
   ln -sfn "$SRC/$f" "$PI_DIR/$f"
 done
-[[ -f $PI_DIR/settings.json && ! -e $PI_DIR/settings.json.bak ]] && cp "$PI_DIR/settings.json" "$PI_DIR/settings.json.bak" && echo "backed up settings.json (first run only)"; true
+backup_copy "$PI_DIR/settings.json" "$SRC/settings.json"
 install -m 600 "$SRC/settings.json" "$PI_DIR/settings.json"
 echo "installed pi config from $SRC into $PI_DIR"

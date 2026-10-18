@@ -22,6 +22,11 @@ The harness is on in every pi session (user-level extension), no project setup n
 
   The main session is told which commands apply. With none found it is told changes are unverified, and to pass
   `check` or ask for a .pi/check.
+- Red baselines: before a prompt's first writing step the per-step check runs once on the untouched tree. If it
+  already fails, its error lines are recorded (normalized: relative paths, no line numbers, durations or summary
+  counts), and a step's failing check counts as passed when it adds no new errors ("no new failures: 20 known
+  errors before, 6 now"). Retries list only the new errors. ehi-ledger's build was red from known-vulnerable
+  packages, so every step had failed although each fixed its part. The full end check has no baseline.
 - Git: outside a git repository writing subagents are refused, because scoping, snapshots and undo all need git.
   Run `git init` and commit, or set `allowNoGit`.
 - `.pi/harness.json` (per project, searched up to the git root): `{"enabled": false}` turns the harness off.

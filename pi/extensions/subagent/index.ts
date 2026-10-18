@@ -254,7 +254,7 @@ const projectFullCheck = (cwd: string) => {
 	return d?.fast && d.full ? d.full : undefined;
 };
 
-function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): Promise<{ code: number; tail: string }> {
+function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): Promise<{ code: number; tail: string; out: string }> {
 	return new Promise((resolve) => {
 		const proc = spawn("bash", ["-c", cmd], { cwd, stdio: ["ignore", "pipe", "pipe"] });
 		let out = "";
@@ -268,9 +268,31 @@ function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): 
 			signal?.removeEventListener("abort", kill);
 			fs.writeFileSync(log, out);
 			const tail = out.trimEnd().split("\n").slice(-CHECK_TAIL_LINES).join("\n").slice(-1536);
-			resolve({ code: code ?? 1, tail });
+			resolve({ code: code ?? 1, tail, out });
 		});
 	});
+}
+
+/**
+ * The error lines of a check's output, normalized so two runs compare: paths relative, line/column numbers,
+ * durations and counts removed. Summary lines ("6 Error(s)", "Build FAILED", "failures=3") are dropped.
+ */
+function errorLines(out: string, cwd: string): Set<string> {
+	const root = (gitRoot(cwd) ?? path.resolve(cwd)) + path.sep;
+	const set = new Set<string>();
+	for (let l of out.split("\n")) {
+		if (!/\b(error|errors|fail|failed|failure|exception)\b|✗|✘/i.test(l)) continue;
+		if (/^\s*\d+\s+error\(s\)|^\s*\d+\s+warning\(s\)|build failed|failures=\d+|check: exit|playmode: exit|^\s*(tests?|total).*\d+/i.test(l)) continue;
+		l = l
+			.split(root).join("")
+			.replace(/\[[^\]]*\.(slnx?|csproj|fsproj)\]/g, "")
+			.replace(/[(:]\d+(,\d+)?\)?:?/g, ":")
+			.replace(/\b\d+(\.\d+)?\s*(ms|s|sec|seconds)\b/g, "")
+			.replace(/\s+/g, " ")
+			.trim();
+		if (l) set.add(l);
+	}
+	return set;
 }
 
 function inScope(file: string, cwd: string, scope: string[]): boolean {
@@ -566,6 +588,7 @@ function parentSide(pi: ExtensionAPI) {
 	let runDir: string | undefined;
 	let counter = 0;
 	const waiting = new Set<string>(); // runs stopped with NEEDS, not yet resumed
+	const baselines = new Map<string, { code: number; errors: Set<string> }>(); // per check, before this prompt's first step
 	let writeChain: Promise<unknown> = Promise.resolve();
 	const serialWrite = <T,>(f: () => Promise<T>): Promise<T> => {
 		const next = writeChain.then(f, f);
@@ -760,6 +783,19 @@ function parentSide(pi: ExtensionAPI) {
 			if (run.touched && run.touched.size === 0) return { ...outcome, text: `${outcome.text}\n  check: skipped (no files changed)` };
 			const log = path.join(path.dirname(run.report), `${run.id}.check${attempt ? `-${attempt}` : ""}.log`);
 			const res = await runCheck(check, run.cwd, log, signal);
+			// the project was already failing before this prompt's first step: only new errors count
+			const base = baselines.get(check);
+			let newErrors: string[] | undefined;
+			if (res.code !== 0 && base && base.code !== 0) {
+				const now = errorLines(res.out, run.cwd);
+				newErrors = [...now].filter((e) => !base.errors.has(e));
+				if (newErrors.length === 0) {
+					return {
+						...outcome,
+						text: `${outcome.text}\n  check: no new failures (baseline was already failing: ${base.errors.size} known errors before the first step, ${now.size} now). Log: ${log}`,
+					};
+				}
+			}
 			if (res.code === 0) {
 				// the lines that say what passed (test totals, exit lines), not just the last two (on psx-iso those were the
 				// main agent's own grep counts, which hid "12/12 passed" and sent it re-verifying for 35 minutes)
@@ -769,7 +805,7 @@ function parentSide(pi: ExtensionAPI) {
 				return { ...outcome, text: `${outcome.text}\n  check: exit 0 (${last.slice(0, 300)})` };
 			}
 			if (attempt >= CHECK_RETRIES) {
-				const last = res.tail.split("\n").slice(-4).join("\n    ");
+				const last = newErrors ? `new errors: ${newErrors.slice(0, 4).join(" | ")}` : res.tail.split("\n").slice(-4).join("\n    ");
 				return {
 					...outcome,
 					status: "failed",
@@ -780,7 +816,9 @@ function parentSide(pi: ExtensionAPI) {
 			run.level = raiseLevel(run.level ?? run.agent.thinking ?? thinking);
 			outcome = await launch(
 				run,
-				`The check \`${check}\` failed (exit ${res.code}). Its last lines:\n${res.tail}\nFull log: ${log}\nFix the cause within your scope, then report again.`,
+				newErrors
+					? `The check \`${check}\` shows errors that were not there before your change (the project already had ${base!.errors.size} known errors, which are not yours to fix):\n${newErrors.slice(0, 12).join("\n")}\nFull log: ${log}\nFix the new errors within your scope, then report again.`
+					: `The check \`${check}\` failed (exit ${res.code}). Its last lines:\n${res.tail}\nFull log: ${log}\nFix the cause within your scope, then report again.`,
 				model,
 				thinking,
 				signal,
@@ -909,9 +947,17 @@ function parentSide(pi: ExtensionAPI) {
 		run.check = spec.check;
 		// writing steps run one at a time: two at once share the worktree, and each one's check then fails on the
 		// other's half-done change (psx-iso: two parallel tool calls, CrawlerAI.cs and PlayerController.cs)
-		const outcome = await (canWrite && run.scope.length ? serialWrite : (f: () => Promise<Outcome>) => f())(async () =>
-			settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal),
-		);
+		const outcome = await (canWrite && run.scope.length ? serialWrite : (f: () => Promise<Outcome>) => f())(async () => {
+			let baseNote = "";
+			if (spec.check && canWrite && run.scope.length && !baselines.has(spec.check)) {
+				const log = path.join(path.dirname(run.report), `baseline-${baselines.size + 1}.log`);
+				const r = await runCheck(spec.check, run.cwd, log, signal);
+				baselines.set(spec.check, { code: r.code, errors: errorLines(r.out, run.cwd) });
+				if (r.code !== 0) baseNote = `\n  baseline: the check was already failing before this step (${baselines.get(spec.check)!.errors.size} errors, log ${log}); only new errors count.`;
+			}
+			const o = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
+			return { ...o, text: o.text + baseNote };
+		});
 		track(run, outcome);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);
 		if (outcome.status === "done" && canWrite) {
@@ -1181,6 +1227,7 @@ function parentSide(pi: ExtensionAPI) {
 			changed.clear();
 			reviews = 0;
 			fullChecks = 0;
+			baselines.clear();
 		}
 		if ((event as { messageType?: string }).messageType !== "custom") planOnly = PLAN_ONLY.test((event as { prompt?: string }).prompt ?? "");
 		applyTools();

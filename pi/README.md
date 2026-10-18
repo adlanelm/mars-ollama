@@ -27,7 +27,8 @@ The harness is on in every pi session (user-level extension), no project setup n
 - Red baselines: before a prompt's first writing step the per-step check runs once on the untouched tree. If it
   already fails, its error lines are recorded (normalized: relative paths, no line numbers, durations or summary
   counts), and a step's failing check counts as passed when it adds no new errors ("no new failures: 20 known
-  errors before, 6 now"). Retries list only the new errors. ehi-ledger's build was red from known-vulnerable
+  errors before, 6 now"). Retries list only the new errors. A failure that prints no error lines (a bare
+  `exit 1`) can't be compared and fails. ehi-ledger's build was red from known-vulnerable
   packages, so every step had failed although each fixed its part. The full end check has no baseline.
 - Git: outside a git repository writing subagents are refused, because scoping, snapshots and undo all need git.
   Run `git init` and commit, or set `allowNoGit`.

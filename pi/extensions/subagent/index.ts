@@ -855,11 +855,12 @@ function parentSide(pi: ExtensionAPI) {
 			deferred.delete(run.id); // a resumed run that had a deferred check: this one covers it
 			const log = path.join(path.dirname(run.report), `${run.id}.check${attempt ? `-${attempt}` : ""}.log`);
 			const res = await runCheck(check, run.cwd, log, signal);
-			// the project was already failing before this prompt's first step: only new errors count
+			// the project was already failing before this prompt's first step: only new errors count. A failure with no
+			// error lines can't be compared (a bare `exit 1` would always look like "no new failures"), so it fails
 			const base = baselines.get(check);
 			let newErrors: string[] | undefined;
-			if (res.code !== 0 && base && base.code !== 0) {
-				const now = errorLines(res.out, run.cwd);
+			const now = res.code !== 0 && base && base.code !== 0 ? errorLines(res.out, run.cwd) : undefined;
+			if (base && now?.size) {
 				newErrors = [...now].filter((e) => !base.errors.has(e));
 				if (newErrors.length === 0) {
 					return {
@@ -921,7 +922,8 @@ function parentSide(pi: ExtensionAPI) {
 			const log = path.join(path.dirname(run.report), `${run.id}.check-deferred.log`);
 			const res = await runCheck(check, run.cwd, log, signal);
 			const base = baselines.get(check);
-			const newErrors = res.code !== 0 && base && base.code !== 0 ? [...errorLines(res.out, run.cwd)].filter((e) => !base.errors.has(e)) : undefined;
+			const now = res.code !== 0 && base && base.code !== 0 ? errorLines(res.out, run.cwd) : undefined;
+			const newErrors = base && now?.size ? [...now].filter((e) => !base.errors.has(e)) : undefined; // no error lines: fails
 			const result =
 				res.code === 0
 					? "exit 0"
@@ -1055,7 +1057,11 @@ function parentSide(pi: ExtensionAPI) {
 				const log = path.join(path.dirname(run.report), `baseline-${baselines.size + 1}.log`);
 				const r = await runCheck(spec.check, run.cwd, log, signal);
 				baselines.set(spec.check, { code: r.code, errors: errorLines(r.out, run.cwd) });
-				if (r.code !== 0) baseNote = `\n  baseline: the check was already failing before this step (${baselines.get(spec.check)!.errors.size} errors, log ${log}); only new errors count.`;
+				const n = baselines.get(spec.check)!.errors.size;
+				if (r.code !== 0)
+					baseNote = n
+						? `\n  baseline: the check was already failing before this step (${n} errors, log ${log}); only new errors count.`
+						: `\n  baseline: the check was already failing before this step without error lines (log ${log}); a failing check can't be compared, so it counts as failed.`;
 			}
 			const o = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
 			return { ...o, text: o.text + baseNote };

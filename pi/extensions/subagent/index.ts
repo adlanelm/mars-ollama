@@ -404,6 +404,12 @@ function parentSide(pi: ExtensionAPI) {
 	let runDir: string | undefined;
 	let counter = 0;
 	const waiting = new Set<string>(); // runs stopped with NEEDS, not yet resumed
+	let writeChain: Promise<unknown> = Promise.resolve();
+	const serialWrite = <T,>(f: () => Promise<T>): Promise<T> => {
+		const next = writeChain.then(f, f);
+		writeChain = next.catch(() => {});
+		return next;
+	};
 	const unverified = new Set<string>(); // files changed since the last passing full check
 	let fullChecks = 0;
 	const deferred = new Set<string>(); // runs whose check was deferred while others waited
@@ -726,7 +732,11 @@ function parentSide(pi: ExtensionAPI) {
 		if (pc && spec.check?.trim() !== pc) spec = { ...spec, check: spec.check ? `${pc} && { ${spec.check}; }` : pc };
 		if (spec.check) checks.add(spec.check.trim());
 		run.check = spec.check;
-		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
+		// writing steps run one at a time: two at once share the worktree, and each one's check then fails on the
+		// other's half-done change (psx-iso: two parallel tool calls, CrawlerAI.cs and PlayerController.cs)
+		const outcome = await (canWrite && run.scope.length ? serialWrite : (f: () => Promise<Outcome>) => f())(async () =>
+			settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal),
+		);
 		track(run, outcome);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);
 		if (outcome.status === "done" && canWrite) {
@@ -791,9 +801,11 @@ function parentSide(pi: ExtensionAPI) {
 				const answer = run.answers.length ? `Your request was handled. Read: ${run.answers.join(", ")}.` : "Your request was handled.";
 				run.answers = [];
 				waiting.delete(run.id);
-				const resumed = await launch(run, `${answer}${widened} ${params.message ?? ""}\nContinue your task.`, model, thinking, signal);
-				// the resumed run's check also covers the runs whose checks were deferred while it waited
-				const settled = await settle(run, resumed, run.check ?? projectCheck(run.cwd), model, thinking, signal);
+				const settled = await serialWrite(async () => {
+					const resumed = await launch(run, `${answer}${widened} ${params.message ?? ""}\nContinue your task.`, model, thinking, signal);
+					// the resumed run's check also covers the runs whose checks were deferred while it waited
+					return settle(run, resumed, run.check ?? projectCheck(run.cwd), model, thinking, signal);
+				});
 				track(run, settled);
 				return reply([settled]);
 			}

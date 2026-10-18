@@ -21,7 +21,8 @@ The harness is on in every pi session (user-level extension), no project setup n
   | `Makefile` | build or check target | test target |
 
   The main session is told which commands apply. With none found it is told changes are unverified, and to pass
-  `check` or ask for a .pi/check.
+  `check` or ask for a .pi/check. Each writing step without a check also ends with
+  `check: none (no check detected; add .pi/check or pass check)`.
 - Red baselines: before a prompt's first writing step the per-step check runs once on the untouched tree. If it
   already fails, its error lines are recorded (normalized: relative paths, no line numbers, durations or summary
   counts), and a step's failing check counts as passed when it adds no new errors ("no new failures: 20 known

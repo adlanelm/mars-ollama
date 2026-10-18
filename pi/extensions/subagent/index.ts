@@ -789,7 +789,11 @@ function parentSide(pi: ExtensionAPI) {
 					fs.writeFileSync(run.report, original + "\n"); // keep the real report
 				}
 			}
-			if (!check) return outcome;
+			if (!check) {
+				// a writing run with no check at all: say so, or the change looks verified
+				const writes = run.scope.length && (!run.agent.tools || run.agent.tools.some((t) => t === "edit" || t === "write"));
+				return writes ? { ...outcome, text: `${outcome.text}\n  check: none (no check detected; add .pi/check or pass check)` } : outcome;
+			}
 			// another subagent is waiting mid-change (NEEDS): the project would fail for its half-done work, not ours.
 			// The check runs when that subagent is resumed and finishes.
 			const others = [...waiting].filter((id) => id !== run.id);

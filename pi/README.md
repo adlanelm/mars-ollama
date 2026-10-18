@@ -20,16 +20,22 @@ The harness is on in every pi session (user-level extension), no project setup n
   | `.sln`/`.csproj` | `dotnet build` | `dotnet test` |
   | Python | `compileall` | `pytest` (when there are tests) |
   | `Makefile` | build or check target | test target |
+  | tracked `.py` files (none of the above gave a check) | `compileall` | `pytest` (when there are tests) |
 
   The main session is told which commands apply. With none found it is told changes are unverified, and to pass
   `check` or ask for a .pi/check. Each writing step without a check also ends with
   `check: none (no check detected; add .pi/check or pass check)`.
-- Red baselines: before a prompt's first writing step the per-step check runs once on the untouched tree. If it
-  already fails, its error lines are recorded (normalized: relative paths, no line numbers, durations or summary
-  counts), and a step's failing check counts as passed when it adds no new errors ("no new failures: 20 known
-  errors before, 6 now"). Retries list only the new errors. A failure that prints no error lines (a bare
-  `exit 1`) can't be compared and fails. ehi-ledger's build was red from known-vulnerable
-  packages, so every step had failed although each fixed its part. The full end check has no baseline.
+- Red baselines: before a prompt's first writing step in a directory, the per-step check runs once on the
+  untouched tree (one baseline per cwd and check, so a step in another directory or repo gets its own). If it
+  already fails, its exit code and error lines are recorded (normalized: relative paths, no line numbers,
+  durations or summary counts). A step's failing check is compared only when it exits with the baseline's code,
+  and counts as passed when it adds no new errors ("no new failures: 20 known errors before, 6 now"); retries
+  list only the new errors. A different exit code (a crash, an OOM kill, another failing stage), a timeout or
+  an abort fails as usual. Limit: the same code with only known error lines passes. When the baseline failed
+  without error lines (a bare `exit 1`), a failure with its code can't be compared: the step fails at once, not
+  retried, and the report says the failure may predate the step. ehi-ledger's build was red from
+  known-vulnerable packages, so every step had failed although each fixed its part. The full end check has no
+  baseline.
 - Git: outside a git repository writing subagents are refused, because scoping, snapshots and undo all need git.
   Run `git init` and commit, or set `allowNoGit`.
 - `.pi/harness.json` (per project, searched up to the git root): `{"enabled": false}` turns the harness off.
@@ -133,7 +139,7 @@ so that delegation and context limits are enforced by code, not left to the mode
     weren't touched are left alone. Build artefacts (`__pycache__`, `node_modules`, `Library`...) and Unity-generated `.meta` files next to an existing asset are ignored. Quarantine moves work across filesystems, and a failing scope check is reported instead of crashing pi.
   - Concurrent parallel runs don't undo each other's in-scope work.
   - Subagents can't change git state: commit, reset, checkout, stash, add, rebase, push and the like are blocked
-    in bash. If HEAD moves anyway, it is not undone (a commit from another terminal looks the same); the report
+    in bash. If HEAD moves anyway (during the run or its check), it is not undone (a commit from another terminal looks the same); the report
     says so, and the files in those commits are not scope-checked.
   - Outside git, only the edit/write guard applies. `<file>.meta` belongs to `<file>`'s scope (Unity).
 - Out of scope: the subagent calls `request {need, why}` and stops (`terminate`). The main session dispatches a
@@ -156,7 +162,8 @@ The harness picks the thinking level per task, and the level picks a reasoning b
   nothing (its model's `:level` suffix applies). A retry raises from its own level (frontmatter, else the
   `:level` suffix); with neither, the retry passes nothing either.
 - `models.json` sends `thinking_budget_tokens` per level (`samplingParamsByThinkingLevel`): minimal 256, low
-  1024, medium 3072, high 8192. qwen3.6 ignores `reasoning_effort` (minimal reasoned the most), so the budget is
+  1024, medium 3072, high 8192, xhigh 16384 (qwen3.8-27b 8192: xhigh stays at or below half of `maxTokens`, so
+  the answer still fits). qwen3.6 ignores `reasoning_effort` (minimal reasoned the most), so the budget is
   the real control.
 - At the limit llama-server closes the reasoning (a hard cut; the model does not plan for it) after injecting
   `--reasoning-budget-message` (llama-swap `chat_common`): "Thinking budget reached. Act now with what I have."
@@ -170,7 +177,7 @@ nits and the 2-review cap ended it.
 
 `-np 2 --kv-unified` means the parent and a subagent share one 131072-token KV pool. The parent therefore compacts
 at about 64k (`reserveTokens` 65536) and keeps 16k. qwen3.8-27b (49152 window) overrides this: reserve 8192 and
-keep 10000, with `maxTokens` 8192.
+keep 10000, with `maxTokens` 16384.
 
 Tests 2026-10-17, qwen3.6, synthetic repos:
 - `/implement` (add a parameter and a test) took one `subagent` call and 2 min. The main session peaked at 3.5k
@@ -183,3 +190,7 @@ Tests 2026-10-17, qwen3.6, synthetic repos:
 2026-10-17 KV pressure, qwen3.6: parent at 57k plus a read-only subagent at 43k (about 100k in the shared pool).
 No server errors, the subagent's answer was correct, and the parent's next turn re-processed only 185 tokens
 (cacheRead 56983), so its prefix survived the subagent.
+
+## Notes
+
+- `pi -p --mode json` waits on stdin when it isn't a terminal, so run it with `</dev/null` from scripts and background jobs.

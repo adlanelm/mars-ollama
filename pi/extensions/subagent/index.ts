@@ -107,7 +107,7 @@ function isCheckCommand(cmd: string, extra: Set<string>): boolean {
 }
 const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"]; // pi's levels (it also has max)
-// a retry raises up to `high` (models.json has budgets up to high); a level at or above it, or unknown, stays as is
+// a retry raises up to `high` (xhigh is only set explicitly); a level at or above it, or unknown, stays as is
 const RAISE_CAP = LEVELS.indexOf("high");
 const raiseLevel = (l?: string) => {
 	const i = LEVELS.indexOf(l ?? "low");
@@ -233,13 +233,22 @@ const detectCache = new Map<string, Detected | undefined>();
 
 /**
  * Checks for a project without .pi/check, from its standard files. Commands run in the project root. Order:
- * harness.json overrides, then package.json, Cargo.toml, go.mod, .sln/.csproj, Python (pytest), Makefile.
+ * harness.json overrides, then package.json, Cargo.toml, go.mod, .sln/.csproj, Python (pytest), Makefile, and
+ * last, with none of these giving a check, tracked .py files.
  */
 function detectChecks(cwd: string): Detected | undefined {
 	const root = gitRoot(cwd) ?? path.resolve(cwd);
 	if (detectCache.has(root)) return detectCache.get(root);
 	const has = (f: string) => fs.existsSync(path.join(root, f));
 	const inRoot = (c: string) => `cd ${shq(root)} && ${c}`;
+	const python = (what: string): Detected => {
+		const tests = has("tests") || has("test") || has("pytest.ini") || fs.readdirSync(root).some((f) => /^test_.*\.py$|_test\.py$/.test(f));
+		return {
+			fast: inRoot("python3 -m compileall -q -x '/(\\.venv|venv|node_modules|\\.git)/' ."),
+			full: tests ? inRoot("python3 -m pytest -q") : undefined,
+			source: tests ? `${what} (compileall, pytest)` : `${what} (compileall)`,
+		};
+	};
 	let d: Detected | undefined;
 	if (HC.check || HC.fullCheck) {
 		d = { fast: HC.check && inRoot(HC.check), full: HC.fullCheck && inRoot(HC.fullCheck), source: ".pi/harness.json" };
@@ -265,12 +274,7 @@ function detectChecks(cwd: string): Detected | undefined {
 	} else if (fs.readdirSync(root).some((f) => /\.(sln|slnx|csproj|fsproj)$/.test(f))) {
 		d = { fast: inRoot("dotnet build --nologo -v q"), full: inRoot("dotnet test --nologo -v q"), source: ".NET solution/project" };
 	} else if (has("pyproject.toml") || has("setup.py") || has("pytest.ini") || has("requirements.txt")) {
-		const tests = has("tests") || has("test") || has("pytest.ini") || fs.readdirSync(root).some((f) => /^test_.*\.py$|_test\.py$/.test(f));
-		d = {
-			fast: inRoot("python3 -m compileall -q -x '/(\\.venv|venv|node_modules|\\.git)/' ."),
-			full: tests ? inRoot("python3 -m pytest -q") : undefined,
-			source: tests ? "Python project (compileall, pytest)" : "Python project (compileall)",
-		};
+		d = python("Python project");
 	} else if (has("Makefile")) {
 		const mk = fs.readFileSync(path.join(root, "Makefile"), "utf8");
 		const target = (t: string) => new RegExp(`^${t}\\s*:`, "m").test(mk);
@@ -283,6 +287,16 @@ function detectChecks(cwd: string): Detected | undefined {
 		}
 	}
 	if (d && !d.fast && !d.full) d = undefined;
+	// a Python repo without project files: tracked .py files (git's index, no tree walk), else .py files in the root
+	if (!d) {
+		let py = false;
+		try {
+			py = git(root, ["ls-files", "--", "*.py"]).length > 0;
+		} catch {
+			py = fs.readdirSync(root).some((f) => f.endsWith(".py"));
+		}
+		if (py) d = python("Python files");
+	}
 	detectCache.set(root, d);
 	return d;
 }
@@ -301,24 +315,44 @@ const projectFullCheck = (cwd: string) => {
 	return d?.fast && d.full ? d.full : undefined;
 };
 
-function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): Promise<{ code: number; tail: string; out: string }> {
+interface CheckResult {
+	code: number; // killed by a signal: 128 + its number, as bash reports it
+	timedOut: boolean; // killed by us after CHECK_TIMEOUT_MS
+	aborted: boolean; // killed by us because the step was aborted
+	tail: string;
+	out: string;
+}
+
+function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): Promise<CheckResult> {
 	return new Promise((resolve) => {
 		const proc = spawn("bash", ["-c", cmd], { cwd, stdio: ["ignore", "pipe", "pipe"] });
 		let out = "";
+		let timedOut = false;
+		let aborted = false;
 		proc.stdout.on("data", (d) => (out += d.toString()));
 		proc.stderr.on("data", (d) => (out += d.toString()));
-		const kill = () => proc.kill("SIGTERM");
-		const timer = setTimeout(kill, CHECK_TIMEOUT_MS);
-		signal?.addEventListener("abort", kill, { once: true });
-		proc.on("close", (code) => {
+		const onTimeout = () => ((timedOut = true), proc.kill("SIGTERM"));
+		const onAbort = () => ((aborted = true), proc.kill("SIGTERM"));
+		const timer = setTimeout(onTimeout, CHECK_TIMEOUT_MS);
+		if (signal?.aborted) onAbort();
+		else signal?.addEventListener("abort", onAbort, { once: true });
+		proc.on("close", (code, sig) => {
 			clearTimeout(timer);
-			signal?.removeEventListener("abort", kill);
+			signal?.removeEventListener("abort", onAbort);
 			fs.writeFileSync(log, out);
 			const tail = out.trimEnd().split("\n").slice(-CHECK_TAIL_LINES).join("\n").slice(-1536);
-			resolve({ code: code ?? 1, tail, out });
+			resolve({ code: code ?? 128 + ((sig && os.constants.signals[sig]) || 0), timedOut, aborted, tail, out });
 		});
 	});
 }
+
+/** A failure compareToBaseline can't compare: says it may predate the step, so the main agent doesn't blame the step. */
+const uncomparableText = (r: CheckResult, log: string) =>
+	`FAILED (exit ${r.code}), but it was already failing before this step without error lines, so it can't be compared; not retried. Log: ${log}\n    ${r.tail.split("\n").slice(-4).join("\n    ").slice(0, 600)}`;
+
+/** How a failed check ended, for reports: "exit 2", "timed out after 30 min", "aborted". */
+const exitText = (r: CheckResult) =>
+	r.timedOut ? `timed out after ${Math.round(CHECK_TIMEOUT_MS / 60000)} min` : r.aborted ? "aborted" : `exit ${r.code}`;
 
 /**
  * The error lines of a check's output, normalized so two runs compare: paths relative, line/column numbers,
@@ -340,6 +374,44 @@ function errorLines(out: string, cwd: string): Set<string> {
 		if (l) set.add(l);
 	}
 	return set;
+}
+
+/** The check's result before this prompt's first step, per cwd and check (baselineKey). */
+interface Baseline {
+	code: number;
+	errors: Set<string>;
+	timedOut: boolean; // its error lines are partial: nothing compares against it
+}
+const baselineKey = (cwd: string, check: string) => `${cwd}\0${check}`;
+
+/**
+ * A step's check against the red baseline. Only a check that exits with the baseline's own exit code is compared,
+ * by error lines: a different code (a crash like 139, an OOM kill, a different failing stage) is a normal failure,
+ * and so is a timed-out or aborted check. Limit: the same code with only known error lines passes, even if the
+ * step broke something that prints no error line.
+ * - pass: exit 0, or the same failure with no new error lines
+ * - new: error lines that were not there before (newErrors), retried with only those
+ * - uncomparable: the baseline failed with this code but printed no error lines, so there is nothing to compare
+ *   against (a bare `exit 1` would always look like "no new failures"); it may predate the step, so not retried
+ * - fail: anything else, a normal failure
+ */
+function compareToBaseline(
+	res: CheckResult,
+	base: Baseline | undefined,
+	cwd: string,
+): { verdict: "pass" | "new" | "uncomparable" | "fail"; newErrors?: string[]; why?: string } {
+	if (res.timedOut || res.aborted) return { verdict: "fail", why: exitText(res) };
+	if (res.code === 0) return { verdict: "pass" };
+	if (!base || base.code === 0) return { verdict: "fail" };
+	if (base.timedOut) return { verdict: "fail", why: "the baseline timed out, so there is nothing to compare against" };
+	if (res.code !== base.code) return { verdict: "fail", why: `exit ${res.code}, the baseline failed with exit ${base.code}` };
+	if (base.errors.size === 0) return { verdict: "uncomparable" };
+	const now = errorLines(res.out, cwd);
+	if (now.size === 0) return { verdict: "fail", why: "no error lines to compare" };
+	const newErrors = [...now].filter((e) => !base.errors.has(e));
+	return newErrors.length
+		? { verdict: "new", newErrors }
+		: { verdict: "pass", why: `baseline was already failing: ${base.errors.size} known errors before the first step, ${now.size} now` };
 }
 
 function inScope(file: string, cwd: string, scope: string[]): boolean {
@@ -456,6 +528,22 @@ function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: 
 		}
 	}
 	return { fixed, headMoved };
+}
+
+/** HEAD's commit, "" outside git or in a repo without commits. */
+function headOf(cwd: string): string {
+	try {
+		return git(cwd, ["rev-parse", "HEAD"]).trim();
+	} catch {
+		return "";
+	}
+}
+
+/** A check runs (for minutes) after the run's scope check: a commit made meanwhile is reported like headMoved. */
+function headMovedNote(before: string, cwd: string): string {
+	const now = headOf(cwd);
+	if (!before || !now || now === before) return "";
+	return `\n  HEAD moved during the check (${before.slice(0, 8)} -> ${now.slice(0, 8)}); not undone, the files in those commits were not scope-checked. Tell the user.`;
 }
 
 function piInvocation(args: string[]): { command: string; args: string[] } {
@@ -639,7 +727,7 @@ function parentSide(pi: ExtensionAPI) {
 	const waiting = new Set<string>(); // runs stopped with NEEDS, not yet resumed
 	// runs whose check was deferred because another run was waiting; run when the waiting set empties
 	const deferred = new Map<string, { run: Run; check: string }>();
-	const baselines = new Map<string, { code: number; errors: Set<string> }>(); // per check, before this prompt's first step
+	const baselines = new Map<string, Baseline>(); // per cwd and check (baselineKey), before this prompt's first step
 	let writeChain: Promise<unknown> = Promise.resolve();
 	const serialWrite = <T,>(f: () => Promise<T>): Promise<T> => {
 		const next = writeChain.then(f, f);
@@ -818,6 +906,12 @@ function parentSide(pi: ExtensionAPI) {
 	 * so the result does not depend on the subagent's claims) and resume the subagent with failures.
 	 */
 	async function settle(run: Run, outcome: Outcome, check: string | undefined, model?: string, thinking?: string, signal?: AbortSignal): Promise<Outcome> {
+		const notes: string[] = []; // HEAD moved during a check: added to whatever the final outcome is
+		const o = await settleChecks(run, outcome, check, notes, model, thinking, signal);
+		return notes.length ? { ...o, text: o.text + notes.join("") } : o;
+	}
+
+	async function settleChecks(run: Run, outcome: Outcome, check: string | undefined, notes: string[], model?: string, thinking?: string, signal?: AbortSignal): Promise<Outcome> {
 		for (let attempt = 0; ; attempt++) {
 			if (outcome.status !== "done") return outcome;
 			if (!hasSummary(outcome.out ?? "")) {
@@ -854,22 +948,19 @@ function parentSide(pi: ExtensionAPI) {
 			}
 			deferred.delete(run.id); // a resumed run that had a deferred check: this one covers it
 			const log = path.join(path.dirname(run.report), `${run.id}.check${attempt ? `-${attempt}` : ""}.log`);
+			const head = headOf(run.cwd);
 			const res = await runCheck(check, run.cwd, log, signal);
-			// the project was already failing before this prompt's first step: only new errors count. A failure with no
-			// error lines can't be compared (a bare `exit 1` would always look like "no new failures"), so it fails
-			const base = baselines.get(check);
-			let newErrors: string[] | undefined;
-			const now = res.code !== 0 && base && base.code !== 0 ? errorLines(res.out, run.cwd) : undefined;
-			if (base && now?.size) {
-				newErrors = [...now].filter((e) => !base.errors.has(e));
-				if (newErrors.length === 0) {
-					return {
-						...outcome,
-						text: `${outcome.text}\n  check: no new failures (baseline was already failing: ${base.errors.size} known errors before the first step, ${now.size} now). Log: ${log}`,
-					};
-				}
-			}
-			if (res.code === 0) {
+			const moved = headMovedNote(head, run.cwd);
+			if (moved) notes.push(moved);
+			// the project was already failing before this prompt's first step: only new errors count (compareToBaseline)
+			const base = baselines.get(baselineKey(run.cwd, check));
+			const cmp = compareToBaseline(res, base, run.cwd);
+			const newErrors = cmp.newErrors;
+			if (cmp.verdict === "pass" && res.code !== 0) return { ...outcome, text: `${outcome.text}\n  check: no new failures (${cmp.why}). Log: ${log}` };
+			// the failure may predate the step: relaunching the subagent to fix it would spend the retries on it
+			if (cmp.verdict === "uncomparable") return { ...outcome, status: "failed", text: `${outcome.text}\n  check: ${uncomparableText(res, log)}` };
+			if (res.aborted) return { ...outcome, status: "failed", text: `${outcome.text}\n  check: aborted, log: ${log}` };
+			if (cmp.verdict === "pass") {
 				// the lines that say what passed (test totals, exit lines), not just the last two (on psx-iso those were the
 				// main agent's own grep counts, which hid "12/12 passed" and sent it re-verifying for 35 minutes)
 				const lines = res.tail.split("\n").filter((l) => l.trim());
@@ -882,7 +973,7 @@ function parentSide(pi: ExtensionAPI) {
 				return {
 					...outcome,
 					status: "failed",
-					text: `${outcome.text}\n  check: FAILED (exit ${res.code}) after ${CHECK_RETRIES} retries, log: ${log}\n    ${last.slice(0, 600)}`,
+					text: `${outcome.text}\n  check: FAILED (${cmp.why ?? exitText(res)}) after ${CHECK_RETRIES} retries, log: ${log}\n    ${last.slice(0, 600)}`,
 				};
 			}
 			// a failed check is where reasoning pays: think one level higher on the retry. An agent with its own model
@@ -894,7 +985,7 @@ function parentSide(pi: ExtensionAPI) {
 				run,
 				newErrors
 					? `The check \`${check}\` shows errors that were not there before your change (the project already had ${base!.errors.size} known errors, which are not yours to fix):\n${newErrors.slice(0, 12).join("\n")}\nFull log: ${log}\nFix the new errors within your scope, then report again.`
-					: `The check \`${check}\` failed (exit ${res.code}). Its last lines:\n${res.tail}\nFull log: ${log}\nFix the cause within your scope, then report again.`,
+					: `The check \`${check}\` failed (${cmp.why ?? exitText(res)}). Its last lines:\n${res.tail}\nFull log: ${log}\nFix the cause within your scope, then report again.`,
 				model,
 				thinking,
 				signal,
@@ -920,18 +1011,20 @@ function parentSide(pi: ExtensionAPI) {
 			const run = rs[0];
 			const ids = rs.map((r) => r.id).join(", ");
 			const log = path.join(path.dirname(run.report), `${run.id}.check-deferred.log`);
+			const head = headOf(run.cwd);
 			const res = await runCheck(check, run.cwd, log, signal);
-			const base = baselines.get(check);
-			const now = res.code !== 0 && base && base.code !== 0 ? errorLines(res.out, run.cwd) : undefined;
-			const newErrors = base && now?.size ? [...now].filter((e) => !base.errors.has(e)) : undefined; // no error lines: fails
+			const moved = headMovedNote(head, run.cwd);
+			const cmp = compareToBaseline(res, baselines.get(baselineKey(run.cwd, check)), run.cwd);
 			const result =
-				res.code === 0
-					? "exit 0"
-					: newErrors?.length === 0
-						? `no new failures (baseline was already failing). Log: ${log}`
-						: `FAILED (exit ${res.code}), log: ${log}\n    ${(newErrors ? `new errors: ${newErrors.slice(0, 4).join(" | ")}` : res.tail.split("\n").slice(-4).join("\n    ")).slice(0, 600)}`;
-			const ok = res.code === 0 || newErrors?.length === 0;
-			outs.push({ id: run.id, status: ok ? "done" : "failed", contextTokens: 0, text: `[${ids}] deferred check: ${result}` });
+				cmp.verdict === "pass"
+					? res.code === 0
+						? "exit 0"
+						: `no new failures (${cmp.why}). Log: ${log}`
+					: cmp.verdict === "uncomparable"
+						? uncomparableText(res, log)
+						: `FAILED (${cmp.why ?? exitText(res)}), log: ${log}\n    ${(cmp.newErrors ? `new errors: ${cmp.newErrors.slice(0, 4).join(" | ")}` : res.tail.split("\n").slice(-4).join("\n    ")).slice(0, 600)}`;
+			const ok = cmp.verdict === "pass";
+			outs.push({ id: run.id, status: ok ? "done" : "failed", contextTokens: 0, text: `[${ids}] deferred check: ${result}${moved}` });
 		}
 		return outs;
 	}
@@ -1053,15 +1146,21 @@ function parentSide(pi: ExtensionAPI) {
 		// other's half-done change (psx-iso: two parallel tool calls, CrawlerAI.cs and PlayerController.cs)
 		const outcome = await (canWrite && run.scope.length ? serialWrite : (f: () => Promise<Outcome>) => f())(async () => {
 			let baseNote = "";
-			if (spec.check && canWrite && run.scope.length && !baselines.has(spec.check)) {
+			// one baseline per cwd and check: a step in another directory or repo gets its own
+			const key = spec.check && baselineKey(run.cwd, spec.check);
+			if (spec.check && key && canWrite && run.scope.length && !baselines.has(key)) {
 				const log = path.join(path.dirname(run.report), `baseline-${baselines.size + 1}.log`);
+				const head = headOf(run.cwd);
 				const r = await runCheck(spec.check, run.cwd, log, signal);
-				baselines.set(spec.check, { code: r.code, errors: errorLines(r.out, run.cwd) });
-				const n = baselines.get(spec.check)!.errors.size;
-				if (r.code !== 0)
+				// an aborted baseline is not kept: the next step runs it again
+				if (!r.aborted) baselines.set(key, { code: r.code, errors: errorLines(r.out, run.cwd), timedOut: r.timedOut });
+				const n = baselines.get(key)?.errors.size ?? 0;
+				if (r.timedOut) baseNote = `\n  baseline: the check timed out before this step (log ${log}); a failing check is not compared.`;
+				else if (r.code !== 0 && !r.aborted)
 					baseNote = n
-						? `\n  baseline: the check was already failing before this step (${n} errors, log ${log}); only new errors count.`
-						: `\n  baseline: the check was already failing before this step without error lines (log ${log}); a failing check can't be compared, so it counts as failed.`;
+						? `\n  baseline: the check was already failing before this step (exit ${r.code}, ${n} errors, log ${log}); only new errors with the same exit code count.`
+						: `\n  baseline: the check was already failing before this step without error lines (exit ${r.code}, log ${log}); a failure with that code can't be compared, so it fails without retries.`;
+				baseNote += headMovedNote(head, run.cwd);
 			}
 			const o = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
 			return { ...o, text: o.text + baseNote };
@@ -1238,24 +1337,32 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		// full check (tests) once the steps are done: per-step checks were the fast ones
 		const full = projectFullCheck(ctx.cwd);
+		let fullMoved = ""; // HEAD moved during a passing full check: goes into the review message, else its own
 		if (!planOnly && full && unverified.size && fullChecks < MAX_FULL_CHECKS) {
 			fullChecks++;
 			const log = path.join(ensureRunDir(), `full-check-${fullChecks}.log`);
 			const covered = [...unverified];
+			const head = headOf(ctx.cwd);
 			const res = await runCheck(full, ctx.cwd, log);
+			fullMoved = headMovedNote(head, ctx.cwd);
 			// the files this check covered, pass or fail (a failure is reported below); files changed after it
 			// started stay unverified, also into the next prompt
 			for (const f of covered) unverified.delete(f);
 			if (res.code !== 0) {
 				const content =
-					`[full check ${fullChecks}/${MAX_FULL_CHECKS}] \`${full}\` failed (exit ${res.code}) after your steps. Last lines:\n${res.tail}\nLog: ${log}\n` +
+					`[full check ${fullChecks}/${MAX_FULL_CHECKS}] \`${full}\` failed (${exitText(res)}) after your steps. Last lines:\n${res.tail}\nLog: ${log}${fullMoved}\n` +
 					"Fix it with a worker step (scope = the 1-2 files at fault), then finish; the full check runs again.";
 				return { entries: [{ type: "custom_message", customType: "full-check", content, display: true }], continue: true };
 			}
 		}
-		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS) return;
+		const movedOnly = () => {
+			if (!fullMoved) return;
+			const content = `[full check ${fullChecks}/${MAX_FULL_CHECKS}] passed.${fullMoved}`;
+			return { entries: [{ type: "custom_message" as const, customType: "full-check", content, display: true }], continue: true };
+		};
+		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS) return movedOnly();
 		const agents = discoverAgents(ctx.cwd, "user").agents;
-		if (!agents.some((a) => a.name === "reviewer")) return;
+		if (!agents.some((a) => a.name === "reviewer")) return movedOnly();
 		const files = [...changed].map((f) => path.relative(ctx.cwd, f) || f);
 		changed.clear();
 		reviews++;
@@ -1276,10 +1383,11 @@ function parentSide(pi: ExtensionAPI) {
 		const clean = out.status === "done" && /SUMMARY:\W*(0|no|zero)\s+(issues|problems|defects)/i.test(out.text);
 		const content =
 			`[auto-review ${reviews}/${MAX_REVIEWS} of ${files.join(", ")}]\n${out.text}\n` +
+			(fullMoved ? `[full check ${fullChecks}/${MAX_FULL_CHECKS}] passed.${fullMoved}\n` : "") +
 			(clean
 				? "No issues: finish your answer to the user."
 				: "Fix the real issues with a worker (scope = the affected files; read the report path for details) or tell the user why not, then finish.");
-		return { entries: [{ type: "custom_message", customType: "auto-review", content, display: true }], continue: !clean };
+		return { entries: [{ type: "custom_message", customType: "auto-review", content, display: true }], continue: !clean || !!fullMoved };
 	});
 
 	// Context guard: the main agent cannot pull large outputs into its own context. Per call, output is capped;

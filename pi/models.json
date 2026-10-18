@@ -7,11 +7,11 @@
       "apiKey": "none",
       "models": [
         { "id": "qwen3.6-35b-a3b", "name": "Qwen 3.6 35B-A3B (mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 131072, "maxTokens": 32768,
-          "samplingParamsByThinkingLevel": { "minimal": { "thinking_budget_tokens": 256 }, "low": { "thinking_budget_tokens": 1024 }, "medium": { "thinking_budget_tokens": 3072 }, "high": { "thinking_budget_tokens": 8192 } } },
+          "samplingParamsByThinkingLevel": { "minimal": { "thinking_budget_tokens": 256 }, "low": { "thinking_budget_tokens": 1024 }, "medium": { "thinking_budget_tokens": 3072 }, "high": { "thinking_budget_tokens": 8192 }, "xhigh": { "thinking_budget_tokens": 16384 } } },
         { "id": "gemma4-26b", "name": "Gemma 4 26B (mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 131072, "maxTokens": 32768,
-          "samplingParamsByThinkingLevel": { "minimal": { "thinking_budget_tokens": 256 }, "low": { "thinking_budget_tokens": 1024 }, "medium": { "thinking_budget_tokens": 3072 }, "high": { "thinking_budget_tokens": 8192 } } },
+          "samplingParamsByThinkingLevel": { "minimal": { "thinking_budget_tokens": 256 }, "low": { "thinking_budget_tokens": 1024 }, "medium": { "thinking_budget_tokens": 3072 }, "high": { "thinking_budget_tokens": 8192 }, "xhigh": { "thinking_budget_tokens": 16384 } } },
         { "id": "qwen3.8-27b", "name": "Qwen 3.8 27B (mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 49152, "maxTokens": 16384,
-          "samplingParamsByThinkingLevel": { "minimal": { "thinking_budget_tokens": 256 }, "low": { "thinking_budget_tokens": 1024 }, "medium": { "thinking_budget_tokens": 3072 }, "high": { "thinking_budget_tokens": 8192 } } },
+          "samplingParamsByThinkingLevel": { "minimal": { "thinking_budget_tokens": 256 }, "low": { "thinking_budget_tokens": 1024 }, "medium": { "thinking_budget_tokens": 3072 }, "high": { "thinking_budget_tokens": 8192 }, "xhigh": { "thinking_budget_tokens": 8192 } } },
         { "id": "colibri-big", "name": "Qwen 3.8 Flash-Next (colibri, slow, mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 131072, "maxTokens": 32768,
           "compat": { "thinkingFormat": "qwen", "supportsReasoningEffort": true } }
       ]

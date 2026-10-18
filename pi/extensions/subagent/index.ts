@@ -1021,7 +1021,8 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		if (planOnly && (event.toolName === "edit" || event.toolName === "write")) return { block: true, reason: PLAN_ONLY_REASON };
 		if (planOnly && event.toolName === "bash" && !isCheckCommand((event.input as { command: string }).command, checks)) {
-			const cmd = (event.input as { command: string }).command;
+			// quoted text is data, not shell syntax: grep 'GetComponent<Health>' is not a redirect
+			const cmd = (event.input as { command: string }).command.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''");
 			if (/(^|[^<>2&])>[^&]|\b(sed\s+-i|tee|rm|mv|cp|mkdir|touch|chmod|ln|truncate|patch|git\s+(commit|reset|checkout|stash|add|apply))\b/.test(cmd)) {
 				return { block: true, reason: PLAN_ONLY_REASON };
 			}

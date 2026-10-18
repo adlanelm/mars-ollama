@@ -141,6 +141,12 @@ so that delegation and context limits are enforced by code, not left to the mode
   - Subagents can't change git state: commit, reset, checkout, stash, add, rebase, push and the like are blocked
     in bash. If HEAD moves anyway (during the run or its check), it is not undone (a commit from another terminal looks the same); the report
     says so, and the files in those commits are not scope-checked.
+  - Package installs that write outside the project are blocked in bash: `pip install` (also `python -m pip`,
+    `uv pip install`), `pipx install`, `uv tool install`, `cargo install`, `gem install`, `go install`, `npm i -g`,
+    `yarn global add`, also after `sudo`, env prefixes, `&&` or `;`. The scope check only sees the git tree, and a
+    worker once ran `uv pip install pytest --target ~/.local/...`. A missing tool is reported, or asked for with
+    `request`; `npm install`, `yarn`, `uv sync`/`uv add` and `dotnet restore` stay allowed. The main session isn't
+    guarded, since it answers those requests.
   - Outside git, only the edit/write guard applies. `<file>.meta` belongs to `<file>`'s scope (Unity).
 - Out of scope: the subagent calls `request {need, why}` and stops (`terminate`). The main session dispatches a
   helper with `for: "<id>"` (or makes a one-line edit itself), then sends `resume: "<id>"`. The resumed subagent

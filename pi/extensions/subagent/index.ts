@@ -562,6 +562,25 @@ function piInvocation(args: string[]): { command: string; args: string[] } {
 const GIT_WRITE =
 	/\bgit\b[^|;&\n]*\s(commit|push|pull|fetch|reset|checkout|switch|restore|stash|rebase|merge|cherry-pick|revert|am|apply|clean|rm|mv|add|tag|update-ref|worktree|branch\s+-[dDmM])\b/;
 
+// package installs that write outside the project (user site-packages, a global prefix, ~/.cargo, ~/go), which the
+// scope check (git tree only) never sees. A live worker ran `uv pip install pytest --target ~/.local/...`. Project-local
+// installs (npm/pnpm install, yarn, uv sync/add, dotnet restore/add package) are not matched. The main session is not
+// guarded: it is the one that answers a subagent's request for a tool, with the user watching.
+const INSTALL_PREFIX = /^(?:(?:sudo|doas)(?:\s+(?:-[ugCh]\s+\S+|-\S+))*\s+|env(?:\s+-\S+)*\s+|\w+=\S*\s+|(?:time|nohup|command|exec)\s+)*/;
+const GLOBAL_INSTALL =
+	/^(?:\S*\/)?(?:(?:python[\d.]*\s+-m\s+)?pip[\d.]*\s+install|uv\s+pip\s+install|pipx\s+install|uv\s+tool\s+install|cargo\s+install|gem\s+install|go\s+install|yarn\s+global\s+add)\b/;
+
+function isGlobalInstall(cmd: string): boolean {
+	// quoted text is data: grep "pip install" README.md is a mention; each command of a chain is checked from its start
+	const parts = cmd.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''").split(/&&|\|\||[;|&\n(){}`]/);
+	return parts.some((p) => {
+		const c = p.trim().replace(INSTALL_PREFIX, "");
+		if (GLOBAL_INSTALL.test(c)) return true;
+		// npm/pnpm install is project-local unless -g/--global
+		return /^(?:\S*\/)?p?npm\s/.test(c) && /\s(?:install|i|add)(?:\s|$)/.test(c) && /\s(?:-g|--global)(?:\s|=|$)/.test(c);
+	});
+}
+
 function childSide(pi: ExtensionAPI) {
 	const id = process.env.PI_SUBAGENT_ID ?? "subagent";
 	const dir = process.env.PI_HANDOFF_DIR ?? HANDOFF_ROOT;
@@ -596,6 +615,12 @@ function childSide(pi: ExtensionAPI) {
 				return {
 					block: true,
 					reason: "Subagents do not change git state (commit, reset, checkout, stash, ...). The main agent and the user own git; edit files in your scope instead.",
+				};
+			}
+			if (isGlobalInstall(cmd)) {
+				return {
+					block: true,
+					reason: "Subagents do not install packages outside the project (pip/uv pip/pipx/uv tool/cargo/gem/go install, npm -g). If a tool is missing, report it, don't install it; if the task needs it, call request to ask the main agent.",
 				};
 			}
 			return;
@@ -1146,6 +1171,7 @@ function parentSide(pi: ExtensionAPI) {
 		// other's half-done change (psx-iso: two parallel tool calls, CrawlerAI.cs and PlayerController.cs)
 		const outcome = await (canWrite && run.scope.length ? serialWrite : (f: () => Promise<Outcome>) => f())(async () => {
 			let baseNote = "";
+			let headNote = "";
 			// one baseline per cwd and check: a step in another directory or repo gets its own
 			const key = spec.check && baselineKey(run.cwd, spec.check);
 			if (spec.check && key && canWrite && run.scope.length && !baselines.has(key)) {
@@ -1160,10 +1186,11 @@ function parentSide(pi: ExtensionAPI) {
 					baseNote = n
 						? `\n  baseline: the check was already failing before this step (exit ${r.code}, ${n} errors, log ${log}); only new errors with the same exit code count.`
 						: `\n  baseline: the check was already failing before this step without error lines (exit ${r.code}, log ${log}); a failure with that code can't be compared, so it fails without retries.`;
-				baseNote += headMovedNote(head, run.cwd);
+				headNote = headMovedNote(head, run.cwd);
 			}
 			const o = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
-			return { ...o, text: o.text + baseNote };
+			// the baseline note explains a failing check; after a pass ("check: exit 0") it only contradicts it
+			return { ...o, text: o.text + (o.status === "done" ? "" : baseNote) + headNote };
 		});
 		track(run, outcome);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);

@@ -76,6 +76,18 @@ function finalText(messages: Message[]): string {
 			if (t) return t;
 		}
 	}
+	// a local model sometimes ends with reasoning only and no answer text (psx-iso: "[18-worker] ERROR: no output"
+	// although its reasoning held the result): use the last reasoning, marked as such
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role !== "assistant") continue;
+		const thought = ((m.content as any[]) ?? [])
+			.filter((c) => c.type === "thinking")
+			.map((c) => c.thinking ?? "")
+			.join("\n")
+			.trim();
+		if (thought) return `(no answer text; last reasoning follows)\n${thought.slice(-3000)}`;
+	}
 	return "";
 }
 

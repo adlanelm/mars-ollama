@@ -49,6 +49,7 @@ so that delegation and context limits are enforced by code, not left to the mode
   numbered steps of 1-2 files that each leave the project building, with tests as their own step, run as a
   chain of workers. On psx-iso a single 4-file task left a compile error spread over the AI, the scene builder
   and the tests, and the fix broke the shared test setup.
+- A subagent whose final message has no answer text (reasoning only) reports its last reasoning, marked as such, instead of "no output".
 - Writing subagents run one at a time (also across parallel tool calls); read-only scouts stay parallel. Two writers at once fail each other's checks.
 - Two check levels: `.pi/check-fast` (build/validate) after every step; `.pi/check` (full tests) once before
   the prompt finishes while files are unverified, at most 2 fix rounds, before the review. Without a

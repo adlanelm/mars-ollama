@@ -106,8 +106,13 @@ function isCheckCommand(cmd: string, extra: Set<string>): boolean {
 	return extra.has(c) || CHECK_CORE.test(c);
 }
 const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-const LEVELS = ["off", "minimal", "low", "medium", "high"];
-const raiseLevel = (l?: string) => LEVELS[Math.min(LEVELS.indexOf(l ?? "low") + 1, LEVELS.length - 1)] ?? "medium";
+const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"]; // pi's levels (it also has max)
+// a retry raises up to `high` (models.json has budgets up to high); a level at or above it, or unknown, stays as is
+const RAISE_CAP = LEVELS.indexOf("high");
+const raiseLevel = (l?: string) => {
+	const i = LEVELS.indexOf(l ?? "low");
+	return i < 0 || i >= RAISE_CAP ? (l ?? "medium") : LEVELS[i + 1];
+};
 const PLAN_ONLY = /\[plan-only\]/i;
 const PLAN_ONLY_REASON =
 	"This prompt is plan-only: no edits, no writing subagents. Present the plan (files and why) and stop; the user replies with OK to implement.";
@@ -171,7 +176,7 @@ function projectFile(cwd: string, name: string): string | undefined {
 	} catch {}
 	for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
 		const f = path.join(d, ".pi", name);
-		if (fs.existsSync(f) && fs.statSync(f).isFile()) return `bash ${f}`;
+		if (fs.existsSync(f) && fs.statSync(f).isFile()) return `bash ${JSON.stringify(f)}`;
 		if (d === root || d === path.dirname(d)) return undefined;
 	}
 }
@@ -369,19 +374,21 @@ function touchedFiles(snap: Snapshot): string[] {
 	return out;
 }
 
-/** Restores files changed outside scope since the snapshot; new untracked files are moved to quarantine. */
-function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: string): string[] {
+/**
+ * Restores files changed outside scope since the snapshot; new untracked files are moved to quarantine.
+ * `headMoved`: HEAD changed meanwhile. Not undone: a commit from another terminal (the user's) looks the same as
+ * one the run made, and the changes it holds are hidden from this check.
+ */
+function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: string): { fixed: string[]; headMoved?: string } {
 	const fixed: string[] = [];
+	let headMoved: string | undefined;
 	let tracked: Set<string>;
 	try {
-		// commits would hide changes from `git status`: move HEAD back, keeping the changes in the worktree
-		if (snap.head && git(snap.root, ["rev-parse", "HEAD"]).trim() !== snap.head) {
-			git(snap.root, ["reset", "-q", "--soft", snap.head]);
-			fixed.push(`commits since ${snap.head.slice(0, 8)} (undone with reset --soft; changes kept and checked below)`);
-		}
+		const head = snap.head ? git(snap.root, ["rev-parse", "HEAD"]).trim() : "";
+		if (snap.head && head !== snap.head) headMoved = `${snap.head.slice(0, 8)} -> ${head.slice(0, 8)}`;
 		tracked = new Set(snap.head ? git(snap.root, ["ls-tree", "-r", "-z", "--name-only", "HEAD"]).split("\0").filter(Boolean) : []);
 	} catch {
-		return fixed;
+		return { fixed };
 	}
 	for (const p of changedPaths(snap.root)) {
 		const abs = path.join(snap.root, p);
@@ -406,7 +413,7 @@ function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: 
 			fixed.push(`${p} (new file moved to ${dest})`);
 		}
 	}
-	return fixed;
+	return { fixed, headMoved };
 }
 
 function piInvocation(args: string[]): { command: string; args: string[] } {
@@ -595,16 +602,23 @@ function parentSide(pi: ExtensionAPI) {
 		writeChain = next.catch(() => {});
 		return next;
 	};
-	const unverified = new Set<string>(); // files changed since the last passing full check
+	const unverified = new Set<string>(); // files changed since the last full check (kept until one has run on them)
 	let fullChecks = 0;
-	const deferred = new Set<string>(); // runs whose check was deferred while others waited
 	const track = (run: Run, o: Outcome) => {
 		if (o.status === "needs") waiting.add(run.id);
 		else waiting.delete(run.id);
-		if (o.status === "done" && waiting.size === 0 && /check: exit 0/.test(o.text)) deferred.clear();
 	};
 	// files changed in this prompt (worker scopes and the main agent's own edits) and not reviewed since
 	const changed = new Set<string>();
+	/** A writing run that finished: its files (all launches) go to the auto-review and the full check. */
+	const recordChanges = (run: Run, o: Outcome) => {
+		const canWrite = !run.agent.tools || run.agent.tools.some((t) => t === "edit" || t === "write");
+		if (o.status !== "done" || !canWrite) return;
+		for (const f of run.touched ?? run.scope) {
+			changed.add(f);
+			unverified.add(f);
+		}
+	};
 	let reviews = 0;
 	// a prompt containing [plan-only] (e.g. /plan, /backlog-item) may read and plan but not change anything
 	let planOnly = false;
@@ -626,8 +640,9 @@ function parentSide(pi: ExtensionAPI) {
 		if (model_) args.push("--model", model_);
 		// thinking level per task: a retry's raised level, else the agent's own (scouts think little, planners and
 		// reviewers more), else the main session's. The level selects the reasoning budget in models.json.
-		const level = run.level ?? run.agent.thinking ?? thinking;
-		if (!run.agent.model && level) args.push("--thinking", level);
+		// An agent with its own model does not inherit the session's level (its model may carry a `:level` suffix).
+		const level = run.level ?? run.agent.thinking ?? (run.agent.model ? undefined : thinking);
+		if (level) args.push("--thinking", level);
 		args.push("--append-system-prompt", run.promptFile, message);
 
 		const snap = snapshot(run.cwd);
@@ -683,15 +698,24 @@ function parentSide(pi: ExtensionAPI) {
 				];
 				finished.push({ seq: ++seq, scope: run.scope });
 				let violations: string[] = [];
+				let headMoved: string | undefined;
 				try {
-					if (snap) violations = enforceScope(snap, allowed, run.cwd, path.join(path.dirname(run.report), "quarantine", run.id));
+					if (snap) ({ fixed: violations, headMoved } = enforceScope(snap, allowed, run.cwd, path.join(path.dirname(run.report), "quarantine", run.id)));
 				} catch (e) {
 					violations = [`scope check failed (${(e as Error).message.slice(0, 200)}); review git status`];
 				}
 				const shown = violations.slice(0, 5).join(", ") + (violations.length > 5 ? `, +${violations.length - 5} more` : "");
-				const scopeNote = violations.length
-					? `\n  SCOPE VIOLATION, undone: ${shown}. Widen the scope (resume with scope) or delegate those files.`
-					: "";
+				const scopeNote =
+					(violations.length ? `\n  SCOPE VIOLATION, undone: ${shown}. Widen the scope (resume with scope) or delegate those files.` : "") +
+					(headMoved ? `\n  HEAD moved during the run (${headMoved}); not undone, the files in those commits were not scope-checked. Tell the user.` : "");
+				// files this launch changed, recorded for every outcome: a resumed launch's snapshot already sees a NEEDS
+				// launch's edits as dirty, so the run's own set is the only record of them
+				if (snap) {
+					run.touched ??= new Set();
+					try {
+						for (const f of touchedFiles(snap)) if (!ARTEFACT.test(f) && !f.endsWith(".meta")) run.touched.add(f);
+					} catch {}
+				}
 				const reqFile = path.join(path.dirname(run.report), `${run.id}.request.json`);
 				if (fs.existsSync(reqFile)) {
 					let req = { need: "?", why: "?" };
@@ -721,12 +745,6 @@ function parentSide(pi: ExtensionAPI) {
 					return;
 				}
 				fs.writeFileSync(run.report, out + "\n");
-				if (snap) {
-					run.touched ??= new Set();
-					try {
-						for (const f of touchedFiles(snap)) if (!ARTEFACT.test(f) && !f.endsWith(".meta")) run.touched.add(f);
-					} catch {}
-				}
 				resolve({ id: run.id, status: "done", contextTokens, out, scopeNote, text: doneText(run, out, scopeNote) });
 			});
 		});
@@ -750,7 +768,7 @@ function parentSide(pi: ExtensionAPI) {
 	 * After a subagent finishes: ask once for a missing SUMMARY line, then run the task's check (by the extension,
 	 * so the result does not depend on the subagent's claims) and resume the subagent with failures.
 	 */
-	async function settle(run: Run, outcome: Outcome, check: string | undefined, model?: string, thinking?: string, signal?: AbortSignal) {
+	async function settle(run: Run, outcome: Outcome, check: string | undefined, model?: string, thinking?: string, signal?: AbortSignal): Promise<Outcome> {
 		for (let attempt = 0; ; attempt++) {
 			if (outcome.status !== "done") return outcome;
 			if (!hasSummary(outcome.out ?? "")) {
@@ -776,7 +794,6 @@ function parentSide(pi: ExtensionAPI) {
 			// The check runs when that subagent is resumed and finishes.
 			const others = [...waiting].filter((id) => id !== run.id);
 			if (others.length) {
-				deferred.add(run.id);
 				return { ...outcome, text: `${outcome.text}\n  check: deferred (waiting for ${others.join(", ")} to be resumed)` };
 			}
 			// nothing changed (a read-only task given a scope): the check cannot have changed either
@@ -865,14 +882,25 @@ function parentSide(pi: ExtensionAPI) {
 	function reportFetch(spec: Spec): Outcome | undefined {
 		if (spec.scope?.length) return undefined;
 		const g = spec.goal.trim();
-		if (g.length > 200 || !/\b(return|show|give|read|print|output|fetch|get)\b[^.]*\b(report|content|text)\b/i.test(g)) return undefined;
+		if (g.length > 200 || !/\b(return|show|give|read|print|output|fetch|get)\b/i.test(g)) return undefined;
 		// any file named in the goal must be a handoff report; "read the content of README.md" is real work
 		const files = g.match(/[\w./~-]*\.\w{1,5}\b/g) ?? [];
 		const handoffRoot = path.resolve(HANDOFF_ROOT) + path.sep;
 		if (files.some((f) => !f.startsWith(handoffRoot))) return undefined;
-		const named = files[0];
+		// only a goal that is clearly about a subagent's report: a handoff file, a run id, "handoff", or "the
+		// last/scout's/... report" ("read how the parser handles text input" is real work)
+		const byId = [...runs.values()].find((r) => new RegExp(`\\b${r.id}\\b`).test(g));
+		const aboutReport =
+			files.length > 0 ||
+			byId ||
+			/\bhandoff\b/i.test(g) ||
+			/\b(last|latest|previous|its|their|subagent'?s?|scout'?s?|worker'?s?|reviewer'?s?|planner'?s?)\s+(full\s+|final\s+)?reports?\b/i.test(g) ||
+			// "the report" only as a noun phrase of its own, not "the report generator in src/"
+			/\b(the|that)\s+(full\s+|final\s+)?report\b(?=\s*([.,;:!?]|$|\s+(from|by)\b))/i.test(g);
+		if (!aboutReport) return undefined;
+		const named = files[0] ?? byId?.report;
 		const latest = [...runs.values()].reverse().find((r) => fs.existsSync(r.report))?.report;
-		const file = named && named.startsWith(path.resolve(HANDOFF_ROOT) + path.sep) ? named : !named ? latest : undefined;
+		const file = named ?? latest;
 		if (!file || !fs.existsSync(file)) return undefined;
 		const text = fs.readFileSync(file, "utf8");
 		const kept = Buffer.from(text, "utf8").subarray(0, PARENT_HANDOFF_READ_CAP).toString("utf8");
@@ -942,7 +970,8 @@ function parentSide(pi: ExtensionAPI) {
 		// the project check always runs for writing tasks; a task check adds to it, never replaces it (psx-iso: the
 		// main agent passed check: "echo done" for a worker editing 3 files)
 		const pc = run.scope.length && canWrite ? projectCheck(run.cwd) : undefined;
-		if (pc && spec.check?.trim() !== pc) spec = { ...spec, check: spec.check ? `${pc} && { ${spec.check}; }` : pc };
+		// the project check in a subshell: a detected one starts with `cd <git root>`, the task check runs in run.cwd
+		if (pc && spec.check?.trim() !== pc) spec = { ...spec, check: spec.check ? `( ${pc} ) && { ${spec.check}; }` : pc };
 		if (spec.check) checks.add(spec.check.trim());
 		run.check = spec.check;
 		// writing steps run one at a time: two at once share the worktree, and each one's check then fails on the
@@ -960,12 +989,7 @@ function parentSide(pi: ExtensionAPI) {
 		});
 		track(run, outcome);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);
-		if (outcome.status === "done" && canWrite) {
-			for (const f of run.touched ?? run.scope) {
-				changed.add(f);
-				unverified.add(f);
-			}
-		}
+		recordChanges(run, outcome);
 		return outcome;
 	}
 
@@ -1022,6 +1046,7 @@ function parentSide(pi: ExtensionAPI) {
 					return settle(run, resumed, run.check ?? projectCheck(run.cwd), model, thinking, signal);
 				});
 				track(run, settled);
+				recordChanges(run, settled);
 				return reply([settled]);
 			}
 
@@ -1182,7 +1207,7 @@ function parentSide(pi: ExtensionAPI) {
 		tool === "read" && path.resolve(cwd, (input as { path?: string }).path ?? "").startsWith(path.resolve(HANDOFF_ROOT) + path.sep);
 	let spent = 0;
 	let toolCalls = 0; // in this user prompt
-	const bashSnaps = new Map<string, Snapshot>();
+	const bashSnaps = new Map<string, { snap: Snapshot; startSeq: number }>();
 	let nudged = false;
 	let pathsChecked = false;
 	let lookedAtCode = false; // read a non-Markdown file, searched with bash, or ran a subagent
@@ -1226,6 +1251,9 @@ function parentSide(pi: ExtensionAPI) {
 			edited.clear();
 			changed.clear();
 			reviews = 0;
+			// the previous prompt's full check ran on these files (and its failure was reported): a question-only
+			// prompt must not run it again. Files no full check has seen yet stay, and are checked once.
+			if (fullChecks > 0) unverified.clear();
 			fullChecks = 0;
 			baselines.clear();
 		}
@@ -1243,9 +1271,6 @@ function parentSide(pi: ExtensionAPI) {
 			if (GIT_WRITE.test(cmd)) {
 				return { block: true, reason: "You do not change git state (commit, add, reset, checkout, stash, ...); the user owns git." };
 			}
-			// the main agent's bash may run things, not change files: snapshot now, undo any file change after
-			const snap = snapshot(ctx.cwd);
-			if (snap) bashSnaps.set(event.toolCallId, snap);
 		}
 		if (planOnly && (event.toolName === "edit" || event.toolName === "write")) return { block: true, reason: PLAN_ONLY_REASON };
 		if (planOnly && event.toolName === "bash" && !isCheckCommand((event.input as { command: string }).command, checks)) {
@@ -1291,18 +1316,28 @@ function parentSide(pi: ExtensionAPI) {
 			const input = event.input as { limit?: number };
 			if (!input.limit || input.limit > PARENT_READ_MAX_LINES) input.limit = PARENT_READ_MAX_LINES;
 		}
+		// the main agent's bash may run things, not change files: snapshot now (the call is allowed), undo any file
+		// change after
+		if (event.toolName === "bash") {
+			const snap = snapshot(ctx.cwd);
+			if (snap) bashSnaps.set(event.toolCallId, { snap, startSeq: seq });
+		}
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
 		let undoNote = "";
-		const snap = event.toolName === "bash" ? bashSnaps.get(event.toolCallId) : undefined;
-		if (snap) {
+		const entry = event.toolName === "bash" ? bashSnaps.get(event.toolCallId) : undefined;
+		if (entry) {
 			bashSnaps.delete(event.toolCallId);
+			// a subagent running (or finished) alongside this call changes its scope meanwhile: that is not this bash's
+			// doing, so those files are left to the subagent's own scope check
+			const subagentScopes = [...[...active].flatMap((r) => r.scope), ...finished.filter((f) => f.seq > entry.startSeq).flatMap((f) => f.scope)];
 			try {
-				const undone = enforceScope(snap, [], ctx.cwd, path.join(ensureRunDir(), "quarantine", "main-bash"));
+				const { fixed: undone, headMoved } = enforceScope(entry.snap, subagentScopes, ctx.cwd, path.join(ensureRunDir(), "quarantine", "main-bash"));
 				if (undone.length) {
 					undoNote = `\n[undone: your bash changed ${undone.join(", ")}. Change existing files with edit (at most ${PARENT_MAX_EDIT_FILES}) or delegate to a worker with a scope.]`;
 				}
+				if (headMoved) undoNote += `\n[HEAD moved during this call (${headMoved}); not undone. Tell the user.]`;
 			} catch (e) {
 				undoNote = `\n[file-change check failed: ${(e as Error).message.slice(0, 120)}]`;
 			}

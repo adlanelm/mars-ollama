@@ -14,6 +14,6 @@ for f in models.json extensions agents prompts; do
   backup "$PI_DIR/$f"
   ln -sfn "$SRC/$f" "$PI_DIR/$f"
 done
-[[ -f $PI_DIR/settings.json ]] && cp "$PI_DIR/settings.json" "$PI_DIR/settings.json.bak"
+[[ -f $PI_DIR/settings.json && ! -e $PI_DIR/settings.json.bak ]] && cp "$PI_DIR/settings.json" "$PI_DIR/settings.json.bak" && echo "backed up settings.json (first run only)"; true
 install -m 600 "$SRC/settings.json" "$PI_DIR/settings.json"
 echo "installed pi config from $SRC into $PI_DIR"

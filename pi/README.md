@@ -128,8 +128,8 @@ so that delegation and context limits are enforced by code, not left to the mode
     weren't touched are left alone. Build artefacts (`__pycache__`, `node_modules`, `Library`...) and Unity-generated `.meta` files next to an existing asset are ignored. Quarantine moves work across filesystems, and a failing scope check is reported instead of crashing pi.
   - Concurrent parallel runs don't undo each other's in-scope work.
   - Subagents can't change git state: commit, reset, checkout, stash, add, rebase, push and the like are blocked
-    in bash. If HEAD moves anyway, it is moved back with `reset --soft` before the scope check, so a commit can't
-    hide changes outside the scope.
+    in bash. If HEAD moves anyway, it is not undone (a commit from another terminal looks the same); the report
+    says so, and the files in those commits are not scope-checked.
   - Outside git, only the edit/write guard applies. `<file>.meta` belongs to `<file>`'s scope (Unity).
 - Out of scope: the subagent calls `request {need, why}` and stops (`terminate`). The main session dispatches a
   helper with `for: "<id>"` (or makes a one-line edit itself), then sends `resume: "<id>"`. The resumed subagent

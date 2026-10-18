@@ -34,7 +34,9 @@ const PARENT_BASH_AFTER_BUDGET = 1024; // check commands still work after the bu
 const PARENT_MAX_EDIT_FILES = 2; // main agent: distinct files it may edit/write per user prompt; more = delegate
 const PARENT_SKILL_READ_CAP = 16 * 1024; // main agent: SKILL.md files are instructions, read whole, not budgeted
 const PARENT_HANDOFF_READ_CAP = 4 * 1024; // main agent: handoff reports stay readable after the budget, capped
-const MAX_REVIEWS = 2; // automatic reviews per user prompt (a second one after fixes)
+const MAX_REVIEWS = 2;
+const MAX_STEP_FILES = 2; // files a writing subagent may change in one task: bigger changes are split into steps
+const MAX_FULL_CHECKS = 2; // full-check runs (and fix rounds) before the prompt finishes // automatic reviews per user prompt (a second one after fixes)
 const CHECK_RETRIES = 2; // a failed `check` resumes the subagent with the failure this many times
 const CHECK_TIMEOUT_MS = Number(process.env.PI_SUBAGENT_CHECK_TIMEOUT_MS) || 30 * 60 * 1000;
 const CHECK_TAIL_LINES = 15;
@@ -99,18 +101,23 @@ function filesFromReports(reports: string[], cwd: string): string[] {
 // untracked build artefacts a subagent's check run may create; never treated as scope violations
 const ARTEFACT = /(^|\/)(__pycache__|\.pytest_cache|\.mypy_cache|node_modules|\.venv|target|build|dist|obj|Library|Temp|Logs|\.godot)(\/|$)|\.pyc$/;
 
-/** `.pi/check` in the task cwd or a parent (up to the git root): the project's check, run as `bash <file>`. */
-function projectCheck(cwd: string): string | undefined {
+/** `.pi/<name>` in the task cwd or a parent (up to the git root), run as `bash <file>`. */
+function projectFile(cwd: string, name: string): string | undefined {
 	let root = "/";
 	try {
 		root = git(cwd, ["rev-parse", "--show-toplevel"]).trim();
 	} catch {}
 	for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
-		const f = path.join(d, ".pi", "check");
+		const f = path.join(d, ".pi", name);
 		if (fs.existsSync(f) && fs.statSync(f).isFile()) return `bash ${f}`;
 		if (d === root || d === path.dirname(d)) return undefined;
 	}
 }
+
+/** Check after every writing step: `.pi/check-fast` (compile, validate) if the project has one, else `.pi/check`. */
+const projectCheck = (cwd: string) => projectFile(cwd, "check-fast") ?? projectFile(cwd, "check");
+/** Full check (tests) once before the prompt finishes; only separate when there is a fast one. */
+const projectFullCheck = (cwd: string) => (projectFile(cwd, "check-fast") ? projectFile(cwd, "check") : undefined);
 
 function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): Promise<{ code: number; tail: string }> {
 	return new Promise((resolve) => {
@@ -397,6 +404,8 @@ function parentSide(pi: ExtensionAPI) {
 	let runDir: string | undefined;
 	let counter = 0;
 	const waiting = new Set<string>(); // runs stopped with NEEDS, not yet resumed
+	const unverified = new Set<string>(); // files changed since the last passing full check
+	let fullChecks = 0;
 	const deferred = new Set<string>(); // runs whose check was deferred while others waited
 	const track = (run: Run, o: Outcome) => {
 		if (o.status === "needs") waiting.add(run.id);
@@ -684,6 +693,28 @@ function parentSide(pi: ExtensionAPI) {
 			if (writes) return { id: "-", status: "error", text: PLAN_ONLY_REASON, contextTokens: 0 } as Outcome;
 			spec = { ...spec, agent: name, scope: [] }; // read-only agent: a scope means nothing, drop it
 		}
+		{
+			// one step = at most MAX_STEP_FILES files (psx-iso: a 4-file task left a compile error spread over the AI,
+			// the scene builder and the tests, and the fix broke the shared test setup)
+			const name = spec.agent ?? (spec.scope?.length ? "worker" : "scout");
+			const a = agents.find((x) => x.name === name);
+			const writes = !a?.tools || a.tools.some((t) => t === "edit" || t === "write");
+			const cwd0 = path.resolve(defaultCwd, spec.cwd ?? ".");
+			const dirs = (spec.scope ?? []).filter((f) => {
+				const abs = path.resolve(cwd0, f);
+				return fs.existsSync(abs) && fs.statSync(abs).isDirectory();
+			});
+			if (writes && ((spec.scope?.length ?? 0) > MAX_STEP_FILES || dirs.length)) {
+				return {
+					id: "-",
+					status: "error",
+					contextTokens: 0,
+					text:
+						`Refused: one step changes at most ${MAX_STEP_FILES} files, listed by name (got ${spec.scope?.length ?? 0}${dirs.length ? `, directories: ${dirs.join(", ")}` : ""}). ` +
+						"Split it into steps that each leave the project compiling, and run them as a chain (one worker per step; tests as their own step).",
+				} as Outcome;
+			}
+		}
 		const run = newRun(spec, defaultCwd, agents);
 		if (typeof run === "string") return { id: "-", status: "error", text: run, contextTokens: 0 } as Outcome;
 		// a writing task without a check gets the project's check (.pi/check), so verification never depends on
@@ -698,7 +729,12 @@ function parentSide(pi: ExtensionAPI) {
 		const outcome = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
 		track(run, outcome);
 		if (spec.for && outcome.status === "done") runs.get(spec.for)!.answers.push(run.report);
-		if (outcome.status === "done" && canWrite) for (const f of run.touched ?? run.scope) changed.add(f);
+		if (outcome.status === "done" && canWrite) {
+			for (const f of run.touched ?? run.scope) {
+				changed.add(f);
+				unverified.add(f);
+			}
+		}
 		return outcome;
 	}
 
@@ -716,11 +752,14 @@ function parentSide(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Your context is small and compaction loses detail. Keep this conversation for decisions; subagents do the reading and the doing. Your own read and bash output is capped, and your read/bash/edit tools are withdrawn once you have used your share for this prompt: from then on use subagent (tasks get their check run automatically).",
 			"Ask scouts questions, not for file contents: \"where is X handled and what does it take\", not \"return lines 365-410\".",
+			"Work in small steps: each worker task changes at most 2 named files and must leave the project compiling; tests are a step of their own, and shared test setup is changed only as a named step. Run a plan's steps as a chain, one worker per step.",
 			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and `check`: the command that proves the work (tests, build check). The extension runs it, retries the subagent on failure and tells you the exit code.",
 			"Trust the check result, not a subagent's claims. Do not re-run checks yourself after a passing `check`.",
 			...(projectCheck(process.cwd())
 				? [
-						"This project has .pi/check (its build check and tests). It runs automatically after every subagent that changes files and cannot be replaced; pass `check` only for something it does not cover. When the user asks for checks to pass, that is what verifies them.",
+						projectFullCheck(process.cwd())
+							? "This project has .pi/check-fast (build check), run automatically after every step that changes files, and .pi/check (full tests), run automatically once when you finish; neither can be replaced. Pass `check` only for something they do not cover. When the user asks for checks to pass, these verify them."
+							: "This project has .pi/check (its build check and tests). It runs automatically after every subagent that changes files and cannot be replaced; pass `check` only for something it does not cover. When the user asks for checks to pass, that is what verifies them.",
 					]
 				: []),
 			"Pass information between subagents as handoff report paths in inputs; read a report yourself only when you must decide something from it (handoff reads always work, capped).",
@@ -864,6 +903,21 @@ function parentSide(pi: ExtensionAPI) {
 			const content = `Subagents are still waiting for your answer and have unfinished work: ${ids}. Resume each with subagent({resume: "<id>"}) (their checks, and the deferred ones, run then) before you finish.`;
 			return { entries: [{ type: "custom_message", customType: "waiting", content, display: true }], continue: true };
 		}
+		// full check (tests) once the steps are done: per-step checks were the fast ones
+		const full = projectFullCheck(ctx.cwd);
+		if (!planOnly && full && unverified.size && fullChecks < MAX_FULL_CHECKS) {
+			fullChecks++;
+			const log = path.join(ensureRunDir(), `full-check-${fullChecks}.log`);
+			const res = await runCheck(full, ctx.cwd, log);
+			if (res.code === 0) {
+				unverified.clear();
+			} else {
+				const content =
+					`[full check ${fullChecks}/${MAX_FULL_CHECKS}] \`${full}\` failed (exit ${res.code}) after your steps. Last lines:\n${res.tail}\nLog: ${log}\n` +
+					"Fix it with a worker step (scope = the 1-2 files at fault), then finish; the full check runs again.";
+				return { entries: [{ type: "custom_message", customType: "full-check", content, display: true }], continue: true };
+			}
+		}
 		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS) return;
 		const agents = discoverAgents(ctx.cwd, "user").agents;
 		if (!agents.some((a) => a.name === "reviewer")) return;
@@ -940,11 +994,13 @@ function parentSide(pi: ExtensionAPI) {
 			lookedAtCode = false;
 			groundNudged = false;
 			waitReminded = false;
+			// per user prompt only: a settle hook's continuation must not reset the caps (reviews, full checks) or it loops
+			spent = 0;
+			edited.clear();
+			changed.clear();
+			reviews = 0;
+			fullChecks = 0;
 		}
-		spent = 0;
-		edited.clear();
-		changed.clear();
-		reviews = 0;
 		if ((event as { messageType?: string }).messageType !== "custom") planOnly = PLAN_ONLY.test((event as { prompt?: string }).prompt ?? "");
 		applyTools();
 	});
@@ -988,6 +1044,7 @@ function parentSide(pi: ExtensionAPI) {
 			}
 			edited.add(file);
 			changed.add(file);
+			unverified.add(file);
 			applyTools();
 			return;
 		}

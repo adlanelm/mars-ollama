@@ -1,10 +1,12 @@
 ---
-description: Scout gathers context, planner plans, worker implements (handoff files, narrow scopes)
+description: Scout and planner produce small steps, then one worker per step (handoff files, narrow scopes)
 ---
-Use the subagent tool in chain mode for: $@
+Implement: $@
 
-1. scout: goal = find the code relevant to the task above; read-only.
-2. planner: goal = an implementation plan for the task, listing the exact files to change; read-only.
-3. worker: goal = implement the plan; scope = ["@previous"] (the plan's FILES line); done_when = the project's check or test command, if there is one.
+1. Use the subagent tool in chain mode: scout (find the code relevant to the task; read-only), then planner
+   (numbered steps, each changing at most 2 files and leaving the project building).
+2. Read the plan report, then run its steps as a second chain: one worker per step, in order, with
+   scope = exactly that step's files and goal = that step's line plus the context the worker needs.
 
-Each step gets the previous report automatically. If a step returns NEEDS, handle it as your guidelines say, resume the run, and continue with the remaining steps.
+The project checks run automatically after each step and at the end. If a step returns NEEDS, handle it as your
+guidelines say, resume the run, and continue with the remaining steps.

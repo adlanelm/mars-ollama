@@ -44,6 +44,14 @@ so that delegation and context limits are enforced by code, not left to the mode
   clean review just lets the main session finish.
 - The main session's bash runs commands but cannot change files: each bash call is bracketed by a git snapshot, and any file it changed is undone (tracked files restored, new files quarantined, commits reset), with a note telling it to use edit or a worker. Git commands that change state are blocked. On psx-iso it had patched 3 files with heredoc Python scripts and committed the user's uncommitted settings.
 - Subagent tasks asking for files "verbatim" or "in full" are refused without spawning; subagents report findings.
+- Small steps: a writing subagent task may change at most 2 files, named one by one (no directories);
+  bigger tasks are refused with "split into steps". Plans (`/plan`, `/backlog-item`, the planner agent) come as
+  numbered steps of 1-2 files that each leave the project building, with tests as their own step, run as a
+  chain of workers. On psx-iso a single 4-file task left a compile error spread over the AI, the scene builder
+  and the tests, and the fix broke the shared test setup.
+- Two check levels: `.pi/check-fast` (build/validate) after every step; `.pi/check` (full tests) once before
+  the prompt finishes while files are unverified, at most 2 fix rounds, before the review. Without a
+  check-fast, `.pi/check` runs per step as before.
 - Waiting runs: while a subagent waits with NEEDS, other runs' project checks are deferred (its half-done change would fail them) and run when it is resumed; a prompt that would finish with runs still waiting is sent back once to resume them.
 - Grounding: a plan-only prompt that finishes without having looked at code (no non-Markdown read, search or subagent) is sent back once.
 - Path check: before a prompt finishes, file paths in the final answer that are presented as existing (not on a "new"/"create" line) and do not exist send the session back once to look at the code. On psx-iso a plan read only GAME.md and BACKLOG.md and named wrong paths.

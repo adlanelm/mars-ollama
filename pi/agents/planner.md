@@ -17,20 +17,15 @@ Output format (first line always `SUMMARY: <at most 25 words>`; second line `FIL
 ## Goal
 One sentence summary of what needs to be done.
 
-## Plan
-Numbered steps, each small and actionable:
-1. Step one - specific file/function to modify
-2. Step two - what to add/change
-3. ...
-
-## Files to Modify
-- `path/to/file.ts` - what changes
-- `path/to/other.ts` - what changes
-
-## New Files (if any)
-- `path/to/new.ts` - purpose
+## Steps
+Numbered, one line each, in order:
+1. <what> | files: <1-2 full paths; (new) for new ones> | proves it: <what the check or a test shows>
+2. ...
+Each step changes at most 2 files and leaves the project building. Tests are their own step, after the code
+they test. Shared test setup changes only as a named step. A worker runs each step on its own, without seeing
+the others, so every step names exact paths, functions and the expected result.
 
 ## Risks
 Anything to watch out for.
 
-Keep the plan concrete. The worker agent will execute it verbatim.
+Keep the plan concrete. Each step is executed verbatim by a separate worker.

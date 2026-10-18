@@ -35,6 +35,25 @@ The harness is on in every pi session (user-level extension), no project setup n
 - New game projects from gamekit's `game-init` get `.pi/settings.json`, `.pi/check-fast` and `.pi/check` from
   the templates.
 
+## Tested on a non-game project: ehi-ledger (2026-10-18)
+
+The project: a .NET 10 solution (`Ehi.Ledger.slnx`, 8 src projects, unit and integration tests), cloned, with no
+pi setup. Its build was red at the start: 20 restore errors, NU1902/NU1903 known-vulnerable packages treated as
+errors. The task: `/plan` "make it build by moving to patched versions, without turning the warnings off", then
+"OK, implement it".
+- Detection: per-step `dotnet build`, `dotnet test` at the end, both from the .slnx.
+- Plan (8.5 min, 61 tool calls, peak 40k tokens): `dotnet list package --vulnerable` and the NuGet API showed
+  that all four packages are transitive (MessagePack via Aspire, Microsoft.OpenApi and OpenTelemetry.Api via
+  AspNetCore and Akka.Hosting, SSH.NET via Testcontainers). The fix: pin patched versions, one .csproj per step.
+  Plan-only blocked an attempt to `sed` TreatWarningsAsErrors off while investigating.
+- Implementation (12.5 min, peak 51k tokens): a chain of 3 workers. Build errors went 20, 14, 2, 0; each step
+  passed as "no new failures" against the red baseline. Before the baseline fix, step 1 was marked failed,
+  retried twice for nothing, and the chain stopped there.
+- The end check `dotnet test` passed (4/4). The automatic review called the override pins "dead" packages; the
+  main session rejected that correctly (transitive overrides, proven by the build).
+- Result: 4 PackageReference pins in 3 .csproj files, 0 errors and 0 warnings, tests green. One defect a human
+  must catch: a pin comment cites a CVE number that does not match the reported GHSA advisories (likely invented).
+
 ## Subagents (enforced delegation)
 
 `extensions/subagent/` is loaded in every project (the user extensions dir). It is pi's subagent example rewritten

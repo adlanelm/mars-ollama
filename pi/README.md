@@ -5,6 +5,31 @@ General config for the [pi](https://pi.dev) coding agent against llama-swap. Ins
 pi start or `/reload`); `settings.json` is copied, because pi writes to it, so re-run after editing it.
 Project-specific skills and prompts go in the project's `.pi/settings.json` (gamekit's game template does this).
 
+## Any project
+
+The harness is on in every pi session (user-level extension), no project setup needed:
+- Checks: `.pi/check-fast` and `.pi/check` win. Without them the harness derives checks from the project files,
+  in this order:
+
+  | Project file | After each step | At the end |
+  |---|---|---|
+  | `package.json` scripts | typecheck, build, lint or check (npm/pnpm/yarn/bun) | test |
+  | `Cargo.toml` | `cargo check` | `cargo test` |
+  | `go.mod` | `go build` + `go vet` | `go test` |
+  | `.sln`/`.csproj` | `dotnet build` | `dotnet test` |
+  | Python | `compileall` | `pytest` (when there are tests) |
+  | `Makefile` | build or check target | test target |
+
+  The main session is told which commands apply. With none found it is told changes are unverified, and to pass
+  `check` or ask for a .pi/check.
+- Git: outside a git repository writing subagents are refused, because scoping, snapshots and undo all need git.
+  Run `git init` and commit, or set `allowNoGit`.
+- `.pi/harness.json` (per project, searched up to the git root): `{"enabled": false}` turns the harness off.
+  Overrides: `maxStepFiles`, `turnBudgetKB`, `maxReviews`, `allowNoGit`, `check`, `fullCheck` (commands run in
+  the project root). `PI_HARNESS=off` turns it off for one session.
+- New game projects from gamekit's `game-init` get `.pi/settings.json`, `.pi/check-fast` and `.pi/check` from
+  the templates.
+
 ## Subagents (enforced delegation)
 
 `extensions/subagent/` is loaded in every project (the user extensions dir). It is pi's subagent example rewritten

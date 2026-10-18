@@ -22,6 +22,54 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, discoverAgents } from "./agents.ts";
 
+// ---------- per-project harness config ----------
+
+/**
+ * `.pi/harness.json` in the session directory or a parent (up to the git root), e.g.
+ *   { "enabled": false }                                  turn the harness off for this project
+ *   { "maxStepFiles": 3, "turnBudgetKB": 64, "maxReviews": 1, "allowNoGit": true,
+ *     "check": "make lint", "fullCheck": "make test" }     overrides (commands run in the project root)
+ * PI_HARNESS=off turns it off for one session.
+ */
+interface HarnessConfig {
+	enabled?: boolean;
+	maxStepFiles?: number;
+	turnBudgetKB?: number;
+	maxReviews?: number;
+	allowNoGit?: boolean;
+	check?: string;
+	fullCheck?: string;
+	root?: string; // directory holding .pi/harness.json
+	error?: string;
+}
+
+function gitRoot(cwd: string): string | undefined {
+	try {
+		return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+	} catch {
+		return undefined;
+	}
+}
+
+function loadHarnessConfig(cwd: string): HarnessConfig {
+	const stop = gitRoot(cwd) ?? path.parse(path.resolve(cwd)).root;
+	for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+		const f = path.join(d, ".pi", "harness.json");
+		if (fs.existsSync(f)) {
+			try {
+				return { ...(JSON.parse(fs.readFileSync(f, "utf8")) as HarnessConfig), root: d };
+			} catch (e) {
+				return { root: d, error: `${f}: ${(e as Error).message}` };
+			}
+		}
+		if (d === stop || d === path.dirname(d)) return {};
+	}
+}
+
+const HC = loadHarnessConfig(process.cwd());
+const HARNESS_ON = process.env.PI_HARNESS !== "off" && HC.enabled !== false;
+const num = (v: unknown, d: number) => (typeof v === "number" && v > 0 ? v : d);
+
 const IS_CHILD = process.env.PI_SUBAGENT === "1";
 const HANDOFF_ROOT = process.env.PI_HANDOFF_ROOT || "/tmp/pi-handoff";
 const MAX_CONCURRENCY = 2; // llama-swap serves -np 2 slots per model
@@ -29,14 +77,14 @@ const MAX_PARALLEL_TASKS = 4;
 const SUMMARY_CAP = 600; // chars of the report returned inline to the main agent
 const PARENT_READ_MAX_LINES = 200; // main agent: read calls are clamped to this many lines
 const PARENT_RESULT_CAP = 6 * 1024; // main agent: bytes per read/bash/grep/find/ls result
-const PARENT_TURN_BUDGET = 48 * 1024; // main agent: direct output bytes per user prompt, then reads are blocked
+const PARENT_TURN_BUDGET = num(HC.turnBudgetKB, 48) * 1024; // main agent: direct output bytes per user prompt, then reads are blocked
 const PARENT_BASH_AFTER_BUDGET = 1024; // check commands still work after the budget, with this much output
 const PARENT_MAX_EDIT_FILES = 2; // main agent: distinct files it may edit/write per user prompt; more = delegate
 const PARENT_SKILL_READ_CAP = 16 * 1024; // main agent: SKILL.md files are instructions, read whole, not budgeted
 const PARENT_HANDOFF_READ_CAP = 4 * 1024; // main agent: handoff reports stay readable after the budget, capped
-const MAX_REVIEWS = 2;
-const MAX_STEP_FILES = 2; // files a writing subagent may change in one task: bigger changes are split into steps
-const MAX_FULL_CHECKS = 2; // full-check runs (and fix rounds) before the prompt finishes // automatic reviews per user prompt (a second one after fixes)
+const MAX_REVIEWS = num(HC.maxReviews, 2); // automatic reviews per user prompt (a second one after fixes)
+const MAX_STEP_FILES = num(HC.maxStepFiles, 2); // files a writing subagent may change in one task: bigger changes are split into steps
+const MAX_FULL_CHECKS = 2; // full-check runs (and fix rounds) before the prompt finishes
 const CHECK_RETRIES = 2; // a failed `check` resumes the subagent with the failure this many times
 const CHECK_TIMEOUT_MS = Number(process.env.PI_SUBAGENT_CHECK_TIMEOUT_MS) || 30 * 60 * 1000;
 const CHECK_TAIL_LINES = 15;
@@ -128,10 +176,83 @@ function projectFile(cwd: string, name: string): string | undefined {
 	}
 }
 
-/** Check after every writing step: `.pi/check-fast` (compile, validate) if the project has one, else `.pi/check`. */
-const projectCheck = (cwd: string) => projectFile(cwd, "check-fast") ?? projectFile(cwd, "check");
-/** Full check (tests) once before the prompt finishes; only separate when there is a fast one. */
-const projectFullCheck = (cwd: string) => (projectFile(cwd, "check-fast") ? projectFile(cwd, "check") : undefined);
+interface Detected {
+	fast?: string; // build / compile / typecheck: after every step
+	full?: string; // tests: once at the end
+	source: string; // what it was derived from, told to the main agent
+}
+
+const detectCache = new Map<string, Detected | undefined>();
+
+/**
+ * Checks for a project without .pi/check, from its standard files. Commands run in the project root. Order:
+ * harness.json overrides, then package.json, Cargo.toml, go.mod, .sln/.csproj, Python (pytest), Makefile.
+ */
+function detectChecks(cwd: string): Detected | undefined {
+	const root = gitRoot(cwd) ?? path.resolve(cwd);
+	if (detectCache.has(root)) return detectCache.get(root);
+	const has = (f: string) => fs.existsSync(path.join(root, f));
+	const inRoot = (c: string) => `cd ${JSON.stringify(root)} && ${c}`;
+	let d: Detected | undefined;
+	if (HC.check || HC.fullCheck) {
+		d = { fast: HC.check && inRoot(HC.check), full: HC.fullCheck && inRoot(HC.fullCheck), source: ".pi/harness.json" };
+	} else if (has("package.json")) {
+		let scripts: Record<string, string> = {};
+		try {
+			scripts = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).scripts ?? {};
+		} catch {}
+		const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lockb") || has("bun.lock") ? "bun" : "npm";
+		const fastScript = ["typecheck", "build", "lint", "check"].find((k) => scripts[k]);
+		const testScript = scripts.test && !/no test specified/.test(scripts.test) ? "test" : undefined;
+		if (fastScript || testScript) {
+			d = {
+				fast: fastScript && inRoot(`${pm} run ${fastScript}`),
+				full: testScript && inRoot(`${pm} run ${testScript}`),
+				source: `package.json scripts (${[fastScript, testScript].filter(Boolean).join(", ")})`,
+			};
+		}
+	} else if (has("Cargo.toml")) {
+		d = { fast: inRoot("cargo check --quiet"), full: inRoot("cargo test --quiet"), source: "Cargo.toml" };
+	} else if (has("go.mod")) {
+		d = { fast: inRoot("go build ./... && go vet ./..."), full: inRoot("go test ./..."), source: "go.mod" };
+	} else if (fs.readdirSync(root).some((f) => /\.(sln|slnx|csproj|fsproj)$/.test(f))) {
+		d = { fast: inRoot("dotnet build --nologo -v q"), full: inRoot("dotnet test --nologo -v q"), source: ".NET solution/project" };
+	} else if (has("pyproject.toml") || has("setup.py") || has("pytest.ini") || has("requirements.txt")) {
+		const tests = has("tests") || has("test") || has("pytest.ini") || fs.readdirSync(root).some((f) => /^test_.*\.py$|_test\.py$/.test(f));
+		d = {
+			fast: inRoot("python3 -m compileall -q -x '/(\\.venv|venv|node_modules|\\.git)/' ."),
+			full: tests ? inRoot("python3 -m pytest -q") : undefined,
+			source: tests ? "Python project (compileall, pytest)" : "Python project (compileall)",
+		};
+	} else if (has("Makefile")) {
+		const mk = fs.readFileSync(path.join(root, "Makefile"), "utf8");
+		const target = (t: string) => new RegExp(`^${t}\\s*:`, "m").test(mk);
+		if (target("check") || target("test") || target("build")) {
+			d = {
+				fast: target("build") ? inRoot("make build") : target("check") ? inRoot("make check") : undefined,
+				full: target("test") ? inRoot("make test") : target("check") && target("build") ? inRoot("make check") : undefined,
+				source: "Makefile",
+			};
+		}
+	}
+	if (d && !d.fast && !d.full) d = undefined;
+	detectCache.set(root, d);
+	return d;
+}
+
+/**
+ * Check after every writing step: `.pi/check-fast` (compile, validate), else `.pi/check`, else a detected build
+ * check (or detected tests when there is no build step).
+ */
+const projectCheck = (cwd: string) =>
+	projectFile(cwd, "check-fast") ?? projectFile(cwd, "check") ?? detectChecks(cwd)?.fast ?? detectChecks(cwd)?.full;
+/** Full check (tests) once before the prompt finishes; only when it differs from the per-step check. */
+const projectFullCheck = (cwd: string) => {
+	if (projectFile(cwd, "check-fast")) return projectFile(cwd, "check");
+	if (projectFile(cwd, "check")) return undefined;
+	const d = detectChecks(cwd);
+	return d?.fast && d.full ? d.full : undefined;
+};
 
 function runCheck(cmd: string, cwd: string, log: string, signal?: AbortSignal): Promise<{ code: number; tail: string }> {
 	return new Promise((resolve) => {
@@ -409,6 +530,32 @@ You are subagent ${id}. The main agent gave you one narrow task; stay inside it.
 - Writable scope: ${scope.length ? scope.join(", ") : "none: this is a read-only task"}. Edits outside it are blocked.
 - If the task needs anything outside it (information you cannot find, a change outside your scope, a decision), call the \`request\` tool with exactly what you need and stop. Do not work around it; you will be resumed with the answer.
 - Your final message is saved as your report. Its first line must be \`SUMMARY: <at most 25 words>\`. Then details, at most 600 words, citing path:line instead of pasting file contents.`;
+
+/** What the main agent is told about this project's checks and git (computed once per session). */
+function checkGuidelines(cwd: string): string[] {
+	const out: string[] = [];
+	const step = projectCheck(cwd);
+	const full = projectFullCheck(cwd);
+	const src = projectFile(cwd, "check-fast") || projectFile(cwd, "check") ? ".pi" : (detectChecks(cwd)?.source ?? "");
+	if (step) {
+		out.push(
+			`Project checks (from ${src}): \`${step}\` runs automatically after every step that changes files` +
+				(full ? `, and \`${full}\` once when you finish` : "") +
+				". They cannot be replaced; pass `check` only for something they do not cover. When the user asks for checks to pass, these verify them.",
+		);
+	} else {
+		out.push(
+			"This project has no check the harness can find (no .pi/check, and no package.json scripts, Cargo.toml, go.mod, .NET project, Python tests or Makefile targets): changes are not verified automatically. Give writing tasks a `check` command, or tell the user to add .pi/check.",
+		);
+	}
+	if (!gitRoot(cwd) && !HC.allowNoGit) {
+		out.push(
+			"This directory is not a git repository: subagent changes cannot be scoped or undone, so writing subagents are refused. Tell the user to run `git init` and commit, or to set allowNoGit in .pi/harness.json.",
+		);
+	}
+	if (HC.error) out.push(`.pi/harness.json could not be read (${HC.error}); defaults apply.`);
+	return out;
+}
 
 function parentSide(pi: ExtensionAPI) {
 	const runs = new Map<string, Run>();
@@ -730,6 +877,14 @@ function parentSide(pi: ExtensionAPI) {
 				const abs = path.resolve(cwd0, f);
 				return fs.existsSync(abs) && fs.statSync(abs).isDirectory();
 			});
+			if (writes && !HC.allowNoGit && !gitRoot(cwd0)) {
+				return {
+					id: "-",
+					status: "error",
+					contextTokens: 0,
+					text: "Refused: not a git repository, so this subagent's changes could not be scoped, checked against a snapshot or undone. Ask the user to run `git init` and commit first (or set allowNoGit in .pi/harness.json).",
+				} as Outcome;
+			}
 			if (writes && ((spec.scope?.length ?? 0) > MAX_STEP_FILES || dirs.length)) {
 				return {
 					id: "-",
@@ -785,13 +940,7 @@ function parentSide(pi: ExtensionAPI) {
 			"Work in small steps: each worker task changes at most 2 named files and must leave the project compiling; tests are a step of their own, and shared test setup is changed only as a named step. Run a plan's steps as a chain, one worker per step.",
 			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and `check`: the command that proves the work (tests, build check). The extension runs it, retries the subagent on failure and tells you the exit code.",
 			"Trust the check result, not a subagent's claims. Do not re-run checks yourself after a passing `check`.",
-			...(projectCheck(process.cwd())
-				? [
-						projectFullCheck(process.cwd())
-							? "This project has .pi/check-fast (build check), run automatically after every step that changes files, and .pi/check (full tests), run automatically once when you finish; neither can be replaced. Pass `check` only for something they do not cover. When the user asks for checks to pass, these verify them."
-							: "This project has .pi/check (its build check and tests). It runs automatically after every subagent that changes files and cannot be replaced; pass `check` only for something it does not cover. When the user asks for checks to pass, that is what verifies them.",
-					]
-				: []),
+			...checkGuidelines(process.cwd()),
 			"Pass information between subagents as handoff report paths in inputs; read a report yourself only when you must decide something from it (handoff reads always work, capped).",
 			"If a subagent returns NEEDS, dispatch another subagent for that need with for set to the waiting run id, then call subagent with resume set to that id. Never do the out-of-scope work by stretching the first subagent's task.",
 			"Do one-line or single-file edits yourself; delegate anything that needs reading more than ~2 files.",
@@ -1140,6 +1289,7 @@ function parentSide(pi: ExtensionAPI) {
 }
 
 export default function (pi: ExtensionAPI) {
+	if (!HARNESS_ON) return; // PI_HARNESS=off or .pi/harness.json {"enabled": false}: plain pi
 	if (IS_CHILD) childSide(pi);
 	else parentSide(pi);
 }

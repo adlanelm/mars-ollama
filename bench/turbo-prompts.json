@@ -1,0 +1,8 @@
+[
+  "Write a C# Unity MonoBehaviour that snaps a transform to an isometric grid. Explain briefly.",
+  "What is 17 * 23 + 144 / 12? Show the steps.",
+  "List the planets of the solar system in order from the sun, one per line, with one fact each.",
+  "Write a Python function that returns the n-th Fibonacci number iteratively, with a docstring and two doctests.",
+  "Alice, Bob and Carol each own exactly one pet: a cat, a dog or a fish. Alice is allergic to fur. Bob is not the owner of the cat. Who owns which pet? Give the final answer on one line.",
+  "This Python function should return the indices of the two numbers that add up to target, but it sometimes returns the same index twice. Find the bug and give the fixed function.\n\ndef two_sum(nums, target):\n    seen = {}\n    for i, n in enumerate(nums):\n        seen[n] = i\n        if target - n in seen:\n            return [seen[target - n], i]\n    return None"
+]

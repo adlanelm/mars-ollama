@@ -3,7 +3,7 @@
 # Installed into /out/pylib (= ~/llm/colibri/bin/pylib, mounted at /colibri/pylib, on colibri-big's PYTHONPATH).
 # Run inside the llama-swap image so the wheels match its Python. Called by build.sh; alone:
 #   docker run --rm --entrypoint bash -v $PWD/colibri:/src:ro,Z -v ~/llm/colibri/bin:/out:Z \
-#     ghcr.io/mostlygeek/llama-swap:v264-vulkan-b11580 -c 'bash /src/pylib.sh'
+#     ghcr.io/mostlygeek/llama-swap:v265-vulkan-b11804 -c 'bash /src/pylib.sh'
 set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null

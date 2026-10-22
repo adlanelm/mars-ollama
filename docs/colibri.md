@@ -92,7 +92,7 @@ Run after the download, in a throwaway container, with no GPU device passed:
 
 ```bash
 docker run --rm --entrypoint python3 -v ~/llm/colibri/bin:/colibri:ro -v ~/llm/colibri/models:/colibri-models:ro \
-  ghcr.io/mostlygeek/llama-swap:v264-vulkan-b11580 -B /colibri/c/coli plan --model /colibri-models/qwen38-flash-next --ram 18 --ctx 8192 --gpu none
+  ghcr.io/mostlygeek/llama-swap:v265-vulkan-b11804 -B /colibri/c/coli plan --model /colibri-models/qwen38-flash-next --ram 18 --ctx 8192 --gpu none
 ```
 
 Output: *not yet recorded* (download unfinished).
@@ -113,7 +113,7 @@ Containerised; nothing installed on the host. The script is [`colibri/build.sh`]
 
 ```bash
 docker run --rm --entrypoint bash -v $PWD/colibri:/src:ro,Z -v ~/llm/colibri/bin:/out:Z \
-  ghcr.io/mostlygeek/llama-swap:v264-vulkan-b11580 -c 'mkdir -p /work; bash /src/build.sh'
+  ghcr.io/mostlygeek/llama-swap:v265-vulkan-b11804 -c 'mkdir -p /work; bash /src/build.sh'
 # build.sh: apt-get install git build-essential libvulkan-dev glslc libomp-dev
 #           git clone --branch v2.0.0 https://github.com/JustVugg/colibri, git apply colibri/patches/*.patch
 #           cd c && make qwen38 VK=1; copy the tree (without .git) to /out, chown 1000:1000

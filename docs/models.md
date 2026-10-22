@@ -71,7 +71,7 @@ The per-token figure is layers x KV heads x head dim x 2 (K and V) x 1.0625 B, f
 
 **Disk:** about 60 GB in total (qwen3.8 14.1, qwen3.6 23.3, gemma 15.4, granite 4.1, reranker 0.6, embedders 2.4), compared with 78 GB for Ollama today. Add 14.3 GB if you take the IQ4_XS upgrade below.
 
-### Measured speed (llama-swap v263-vulkan-b11541; image now v264-vulkan-b11580, see bench/verification-2026-10-13.md)
+### Measured speed (llama-swap v263-vulkan-b11541; image now v265-vulkan-b11804, see bench/verification-2026-10-13.md)
 
 Generation, Phase 0 prompt (512 tokens). Source: [bench/llama-swap-results.md](../bench/llama-swap-results.md).
 

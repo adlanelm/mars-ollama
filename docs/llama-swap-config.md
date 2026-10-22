@@ -71,7 +71,7 @@ The live file is [`docker-compose.yaml`](../docker-compose.yaml), service `llama
 
 | Setting | Value | Why |
 |---|---|---|
-| `image` | `ghcr.io/mostlygeek/llama-swap:v264-vulkan-b11580` | Pinned (v263-vulkan-b11541 until 2026-10-13). Bundles `llama-server` (llama.cpp build 11580, Vulkan, RADV NAVI32). Resolved: llama-server is bundled at this tag. Vulkan beat the ROCm image (`v263-rocm-b11541`) on 2 of 3 models, and ROCm misreports free VRAM to `--fit` ([verification](../bench/verification-2026-10-13.md)) |
+| `image` | `ghcr.io/mostlygeek/llama-swap:v265-vulkan-b11804` | Pinned (v264-vulkan-b11580 until 2026-10-22, v263-vulkan-b11541 until 2026-10-13). Bundles `llama-server` (llama.cpp build 11804, Vulkan, RADV NAVI32). Resolved: llama-server is bundled at this tag. Vulkan beat the ROCm image (`v263-rocm-b11541`) on 2 of 3 models, and ROCm misreports free VRAM to `--fit` ([verification](../bench/verification-2026-10-13.md)) |
 | `entrypoint` | `["/app/llama-swap", "-config", "/config/config.yaml", "-listen", ":11434"]` (no `-watch-config`, see below) | Overrides the image default so the config lives under `/config` and is reloaded on change |
 | volume `./llama-swap:/config:ro,Z` | the **directory**, not the file | A single-file bind mount points at an inode. Editors replace the file with a new inode, so the container keeps seeing the old, stale content. A directory mount follows the file name |
 | `GGML_VK_VISIBLE_DEVICES=0` | | Resolved: `Vulkan0` is the RX 7800 XT, `Vulkan1` the 610M iGPU. Never select 1 |

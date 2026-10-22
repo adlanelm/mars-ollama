@@ -1,5 +1,5 @@
-# llama-swap config (image ghcr.io/mostlygeek/llama-swap:v263-vulkan-b11541).
-# Schema: https://github.com/mostlygeek/llama-swap/blob/v263/docs/config.example.yaml
+# llama-swap config (image ghcr.io/mostlygeek/llama-swap:v265-vulkan-b11804).
+# Schema: https://github.com/mostlygeek/llama-swap/blob/v265/docs/config.example.yaml
 # Rationale for quants and flags: docs/models.md. Files come from bin/llm-pull (llama-swap/models.lock.yaml).
 
 healthCheckTimeout: 1230 # gpu-guard wait for ComfyUI (max 600) + cold load of a 20 GB model from disk (600) + /free
@@ -23,8 +23,10 @@ macros:
     -fa on -ctk q8_0 -ctv q8_0 -np 2 --kv-unified -ctxcp 8 -cram 2048 -lm dio --jinja --no-webui
     --reasoning-budget-message "Thinking budget reached. Act now with what I have."
   # MoE models: physical cores (6-12 threads measured equal); ub 2048 = +40% prompt speed (bench/qwen3.6-sweep.md)
+  # --moe-cache-mib 3072: GPU cache for the CPU-side experts, tg +17-78% (bench/moe-cache-2026-10-22.md). --fit counts it
+  # (more experts to CPU, same free margin). 3584 no faster; qwen3.6 unstable at 3968, slow at 4096, DeviceLost at 6144.
   moe_common: >-
-    -t 8 -tb 8 -ub 2048 -b 2048
+    -t 8 -tb 8 -ub 2048 -b 2048 --moe-cache-mib 3072
   # CPU-resident embedders; -t 8: bulk indexing (document upload) is CPU-bound and rarely overlaps generation
   aux_common: >-
     -dev none -ngl 0 -c 8192 -b 8192 -ub 8192 -t 8 -cram 0 --no-webui

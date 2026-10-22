@@ -21,8 +21,8 @@ Annotated excerpt (abridged; see the real file for everything):
 macros:
   chat_common: >-          # all chat models
     -fa on -ctk q8_0 -ctv q8_0 -np 2 --kv-unified -ctxcp 8 -cram 2048 -lm dio --jinja --no-webui
-  moe_common: >-           # qwen3.6, gemma4
-    -t 8 -tb 8 -ub 2048 -b 2048
+  moe_common: >-           # qwen3.6, ornith-1.5, gemma4
+    -t 8 -tb 8 -ub 2048 -b 2048 --moe-cache-mib 3072
   aux_common: >-           # CPU embedders
     -dev none -ngl 0 -c 8192 -b 8192 -ub 8192 -t 4 -cram 0 --no-webui
 
@@ -63,6 +63,7 @@ hooks:
 - **`--kv-unified`**: with an explicit `-np 2`, llama.cpp otherwise gives every slot `c/np` of the context (48k becomes 2x24k, 128k becomes 2x64k). With a unified KV buffer the slots share one pool of the full size.
 - **`-lm dio`** (`--load-mode dio`, direct I/O): replaces `--no-mmap`, which **no longer exists** in llama.cpp b11541 (`-lm/--load-mode {auto,none,mmap,mlock,mmap+mlock,dio}`). With mmap, CPU-side weights (MoE experts) live in the page cache. After a model swap the kernel evicted qwen3.6's experts, and they were re-read from NVMe during inference: 3.8-14 tok/s prompt and 16-19 tok/s generation. With direct I/O, bypassing the page cache: 31.5 tok/s consistently.
 - **`-ub 2048`** on the MoE models: prompt 1040 tok/s, against 750 at 1024 and 470 at 512. Generation is unchanged. `-t` 6, 8 and 12 were within noise, so 8 (physical cores) stays.
+- **`--moe-cache-mib 3072`** on the MoE models: a VRAM cache for the experts `--fit` keeps on the CPU. Generation on a 2-4k-token answer: gemma4 61 → 109 tok/s, qwen3.6 36 → 49, ornith 37.5 → 44. Prompt speed drops 0-4%. `--fit` counts the cache: it moves 6-7 more expert layers to the CPU and keeps the same free margin, so `--fit-target` stays unchanged. 3584 was no faster; qwen3.6 was unstable at 3968, slowed to 12 tok/s at 4096 and failed with `ErrorDeviceLost` at 6144 ([sweep](../bench/moe-cache-2026-10-22.md)).
 - **Reranker on the GPU**: 10 chunks of about 350 tokens take 0.2-0.65 s on the dGPU, against 3.7-4.9 s on the CPU (`-t 8` / `-t 4`) and 5.8 s on the 610M iGPU. Over the 3 s limit on the CPU, so it moved to the GPU. This is also why qwen3.8 uses `-ub 256`.
 
 ## 2. Compose service

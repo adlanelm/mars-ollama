@@ -4,7 +4,7 @@
 # greedy 400 tok (speed, MTP acceptance) and sampled up to 16k tok (thinking length, answers). Outputs in $LOGDIR.
 set -uo pipefail
 label=$1 gguf=$2 samp=$3; shift 3; extra="$*"; D=$(dirname "$0"); L=${LOGDIR:-/tmp}; mkdir -p "$L"
-for m in qwen3.8-27b qwen3.6-35b-a3b gemma4-26b granite-vision granite-docling; do curl -s -X POST localhost:11434/api/models/unload/$m >/dev/null; done
+for m in qwen3.8-27b muse-glimmer-30b qwen3.6-35b-a3b ornith-1.5-35b-a3b gemma4-26b granite-vision granite-docling; do curl -s -X POST localhost:11434/api/models/unload/$m >/dev/null; done
 docker ps -q -f name=comfyui | grep -q . && { echo "stop ComfyUI first"; exit 1; }
 sleep 2
 docker rm -f lsbench >/dev/null 2>&1

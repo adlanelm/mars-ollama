@@ -21,7 +21,7 @@ Annotated excerpt (abridged; see the real file for everything):
 macros:
   chat_common: >-          # all chat models
     -fa on -ctk q8_0 -ctv q8_0 -np 2 --kv-unified -ctxcp 8 -cram 2048 -lm dio --jinja --no-webui
-  moe_common: >-           # qwen3.6, ornith-1.5, gemma4
+  moe_common: >-           # qwen3.6, gemma4
     -t 8 -tb 8 -ub 2048 -b 2048 --moe-cache-mib 3072
   aux_common: >-           # CPU embedders
     -dev none -ngl 0 -c 8192 -b 8192 -ub 8192 -t 4 -cram 0 --no-webui

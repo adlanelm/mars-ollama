@@ -46,21 +46,6 @@ models:
       -c 49152 --no-mmproj-offload -ub 256
       --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 0
 
-  # Trial 2026-10-22 (bench/ab-2026-10-22.md): Meta Muse Glimmer, dense ~28B, candidate to replace qwen3.8-27b.
-  # Only 13 of 52 layers are full attention (2 KV heads), so 128k fits 100% on GPU at the qwen3.8 quant tier
-  # (53/53 layers, ~2 GiB left). Same speed as qwen3.8. The template defaults to "Reasoning strength: high".
-  # Sampling from the model card. mmproj Q8_0 (2.05 GB) on CPU like qwen3.8's.
-  "muse-glimmer-30b":
-    name: "Muse Glimmer 30B (dense, 128k, vision, trial)"
-    ttl: 900
-    cmd: |
-      ${gpu_guard} llama-server --port ${PORT}
-      -m /models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q3_K_XL.gguf
-      --mmproj /models/unsloth/Muse-Glimmer-30B-GGUF/mmproj-Muse-Glimmer-30B-Q8_0.gguf
-      ${chat_common}
-      -c 131072 --no-mmproj-offload -ub 256
-      --temp 1.0 --top-p 0.95 --top-k 64
-
   # MoE 35B / 3B active. No -ngl / --n-cpu-moe: --fit picks the expert split at load time.
   "qwen3.6-35b-a3b":
     name: "Qwen3.6 35B-A3B (MoE, 128k, vision)"
@@ -73,19 +58,6 @@ models:
       ${chat_common} ${moe_common}
       -c 131072
       --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5
-
-  # Trial 2026-10-22 (bench/ab-2026-10-22.md): Ornith-1.5 (Qwen3.5-MoE fine-tune), candidate to replace qwen3.6.
-  # Same size class; thinks ~1/3 as much, answers ~2x sooner. Sampling: card's general-task values.
-  "ornith-1.5-35b-a3b":
-    name: "Ornith 1.5 35B-A3B (MoE, 128k, vision, trial)"
-    ttl: 900
-    cmd: |
-      ${gpu_guard} llama-server --port ${PORT}
-      -m /models/ornith-ai/Ornith-1.5-35B-A3B-GGUF/Ornith-1.5-35B-Q4_K_M.gguf
-      --mmproj /models/ornith-ai/Ornith-1.5-35B-A3B-GGUF/mmproj-Ornith-1.5-35B-BF16.gguf
-      ${chat_common} ${moe_common}
-      -c 131072
-      --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
 
   # MoE 25.2B / 3.8B active, QAT-based quant. Keep --swa-full off.
   # MTP draft (2026-10-13, bench/verification-2026-10-13.md): +20-75% tg. --fit does not count the draft
@@ -229,9 +201,7 @@ routing:
           exclusive: true # loading a member unloads other (non-persistent) groups
           members:
             - qwen3.8-27b
-            - muse-glimmer-30b
             - qwen3.6-35b-a3b
-            - ornith-1.5-35b-a3b
             - gemma4-26b
             - granite-vision
             - granite-vision-4.1

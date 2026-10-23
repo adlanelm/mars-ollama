@@ -125,31 +125,3 @@ models:
     size: 1162347936
     sha256: 573dd2579f6043649299f0b2225000a5691d92f320aabe909fb4c6e75450cad2
   aliases: []
-- id: ornith-1.5-35b-a3b
-  source: hf
-  repo: ornith-ai/Ornith-1.5-35B-A3B-GGUF
-  revision: 12393612fd4f730ff5aadc23e9b8f9648aa49ceb
-  files:
-  - name: Ornith-1.5-35B-Q4_K_M.gguf
-    role: model
-    size: 21713463040
-    sha256: 42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f
-  - name: mmproj-Ornith-1.5-35B-BF16.gguf
-    role: mmproj
-    size: 902822240
-    sha256: 1921a36a85aee56cd2abd27f46701802c9d85a33474792e600df6c3b282a135d
-  aliases: []
-- id: muse-glimmer-30b
-  source: hf
-  repo: unsloth/Muse-Glimmer-30B-GGUF
-  revision: faa5b025c584459c13febfa5c59883516710ae39
-  files:
-  - name: Muse-Glimmer-30B-UD-Q3_K_XL.gguf
-    role: model
-    size: 13360983072
-    sha256: 820d18e00c59376331eba62dd716a6bcdcaa305c2316f5da3a2fab36c7c37e15
-  - name: mmproj-Muse-Glimmer-30B-Q8_0.gguf
-    role: mmproj
-    size: 2051685088
-    sha256: 01ff73c95108e1754a4c145176c6d3ba44338942285cb87dcac7f4f193192ea2
-  aliases: []

@@ -226,7 +226,9 @@ function overflowOf(messages: Message[], compacted: boolean, looped?: string): O
  * file path mentioned in the latest report (models do not always follow the report format).
  */
 function filesFromReports(reports: string[], cwd: string): string[] {
-	for (const r of [...reports].reverse()) {
+	// a reviewer's or scout's "FILES: none" is not the change: /implement-and-review step 3 got an empty scope from it
+	const writers = reports.filter((r) => !/-(scout|reviewer|looker)(\.r\d+)?\.md$/.test(r));
+	for (const r of [...writers].reverse()) {
 		const line = fs.readFileSync(r, "utf8").match(/^\**FILES:?\**:?(.*)$/m)?.[1];
 		if (line) return line.split(",").map((f) => f.trim().replace(/^`|`$/g, "").replace(/:\d+(-\d+)?$/, "")).filter((f) => f && f.toLowerCase() !== "none");
 	}
@@ -700,6 +702,7 @@ function childSide(pi: ExtensionAPI) {
 	const wrapAt = /-scout$/.test(id) ? 20 : /-planner$/.test(id) ? 15 : 0;
 	let calls = 0;
 	const cutReads = new Map<string, number>(); // path -> last line shown by a read that hit the output cap
+	const continued = new Set<string>(); // reads moved past a cut by tool_call: their result says so
 	const dir = process.env.PI_HANDOFF_DIR ?? HANDOFF_ROOT;
 	const promptNo = process.env.PI_PROMPT_NO ?? "?"; // the main session's user prompt this run belongs to
 	let scope: string[] = [];
@@ -768,6 +771,7 @@ function childSide(pi: ExtensionAPI) {
 		// SliceTests.cs three times in a row, psx-iso 2026-10-24)
 		if (event.toolName === "read" && input.path && !input.offset && cutReads.has(path.resolve(ctx.cwd, input.path))) {
 			input.offset = cutReads.get(path.resolve(ctx.cwd, input.path))! + 1;
+			continued.add(path.resolve(ctx.cwd, input.path));
 		}
 		if (event.toolName === "read" && input.path && isHandoffInternal(path.resolve(ctx.cwd, input.path))) {
 			return { block: true, reason: "That is another run's internal file (session log, prompt or request). Your inputs are the reports (.md) and the shared notes." };
@@ -799,7 +803,8 @@ function childSide(pi: ExtensionAPI) {
 		const input = event.input as { path?: string; command?: string; limit?: number; offset?: number };
 		let hint = "";
 		if (wrapAt && calls >= wrapAt && (calls - wrapAt) % 10 === 0) {
-			hint = `[${calls} tool calls so far: write your report now with what you have. Open points go in the report (Risks, or "check X first" in a step), not into more reading.]`;
+			const open = /-scout$/.test(id) ? "as open questions in the report" : 'in the report (Risks, or "check X first" in a step)';
+			hint = `[${calls} tool calls so far: write your report now with what you have. Open points go ${open}, not into more reading.]`;
 		}
 		if (!hint && hints < CQ_HINTS) {
 			const cmd = input.command ?? "";
@@ -815,11 +820,17 @@ function childSide(pi: ExtensionAPI) {
 			}
 			if (hint) hints++;
 		}
-		if (bytes <= CHILD_RESULT_CAP) return hint ? { content: [{ type: "text" as const, text: `${text}\n${hint}` }] } : undefined;
+		let pre = "";
+		const abs = event.toolName === "read" && input.path ? path.resolve(input.path) : "";
+		if (abs && continued.delete(abs)) {
+			pre = `[continued from line ${input.offset}: an earlier read showed the lines before; read with offset 1 for the top]\n`;
+			if (bytes <= CHILD_RESULT_CAP) cutReads.delete(abs); // the rest is served: the next whole read starts at the top
+		}
+		if (bytes <= CHILD_RESULT_CAP) return hint || pre ? { content: [{ type: "text" as const, text: `${pre}${text}${hint ? `\n${hint}` : ""}` }] } : undefined;
 		const kept = Buffer.from(text, "utf8").subarray(0, CHILD_RESULT_CAP).toString("utf8");
 		if (event.toolName === "read" && input.path) cutReads.set(path.resolve(input.path), (input.offset ?? 1) - 1 + kept.split("\n").length - 1);
 		const how = event.toolName === "read" ? "read the line range you need (offset/limit)" : "narrow the command (grep for the symbol, head/tail, a smaller path)";
-		return { content: [{ type: "text" as const, text: `${kept}\n[output cap: ${bytes - CHILD_RESULT_CAP} more bytes not shown. ${how}.]${hint ? `\n${hint}` : ""}` }] };
+		return { content: [{ type: "text" as const, text: `${pre}${kept}\n[output cap: ${bytes - CHILD_RESULT_CAP} more bytes not shown. ${how}.]${hint ? `\n${hint}` : ""}` }] };
 	});
 }
 
@@ -912,7 +923,7 @@ const CONTRACT = (id: string, scope: string[]) => `
 ## Delegation contract
 You are subagent ${id}. The main agent gave you one narrow task; stay inside it.
 - Writable scope: ${scope.length ? scope.join(", ") : "none: this is a read-only task"}. Edits outside it are blocked.
-- If the task needs anything outside it (information you cannot find, a change outside your scope, a decision), call the \`request\` tool with exactly what you need and stop. Do not work around it; you will be resumed with the answer.
+${scope.length ? "- If the task needs anything outside it (information you cannot find, a change outside your scope, a decision), call the \`request\` tool with exactly what you need and stop. Do not work around it; you will be resumed with the answer." : "- What you could not find goes into your report as an open question. Call the \`request\` tool only for a decision you cannot make yourself, then stop."}
 - Your final message is saved as your report. Its first line must be \`SUMMARY: <at most 25 words>\`. Then details, at most 600 words, citing path:line instead of pasting file contents.`;
 
 /** What the main agent is told about this project's checks and git (computed once per session). */
@@ -1221,10 +1232,10 @@ function parentSide(pi: ExtensionAPI) {
 	function reformulate(run: Run, ov: Overflow): string {
 		const how =
 			ov.kind === "context"
-				? "Read less: find the exact symbols with grep, read only the line ranges you need, and do not re-read files."
+				? "Read less: find the exact symbols with `cq defs`/`cq refs` (or grep), read only the line ranges you need, and do not re-read files."
 				: ov.kind === "loop"
 					? "Do not repeat a call that already failed or gave the same result: a missing file stays missing. Change approach, or report what blocks you."
-					: "Do not work it out in your head at length: first list the sub-steps (one line each), then settle each fact with a tool (grep, read the exact lines, run a short script or the check) and move on.";
+					: "Do not work it out in your head at length: first list the sub-steps (one line each), then settle each fact with a tool (grep, read the exact lines, run a short script) and move on.";
 		return [
 			`RETRY: a previous attempt at this task ${ov.why}.`,
 			ov.tail ? `Where it stalled (the end of its reasoning; do not repeat it):\n> ${ov.tail.replace(/\n+/g, "\n> ")}` : "",
@@ -1246,7 +1257,7 @@ function parentSide(pi: ExtensionAPI) {
 				const original = outcome.out ?? "";
 				const fix = await launch(
 					run,
-					"Your report is missing its first lines. Reply with exactly two lines and nothing else: `SUMMARY: <at most 25 words>` and `FILES: <paths you changed, or none>`.",
+					`Your report is missing its first lines. Reply with exactly two lines and nothing else: \`SUMMARY: <at most 25 words>\` and \`FILES: <${/-planner$/.test(run.id) ? "the paths the change must touch" : agentWrites(run.agent) ? "paths you changed, or none" : "none"}>\`.`,
 					model,
 					thinking,
 					signal,
@@ -1373,11 +1384,13 @@ function parentSide(pi: ExtensionAPI) {
 		const name = spec.agent ?? (spec.scope?.length ? "worker" : "scout");
 		const agent = agents.find((a) => a.name === name);
 		if (!agent) return `Unknown agent "${name}". Available: ${agents.map((a) => a.name).join(", ")}`;
-		if (spec.for && !runs.has(spec.for)) return `Unknown run id "${spec.for}" in for`;
+		if (spec.for && !runs.has(spec.for))
+			return `Unknown run id "${spec.for}" in for. \`for\` only answers a subagent's request; valid ids: ${[...runs.keys()].join(", ") || "none yet"}. For a new task, leave \`for\` out.`;
 		const dir = ensureRunDir();
 		const id = `${String(++counter).padStart(2, "0")}-${agent.name}`;
 		const cwd = path.resolve(defaultCwd, spec.cwd ?? ".");
-		const scope = (spec.scope ?? []).map((s) => path.resolve(cwd, s));
+		// planner steps mark new files "Foo.cs (new)"; copied into a scope that would block the very file
+		const scope = (spec.scope ?? []).map((s) => path.resolve(cwd, s.replace(/\s*\([^)]*\)\s*$/, "").replace(/^`|`$/g, "")));
 		const promptFile = path.join(dir, `${id}.prompt.md`);
 		fs.writeFileSync(promptFile, agent.systemPrompt + CONTRACT(id, scope), { mode: 0o600 });
 		const run: Run = { id, agent, cwd, scope, session: path.join(dir, `${id}.jsonl`), report: path.join(dir, `${id}.md`), promptFile, answers: [] };
@@ -1410,16 +1423,18 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		lines.push(`WRITABLE SCOPE: ${run.scope.length ? run.scope.join(", ") : "none (read-only)"}`);
 		if (spec.inputs?.length) lines.push(`INPUTS (read these first): ${spec.inputs.join(", ")}`);
-		lines.push(notesLine(run));
+		const looker = run.agent.name === "looker"; // its own answer format; no code, so no notes or FILES line
+		if (!looker) lines.push(notesLine(run));
 		// in the task message, not only the system prompt: with the system prompt alone a Flint scout made 0 cq calls in 31 turns
 		if (!run.agent.tools || run.agent.tools.includes("bash")) {
 			lines.push("CODE QUESTIONS (`cq` is a shell command: run it with your bash tool; answers in a few lines, try it before reading or grepping): `cq outline <files>` (symbols with line numbers), `cq defs <Name>`, `cq refs <Name> [dir]`, `cq callers <Name>`, `cq callees <Name>`.");
 			if (fs.existsSync(path.join(gitRoot(run.cwd) ?? run.cwd, "ProjectSettings", "ProjectVersion.txt")))
 				lines.push("UNITY FILES (same `cq` via bash, instead of grep/sed in scene YAML): `cq objects <scene|prefab> [word]`, `cq where <Script|asset>`, `cq block <file> <object|fileID>`, `cq anim <controller>`, `cq guid <guid>`.");
 		}
-		lines.push(
-			"REPORT FORMAT: your final message must start with the line `SUMMARY: <at most 25 words>`, then `FILES: <comma-separated paths you changed, or for a plan the paths the change must touch, or none>`, then details.",
-		);
+		if (!looker)
+			lines.push(
+				"REPORT FORMAT: your final message must start with the line `SUMMARY: <at most 25 words>`, then `FILES: <comma-separated paths you changed, or for a plan the paths the change must touch, or none>`, then details.",
+			);
 		return lines.join("\n");
 	}
 
@@ -1535,9 +1550,10 @@ function parentSide(pi: ExtensionAPI) {
 			// "Files you may change (exactly these)" into the goal, the worker got "WRITABLE SCOPE: none" and asked for
 			// approval instead of editing (psx-iso, 2026-10-24)
 			if (writes && name === "worker" && !spec.scope?.length && !spec.for) {
+				// existing files, and new ones whose directory exists (a step that only creates a file)
 				const named = [...new Set(spec.goal.match(/[\w./-]+\.\w{1,12}\b/g) ?? [])].filter((f) => {
 					const abs = path.resolve(cwd0, f);
-					return fs.existsSync(abs) && fs.statSync(abs).isFile();
+					return fs.existsSync(abs) ? fs.statSync(abs).isFile() : f.includes("/") && fs.existsSync(path.dirname(abs));
 				});
 				return {
 					id: "-",
@@ -1628,15 +1644,15 @@ function parentSide(pi: ExtensionAPI) {
 			"Your context is small and compaction loses detail. Keep this conversation for decisions; subagents do the reading and the doing. Your own read and bash output is capped, and your read/bash/edit tools are withdrawn once you have used your share for this prompt: from then on use subagent (tasks get their check run automatically).",
 			"Ask scouts questions, not for file contents: \"where is X handled and what does it take\", not \"return lines 365-410\".",
 			"Work in small steps: each worker task changes at most 2 named files and must leave the project compiling; tests are a step of their own, and shared test setup is changed only as a named step. Run a plan's steps as a chain, one worker per step.",
-			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and `check`: the command that proves the work (tests, build check). The extension runs it, retries the subagent on failure and tells you the exit code.",
+			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and \`check\` only for something the project checks do not already cover (a specific test). The extension runs it, retries the subagent on failure and tells you the exit code.",
 			"Trust the check result, not a subagent's claims. Do not re-run checks yourself after a passing `check`.",
 			...checkGuidelines(process.cwd()),
 			"Pass information between subagents as run ids or report paths in inputs (inputs: [\"01-scout\"]); read a report yourself only when you must decide something from it (handoff reads always work, capped). Subagents also share facts through a notes file they read and write themselves: do not relay findings between them.",
 			"A subagent that runs out of thinking budget or context is retried automatically with a reformulated task (and then another model). If it still reports `overflow: ... split this goal`, do not resend it: split it into smaller tasks (one question or one file each), or chain its REMAINING line.",
 			"Images: the looker agent sees them (it runs on the vision model). Ask it specific questions about image files instead of guessing.",
-			"Subagents (and you) have `cq` for code questions without reading files: `cq outline <file>`, `cq defs <Name>`, `cq refs <Name>`, `cq callers <Name>`, `cq callees <Name>`. Give scouts 2-3 specific questions each (or parallel scouts, one question each), not \"find all code relevant to X\": a broad brief made a psx-iso scout page through scene files to 57k tokens.",
+			"Subagents have `cq` (a bash command) for code questions without reading files: `cq outline <file>`, `cq defs <Name>`, `cq refs <Name>`, `cq callers <Name>`, `cq callees <Name>`. Give scouts 2-3 specific questions each (or parallel scouts, one question each), not \"find all code relevant to X\": a broad brief made a psx-iso scout page through scene files to 57k tokens.",
 			"If a subagent returns NEEDS, dispatch another subagent for that need with for set to the waiting run id, then call subagent with resume set to that id. Never do the out-of-scope work by stretching the first subagent's task.",
-			"Do one-line or single-file edits yourself; delegate anything that needs reading more than ~2 files.",
+			"Do one-line or single-file edits yourself (not in /implement: there workers make every change); delegate anything that needs reading more than ~2 files.",
 		],
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

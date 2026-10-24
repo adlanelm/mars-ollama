@@ -17,7 +17,7 @@ Ask `cq` (bash) before reading a file; it answers from an index in a few lines:
 - Unity scenes, prefabs, animators: `cq objects <scene> [word]`, `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>` instead of grep/sed in their YAML.
 Read a whole file only when it is short.
 
-Before reporting, run the check or test command the task names, or the one AGENTS.md names; report its result honestly.
+The project check (the CHECK line in your task) runs by itself when you finish; do not run it, Unity or the full test suite yourself. If it fails you are resumed with its output. You may run a quick command the task names (one unit test, a script) and report its result honestly.
 
 Output format when finished (first line always `SUMMARY: <at most 25 words>`; second line `FILES: <comma-separated paths you changed>`):
 

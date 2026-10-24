@@ -76,7 +76,8 @@ so that delegation and context limits are enforced by code, not left to the mode
   line, or else the existing file paths the report mentions), and `resume` (optionally with a new `scope`).
 - Tools are withdrawn, not just blocked: the main session's active tool set (`setActiveTools`) never includes
   `write`, loses `edit` in plan-only prompts and after 2 edited files, and loses read, bash, grep, find and ls
-  once the budget is used up. The full set comes back on the next user prompt. A blocked call reads to a local
+  once the budget is used up. In `/implement` (`[workers-edit]`) it has only read and subagent from the start: no
+  edit, bash, grep, find or ls (refused calls made it try variations: find, ls, pwd, `echo hello`). The full set comes back on the next user prompt. A blocked call reads to a local
   model as "try a variation" (29 blocked calls in one psx-iso run); a missing tool doesn't. The guards below
   remain as a fallback.
 - Context guard:
@@ -85,7 +86,7 @@ so that delegation and context limits are enforced by code, not left to the mode
   - After 48 KB of direct output in one prompt (24 KB was too small to plan a psx-iso item: the files involved are 43 KB, and the model worked around it with verbatim-copy scouts), read, grep, find, ls and bash are blocked ("delegate"). The
     exceptions are check commands: Tools/check, test runners, git status/diff --stat, and any `check` given to a
     subagent. They may be wrapped in `cd X &&`, `timeout N`, `bash`, `2>&1`, `> log` or `| tail`, and their output
-    is cut to 1 KB. Reads of handoff reports always work (capped at 4 KB) and don't count toward the budget. The
+    is cut to 1 KB. Reads of handoff reports always work (capped at 8 KB, so a whole report fits) and don't count toward the budget. The
     budget resets on each user prompt.
   - The main session may edit at most 2 existing files per prompt and never creates or overwrites files
     (`write`); new files go to a worker. SKILL.md reads are whole (up to 16 KB) and don't count toward the
@@ -93,7 +94,7 @@ so that delegation and context limits are enforced by code, not left to the mode
 - Plan-only prompts: a prompt containing `[plan-only]` (`/plan`, `/scout-and-plan`, gamekit's `/backlog-item`)
   can read and run scouts and planners (a scope given to a read-only agent is dropped), but edit/write, writing bash, worker tasks and resumes with a scope are
   blocked until the next user prompt. "Wait for my OK" therefore always holds.
-- Project check: the project check always runs for writing tasks, and a task `check` is added to it, never replaces it (the main session once passed `check: "echo done"`). A writing task without `check` gets `bash <project>/.pi/check` if that file exists (searched
+- Project check: the project check always runs for writing tasks, and a task `check` is added to it, never replaces it (the main session once passed `check: "echo done"`). A writing task without `check` gets `bash <project>/.pi/check-fast` per step when that exists (the full `.pi/check` then runs once at the end), else `bash <project>/.pi/check` if that file exists (searched
   from the task cwd up to the git root). Verification doesn't depend on the main session remembering to ask for
   it. gamekit's templates add one: Unity runs Tools/check plus the PlayMode tests, Godot runs Tools/check.
 - Automatic review: when a prompt that changed files is about to finish (`agent_before_settle`), the reviewer
@@ -133,7 +134,7 @@ so that delegation and context limits are enforced by code, not left to the mode
 - The delegation rules live in the tool's `promptGuidelines`, which subagents never see.
 
 **Subagents** (`PI_SUBAGENT=1`; they don't get the `subagent` tool, so they can't recurse)
-- Narrow task: the extension builds the task message (GOAL, DONE WHEN, WRITABLE SCOPE, INPUTS, REPORT FORMAT).
+- Narrow task: the extension builds the task message (GOAL, DONE WHEN, WRITABLE SCOPE, INPUTS, CHECK, SHARED NOTES, CODE QUESTIONS, UNITY FILES in Unity projects, REPORT FORMAT).
   Each subagent inherits the main session's model, because llama-swap holds only one chat model and a different
   one would swap (a reload, and the main session's prompt cache is gone). The exceptions are pinned with `model:`
   or escalated: `looker` runs on qwen3.6 (vision); `reviewer` runs on qwen3.8-27b-gsq, a different model family
@@ -218,7 +219,7 @@ main session.
   images in a session already on Flint (tested with `--model mars/flint-40b-a2.5b @ocr.png`: saved, asked the
   looker, correct transcription).
 
-Prompts: `/implement` (scout, planner, worker with `@previous` scope), `/scout-and-plan`, `/implement-and-review`.
+Prompts: `/implement` (scout, planner, then one worker per plan step with that step's files as scope), `/scout-and-plan`, `/plan`, `/implement-and-review`.
 
 ## Code questions: `cq`
 
@@ -257,7 +258,7 @@ before reading a file.
 ## Thinking per task
 
 The harness picks the thinking level per task, and the level picks a reasoning budget:
-- Agents declare `thinking:` in their frontmatter: scout `minimal`, worker `low`, planner and reviewer `medium`;
+- Agents declare `thinking:` in their frontmatter: scout `low` (at `minimal` every Flint scout ran out of budget mid-answer), worker `low`, planner and reviewer `medium`;
   the main session keeps its own level. A worker retried after a failed check thinks one level higher (up to
   `high`).
 - An agent with its own `model:` never gets the main session's level: it gets its frontmatter `thinking:`, or

@@ -119,6 +119,7 @@ const CQ_HINTS = 3;
 const SOURCE_FILE = /\.(cs|py|ts|tsx|js|jsx|mjs|go|rs|java|kt|swift|c|cc|cpp|h|hpp|gd|lua|rb|php)\b/;
 const UNITY_YAML = /\.(unity|prefab|controller|overrideController|asset)\b/;
 // start of llama-swap's --reasoning-budget-message (chat_common): llama-server appends it to the reasoning it cuts
+const TOOL_MARKUP = /<tool_call>|<\/tool_call>|<arg_key>|<function=|<\|tool_call/;
 const BUDGET_MARK = "Thinking budget reached";
 // Escalation: another model family takes over a step its model could not do, after the second overflow retry and after
 // the second failed check retry. A model that loops on a task tends to loop on it again (bench/suite.py: qwen3.6 thought
@@ -922,7 +923,8 @@ interface Run {
 	task?: string; // the first task message, reformulated on an overflow retry
 	model?: string; // ESCALATION_MODEL once a retry has escalated
 	recoveries?: number; // overflow retries so far
-	resumed?: boolean; // resumed after NEEDS: a fresh retry would lose the answer, so overflows are only reported
+	resumed?: boolean;
+	markupRetries?: number; // resumes after a final message that held tool-call markup as text // resumed after NEEDS: a fresh retry would lose the answer, so overflows are only reported
 	requests?: number; // NEEDS so far (MAX_REQUESTS)
 }
 
@@ -1327,6 +1329,18 @@ function parentSide(pi: ExtensionAPI) {
 
 	async function settleChecks(run: Run, outcome: Outcome, check: string | undefined, notes: string[], model?: string, thinking?: string, signal?: AbortSignal): Promise<Outcome> {
 		for (let attempt = 0; ; attempt++) {
+			// a final message with tool-call markup as text: the calls never ran and the answer is missing (a Flint
+			// scout ended on "<tool_call>bash<arg_key>command..."; its report became two lines, psx-iso 2026-10-24)
+			while (outcome.status === "done" && TOOL_MARKUP.test(outcome.out ?? "") && (run.markupRetries ?? 0) < 2) {
+				run.markupRetries = (run.markupRetries ?? 0) + 1;
+				outcome = await launch(
+					run,
+					"Your last message wrote tool calls as text (<tool_call>...), so they did not run and your answer is missing. Make them as real tool calls, one at a time, then end with your full report in the output format.",
+					model,
+					thinking,
+					signal,
+				);
+			}
 			if (outcome.status !== "done") return outcome;
 			if (!hasSummary(outcome.out ?? "")) {
 				const original = outcome.out ?? "";

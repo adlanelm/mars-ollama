@@ -158,8 +158,9 @@ so that delegation and context limits are enforced by code, not left to the mode
 for overflow retries), `NN-agent.prompt.md`, `notes.md`, `image-N.*` and `quarantine/`. Only paths go through the
 main session.
 - Shared notes: subagents pass facts to each other without the main session relaying them. Each task message names
-  `notes.md` (with its fact count); the `note` tool appends one line, `- [NN-agent] fact`. The main session only
-  gets the path. A plain file was chosen over a memory/blackboard MCP server: no extra tool schemas in every local
+  `notes.md` (with its fact count); the `note` tool appends one line, `- [pN NN-agent] fact`, where N is the user
+  prompt that wrote it. The task message counts this prompt's facts and earlier prompts' separately and says the
+  earlier ones may be outdated if their files changed since. The main session only gets the path. A plain file was chosen over a memory/blackboard MCP server: no extra tool schemas in every local
   model's prompt, no service, handoff reads already budgeted, and readable when a run goes wrong.
 - `inputs` take run ids (`"01-scout"` or `"@01-scout"`) as well as paths; ids resolve to that run's report.
 - Images: a prompt with images to a text-only session model (Flint) would lose them. The `input` hook saves them as

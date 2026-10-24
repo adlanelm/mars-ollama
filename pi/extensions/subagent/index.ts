@@ -629,6 +629,7 @@ function isGlobalInstall(cmd: string): boolean {
 function childSide(pi: ExtensionAPI) {
 	const id = process.env.PI_SUBAGENT_ID ?? "subagent";
 	const dir = process.env.PI_HANDOFF_DIR ?? HANDOFF_ROOT;
+	const promptNo = process.env.PI_PROMPT_NO ?? "?"; // the main session's user prompt this run belongs to
 	let scope: string[] = [];
 	try {
 		scope = JSON.parse(process.env.PI_SUBAGENT_SCOPE ?? "[]");
@@ -661,7 +662,7 @@ function childSide(pi: ExtensionAPI) {
 			"Add one durable fact to the shared notes that the other subagents of this session read: a path:line, a signature, a decision, a gotcha. One line; not progress updates, not file contents.",
 		parameters: Type.Object({ fact: Type.String({ description: "One self-contained line, e.g. `Config is loaded in src/config.ts:40 (loadConfig, returns Config | undefined)`" }) }),
 		async execute(_id, params) {
-			fs.appendFileSync(path.join(dir, "notes.md"), `- [${id}] ${params.fact.replace(/\s+/g, " ").trim().slice(0, 300)}\n`);
+			fs.appendFileSync(path.join(dir, "notes.md"), `- [p${promptNo} ${id}] ${params.fact.replace(/\s+/g, " ").trim().slice(0, 300)}\n`);
 			return { content: [{ type: "text", text: "Noted." }], details: {} };
 		},
 	});
@@ -820,6 +821,7 @@ function parentSide(pi: ExtensionAPI) {
 	const finished: { seq: number; scope: string[] }[] = [];
 	let runDir: string | undefined;
 	let counter = 0;
+	let promptNo = 0; // user prompts so far: notes are tagged with it, so later prompts can tell old facts from new
 	const waiting = new Set<string>(); // runs stopped with NEEDS, not yet resumed
 	// runs whose check was deferred because another run was waiting; run when the waiting set empties
 	const deferred = new Map<string, { run: Run; check: string }>();
@@ -908,6 +910,7 @@ function parentSide(pi: ExtensionAPI) {
 					PI_SUBAGENT_ID: run.id,
 					PI_SUBAGENT_SCOPE: JSON.stringify(run.scope),
 					PI_HANDOFF_DIR: path.dirname(run.report),
+					PI_PROMPT_NO: String(promptNo),
 				},
 			});
 			const onLine = (line: string) => {
@@ -1237,11 +1240,19 @@ function parentSide(pi: ExtensionAPI) {
 		return run;
 	}
 
-	/** Where the shared notes are and how many facts they hold now (a retry gets a fresh count). */
+	/**
+	 * Where the shared notes are and what they hold now (a retry gets a fresh count). Facts are tagged `[pN id]` with the
+	 * user prompt that wrote them: ones from earlier prompts may describe code that has changed since.
+	 */
 	function notesLine(run: Run): string {
 		const notes = path.join(path.dirname(run.report), "notes.md");
-		const noted = fs.existsSync(notes) && fs.readFileSync(notes, "utf8").split("\n").filter((l) => l.startsWith("- ")).length;
-		return `SHARED NOTES: ${notes}${noted ? ` (${noted} facts from earlier subagents: read it first)` : " (no facts yet, nothing to read)"}. Record facts later subagents will need with the note tool (one line each: path:line, signatures, decisions).`;
+		const facts = fs.existsSync(notes) ? fs.readFileSync(notes, "utf8").split("\n").filter((l) => l.startsWith("- ")) : [];
+		const now = facts.filter((l) => l.startsWith(`- [p${promptNo} `)).length;
+		const old = facts.length - now;
+		const what = !facts.length
+			? " (no facts yet, nothing to read)"
+			: ` (${[now && `${now} from this prompt (p${promptNo})`, old && `${old} from earlier prompts, which may be outdated if those files changed since: check before relying on them`].filter(Boolean).join(", ")}; read it first)`;
+		return `SHARED NOTES: ${notes}${what}. Record facts later subagents will need with the note tool (one line each: path:line, signatures, decisions).`;
 	}
 
 	function taskMessage(spec: Spec, run: Run): string {
@@ -1660,6 +1671,7 @@ function parentSide(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		if ((event as { messageType?: string }).messageType !== "custom") {
+			promptNo++;
 			toolCalls = 0;
 			nudged = false;
 			pathsChecked = false;

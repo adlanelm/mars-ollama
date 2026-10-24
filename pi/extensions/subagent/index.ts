@@ -1413,9 +1413,9 @@ function parentSide(pi: ExtensionAPI) {
 		lines.push(notesLine(run));
 		// in the task message, not only the system prompt: with the system prompt alone a Flint scout made 0 cq calls in 31 turns
 		if (!run.agent.tools || run.agent.tools.includes("bash")) {
-			lines.push("CODE QUESTIONS (bash, answers in a few lines, try them before reading or grepping): `cq outline <files>` (symbols with line numbers), `cq defs <Name>`, `cq refs <Name> [dir]`, `cq callers <Name>`, `cq callees <Name>`.");
+			lines.push("CODE QUESTIONS (`cq` is a shell command: run it with your bash tool; answers in a few lines, try it before reading or grepping): `cq outline <files>` (symbols with line numbers), `cq defs <Name>`, `cq refs <Name> [dir]`, `cq callers <Name>`, `cq callees <Name>`.");
 			if (fs.existsSync(path.join(gitRoot(run.cwd) ?? run.cwd, "ProjectSettings", "ProjectVersion.txt")))
-				lines.push("UNITY FILES (cq, instead of grep/sed in scene YAML): `cq objects <scene|prefab> [word]`, `cq where <Script|asset>`, `cq block <file> <object|fileID>`, `cq anim <controller>`, `cq guid <guid>`.");
+				lines.push("UNITY FILES (same `cq` via bash, instead of grep/sed in scene YAML): `cq objects <scene|prefab> [word]`, `cq where <Script|asset>`, `cq block <file> <object|fileID>`, `cq anim <controller>`, `cq guid <guid>`.");
 		}
 		lines.push(
 			"REPORT FORMAT: your final message must start with the line `SUMMARY: <at most 25 words>`, then `FILES: <comma-separated paths you changed, or for a plan the paths the change must touch, or none>`, then details.",
@@ -1531,6 +1531,23 @@ function parentSide(pi: ExtensionAPI) {
 				const abs = path.resolve(cwd0, f);
 				return fs.existsSync(abs) && fs.statSync(abs).isDirectory();
 			});
+			// a worker without scope can change nothing, while its goal says which files to change: the main agent wrote
+			// "Files you may change (exactly these)" into the goal, the worker got "WRITABLE SCOPE: none" and asked for
+			// approval instead of editing (psx-iso, 2026-10-24)
+			if (writes && name === "worker" && !spec.scope?.length && !spec.for) {
+				const named = [...new Set(spec.goal.match(/[\w./-]+\.\w{1,12}\b/g) ?? [])].filter((f) => {
+					const abs = path.resolve(cwd0, f);
+					return fs.existsSync(abs) && fs.statSync(abs).isFile();
+				});
+				return {
+					id: "-",
+					status: "error",
+					contextTokens: 0,
+					text:
+						`Refused: a worker needs scope, the files this step changes (at most ${MAX_STEP_FILES}); files listed only in the goal are not writable. ` +
+						`Resend the same call with scope set, e.g. scope: ${JSON.stringify(named.slice(0, MAX_STEP_FILES))}${named.length > MAX_STEP_FILES ? ` (the goal names ${named.length} files: pick the ones this step changes)` : ""}.`,
+				} as Outcome;
+			}
 			if (writes && !HC.allowNoGit && !gitRoot(cwd0)) {
 				return {
 					id: "-",

@@ -6,6 +6,8 @@
       "api": "openai-completions",
       "apiKey": "none",
       "models": [
+        { "id": "flint-40b-a2.5b", "name": "Flint 40B-A2.5B (mars)", "reasoning": true, "input": ["text"], "contextWindow": 131072, "maxTokens": 32768,
+          "samplingParamsByThinkingLevel": { "off": { "thinking_budget_tokens": 0 }, "minimal": { "thinking_budget_tokens": 256 }, "low": { "thinking_budget_tokens": 1024 }, "medium": { "thinking_budget_tokens": 3072 }, "high": { "thinking_budget_tokens": 8192 }, "xhigh": { "thinking_budget_tokens": 16384 } } },
         { "id": "qwen3.6-35b-a3b", "name": "Qwen 3.6 35B-A3B (mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 131072, "maxTokens": 32768,
           "samplingParamsByThinkingLevel": { "minimal": { "thinking_budget_tokens": 256 }, "low": { "thinking_budget_tokens": 1024 }, "medium": { "thinking_budget_tokens": 3072 }, "high": { "thinking_budget_tokens": 8192 }, "xhigh": { "thinking_budget_tokens": 16384 } } },
         { "id": "gemma4-26b", "name": "Gemma 4 26B (mars)", "reasoning": true, "input": ["text", "image"], "contextWindow": 131072, "maxTokens": 32768,

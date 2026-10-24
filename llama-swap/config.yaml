@@ -60,6 +60,19 @@ models:
       --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 0
 
   # MoE 35B / 3B active. No -ngl / --n-cpu-moe: --fit picks the expert split at load time.
+  # Recursive Flint 40B-A2.5B (MoE, SWA hybrid, text only): pi's default. Suite 98% at 51 s/task vs qwen3.6 98% at 152 s/task
+  # (thinks ~4x less; bench/flint-2026-10-24.md). Template has no effort switch: pi's thinking_budget_tokens is the control.
+  # qwen3.6's flags but --moe-cache-mib 1024 (+11% tg; 2048 and moe_common's 3072 -> ErrorDeviceLost at load).
+  "flint-40b-a2.5b":
+    name: "Flint 40B-A2.5B (MoE, 128k, text)"
+    ttl: 900
+    cmd: |
+      ${gpu_guard} llama-server --port ${PORT}
+      -m /models/unsloth/flint-GGUF/flint-UD-Q4_K_XL.gguf
+      ${chat_common} -t 8 -tb 8 -ub 2048 -b 2048 --moe-cache-mib 1024
+      -c 131072
+      --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0
+
   "qwen3.6-35b-a3b":
     name: "Qwen3.6 35B-A3B (MoE, 128k, vision)"
     aliases: ["qwen3.6"]
@@ -216,6 +229,7 @@ routing:
             - qwen3.8-27b
             - qwen3.8-27b-gsq
             - qwen3.6-35b-a3b
+            - flint-40b-a2.5b
             - gemma4-26b
             - granite-vision
             - granite-vision-4.1

@@ -1,6 +1,6 @@
 {
   "defaultProvider": "mars",
-  "defaultModel": "qwen3.6-35b-a3b",
+  "defaultModel": "flint-40b-a2.5b",
   "defaultThinkingLevel": "low",
   "enableInstallTelemetry": false,
   "enableAnalytics": false,

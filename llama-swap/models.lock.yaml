@@ -135,3 +135,13 @@ models:
     size: 1162347936
     sha256: 573dd2579f6043649299f0b2225000a5691d92f320aabe909fb4c6e75450cad2
   aliases: []
+- id: flint-40b-a2.5b
+  source: hf
+  repo: unsloth/flint-GGUF
+  revision: 20468edfc38ab43d6914cc88b08cbecb05d0fc62
+  files:
+  - name: flint-UD-Q4_K_XL.gguf
+    role: model
+    size: 25054688704
+    sha256: 63c2ecc461ca545134b670c660e76fa20f47240f8d39b6510bfd21c4dd6e072f
+  aliases: []

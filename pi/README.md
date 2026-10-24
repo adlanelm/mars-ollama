@@ -156,6 +156,14 @@ so that delegation and context limits are enforced by code, not left to the mode
     `request`; `npm install`, `yarn`, `uv sync`/`uv add` and `dotnet restore` stay allowed. The main session isn't
     guarded, since it answers those requests.
   - Outside git, only the edit/write guard applies. `<file>.meta` belongs to `<file>`'s scope (Unity).
+  - Other runs' internals are not inputs: reading their session logs (`*.jsonl`), prompts (`*.prompt.md`) or
+    request files in the handoff area is blocked (read or bash); reports (`*.md`) and `notes.md` stay readable.
+  - No disk-wide searches: `grep -r`, `rg`, `ag`, `find`, `fd`, `locate` (bash) and the grep/find tools are blocked
+    when the target is above the project root (`/`, `/home`, `~`, `/tmp` for a project in /tmp), a top-level
+    directory (`/var`, `/usr`...) or the handoff area (except a named report). A specific path elsewhere (a
+    library in site-packages or node_modules) is allowed. Found 2026-10-24: a Flint worker puzzled by a rigged
+    check read another run's session log and grepped /tmp, /home and /var for 20 minutes until its context was
+    compacted; after the /tmp block, a test agent tried `grep -r /tmp/pi-handoff` instead.
 - Out of scope: the subagent calls `request {need, why}` and stops (`terminate`). The main session dispatches a
   helper with `for: "<id>"` (or makes a one-line edit itself), then sends `resume: "<id>"`. The resumed subagent
   is told where the helper's report is.

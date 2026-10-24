@@ -628,6 +628,41 @@ function isGlobalInstall(cmd: string): boolean {
 	});
 }
 
+// Another run's internals in the handoff area (session logs, system prompts, request files) are not inputs: reports and
+// notes are. A Flint worker puzzled by a rigged check read another run's session log with a python heredoc and then grepped
+// /tmp, /home and /var for the check's name; the output filled its context until it was compacted (20 minutes).
+const HANDOFF_INTERNAL = /\.(jsonl|prompt\.md)$|\.request(\.\d+)?\.json$/;
+const isHandoffInternal = (p: string) => p.startsWith(path.resolve(HANDOFF_ROOT) + path.sep) && HANDOFF_INTERNAL.test(p);
+
+/**
+ * A search target that is not the project but around it: a directory above the project root (/, /home, ~, /tmp for a
+ * project in /tmp), any top-level directory (/var, /usr, /etc...), or the handoff area (other than a named report). Searching a specific path elsewhere (a library's
+ * source in site-packages or node_modules) stays allowed.
+ */
+function broadTarget(p: string, cwd: string): boolean {
+	const abs = path.resolve(cwd, p.replace(/^(~|\$HOME|\$\{HOME\})(?=\/|$)/, os.homedir()));
+	const root = gitRoot(cwd) ?? path.resolve(cwd);
+	// the handoff area too: a recursive search there reads other runs' session logs (blocked /tmp, then grep -r /tmp/pi-handoff)
+	const handoff = path.resolve(HANDOFF_ROOT);
+	if ((abs === handoff || abs.startsWith(handoff + path.sep)) && !abs.endsWith(".md")) return true;
+	return abs === "/" || root.startsWith(abs === "/" ? abs : abs + path.sep) || /^\/[^/]+\/?$/.test(abs);
+}
+
+/** The broad target of a recursive search in a bash command (grep -r, rg, ag, find, fd, locate), if any. */
+function broadSearch(cmd: string, cwd: string): string | undefined {
+	// quoted text is data (a pattern), and each command of a chain or pipe is looked at on its own
+	for (const part of cmd.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''").split(/&&|\|\||[;|&\n(){}`]/)) {
+		const words = part.trim().split(/\s+/);
+		const tool = path.basename(words[0] ?? "");
+		if (tool === "locate" || tool === "plocate") return "the whole disk";
+		const recursive = ["rg", "ag", "find", "fd"].includes(tool) || (/^e?grep$/.test(tool) && words.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w)));
+		if (!recursive) continue;
+		const target = words.slice(1).find((w) => !w.startsWith("-") && w !== "''" && broadTarget(w, cwd));
+		if (target) return target;
+	}
+	return undefined;
+}
+
 function childSide(pi: ExtensionAPI) {
 	const id = process.env.PI_SUBAGENT_ID ?? "subagent";
 	const dir = process.env.PI_HANDOFF_DIR ?? HANDOFF_ROOT;
@@ -684,7 +719,21 @@ function childSide(pi: ExtensionAPI) {
 					reason: "Subagents do not install packages outside the project (pip/uv pip/pipx/uv tool/cargo/gem/go install, npm -g). If a tool is missing, report it, don't install it; if the task needs it, call request to ask the main agent.",
 				};
 			}
+			if (cmd.includes(path.resolve(HANDOFF_ROOT)) && /\.jsonl\b|\.prompt\.md\b|\.request\b/.test(cmd)) {
+				return { block: true, reason: "That is another run's internal file (session log, prompt or request). Your inputs are the reports (.md) and the shared notes." };
+			}
+			const broad = broadSearch(cmd, ctx.cwd);
+			if (broad) {
+				return { block: true, reason: `Search inside the project (or a specific library path), not ${broad}. If the task needs something outside it, call request.` };
+			}
 			return;
+		}
+		const input = event.input as { path?: string; command?: string };
+		if (event.toolName === "read" && input.path && isHandoffInternal(path.resolve(ctx.cwd, input.path))) {
+			return { block: true, reason: "That is another run's internal file (session log, prompt or request). Your inputs are the reports (.md) and the shared notes." };
+		}
+		if ((event.toolName === "grep" || event.toolName === "find") && input.path && broadTarget(input.path, ctx.cwd)) {
+			return { block: true, reason: `Search inside the project (or a specific library path), not ${input.path}. If the task needs something outside it, call request.` };
 		}
 		if (event.toolName !== "edit" && event.toolName !== "write") return;
 		const file = (event.input as { path: string }).path;

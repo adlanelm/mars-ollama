@@ -171,6 +171,10 @@ The harness picks the thinking level per task, and the level picks a reasoning b
   1024, medium 3072, high 8192, xhigh 16384 (qwen3.8-27b 8192: xhigh stays at or below half of `maxTokens`, so
   the answer still fits). qwen3.6 ignores `reasoning_effort` (minimal reasoned the most), so the budget is
   the real control.
+- pi also sends the level as top-level `reasoning_effort`. The Qwen3.8 template knows only low, medium and xhigh
+  (default when unset; `none` turns thinking off) and returns a 500 for `minimal`, so qwen3.8-27b has a
+  `thinkingLevelMap`: off none, minimal low, low low, medium medium, high and xhigh xhigh. Without it, off
+  still thought at xhigh and xhigh was clamped to high. Low or medium beat the xhigh default on bench/suite.py.
 - At the limit llama-server closes the reasoning (a hard cut; the model does not plan for it) after injecting
   `--reasoning-budget-message` (llama-swap `chat_common`): "Thinking budget reached. Act now with what I have."
 

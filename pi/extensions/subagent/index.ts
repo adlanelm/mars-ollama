@@ -812,7 +812,9 @@ function childSide(pi: ExtensionAPI) {
 		const input = event.input as { path?: string; command?: string; offset?: number; limit?: number };
 		// the same whole-file read after a cut returns the same cut: continue where it stopped (a scout read
 		// SliceTests.cs three times in a row, psx-iso 2026-10-24)
-		if (event.toolName === "read" && input.path && !input.offset && cutReads.has(path.resolve(ctx.cwd, input.path))) {
+		// only a whole-file read (no offset, no limit): "first 60 lines" with limit alone was moved too, and a scout
+		// reported "offset/limit seems to be ignored" (psx-iso, 2026-10-24)
+		if (event.toolName === "read" && input.path && !input.offset && !input.limit && cutReads.has(path.resolve(ctx.cwd, input.path))) {
 			input.offset = cutReads.get(path.resolve(ctx.cwd, input.path))! + 1;
 			continued.add(path.resolve(ctx.cwd, input.path));
 		}

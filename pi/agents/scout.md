@@ -30,6 +30,9 @@ Ask `cq` (bash) before reading a file; it answers from an index in a few lines:
 - Unity scenes, prefabs, animators: `cq objects <scene> [word]`, `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>` instead of grep/sed in their YAML.
 Read a whole file only when it is short.
 
+Do not run the project check, Unity or the test suite: their results are in your task or in the check logs
+(`*.log`) in the handoff folder. Read those instead.
+
 Output format (first line always `SUMMARY: <at most 25 words>`):
 
 ## Files Retrieved

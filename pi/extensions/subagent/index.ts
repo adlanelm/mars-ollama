@@ -677,7 +677,8 @@ function broadTarget(p: string, cwd: string): boolean {
 	const root = gitRoot(cwd) ?? path.resolve(cwd);
 	// the handoff area too: a recursive search there reads other runs' session logs (blocked /tmp, then grep -r /tmp/pi-handoff)
 	const handoff = path.resolve(HANDOFF_ROOT);
-	if ((abs === handoff || abs.startsWith(handoff + path.sep)) && !abs.endsWith(".md")) return true;
+	// a named report or check log is fine (a scout was refused grep on full-check-1.log, psx-iso 2026-10-24)
+	if ((abs === handoff || abs.startsWith(handoff + path.sep)) && !/\.(md|log)$/.test(abs)) return true;
 	return abs === "/" || root.startsWith(abs === "/" ? abs : abs + path.sep) || /^\/[^/]+\/?$/.test(abs);
 }
 
@@ -1593,6 +1594,12 @@ function parentSide(pi: ExtensionAPI) {
 	}
 
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
+		// `for` used to pass a report on (`for: '["01-scout"]'`, twice in one psx-iso run): run ids that are not a single
+		// known run become inputs
+		if (spec.for && !runs.has(spec.for)) {
+			const ids = (spec.for.match(/\d{2}-[a-z][\w-]*/g) ?? []).filter((i) => runs.has(i));
+			if (ids.length) spec = { ...spec, for: undefined, inputs: [...(spec.inputs ?? []), ...ids] };
+		}
 		spec = await awaitNamed(spec, signal);
 		const held: { id?: string } = {};
 		try {

@@ -92,7 +92,7 @@ const PARENT_TURN_BUDGET = num(HC.turnBudgetKB, 48) * 1024; // main agent: direc
 const PARENT_BASH_AFTER_BUDGET = 1024; // check commands still work after the budget, with this much output
 const PARENT_MAX_EDIT_FILES = 2; // main agent: distinct files it may edit/write per user prompt; more = delegate
 const PARENT_SKILL_READ_CAP = 16 * 1024; // main agent: SKILL.md files are instructions, read whole, not budgeted
-const PARENT_HANDOFF_READ_CAP = 4 * 1024; // main agent: handoff reports stay readable after the budget, capped
+const PARENT_HANDOFF_READ_CAP = 8 * 1024; // main agent: handoff reports stay readable after the budget, capped
 const MAX_REVIEWS = num(HC.maxReviews, 2); // automatic reviews per user prompt (a second one after fixes)
 const MAX_STEP_FILES = num(HC.maxStepFiles, 2); // files a writing subagent may change in one task: bigger changes are split into steps
 const MAX_FULL_CHECKS = 2; // full-check runs (and fix rounds) before the prompt finishes
@@ -695,6 +695,11 @@ function broadSearch(cmd: string, cwd: string): string | undefined {
 
 function childSide(pi: ExtensionAPI) {
 	const id = process.env.PI_SUBAGENT_ID ?? "subagent";
+	// read-only agents are told to write their report after this many tool calls (again every WRAP_EVERY): a planner
+	// re-read what the scout had answered and was grepping Temp/ at 53k context, no plan written (psx-iso, 2026-10-24)
+	const wrapAt = /-scout$/.test(id) ? 20 : /-planner$/.test(id) ? 15 : 0;
+	let calls = 0;
+	const cutReads = new Map<string, number>(); // path -> last line shown by a read that hit the output cap
 	const dir = process.env.PI_HANDOFF_DIR ?? HANDOFF_ROOT;
 	const promptNo = process.env.PI_PROMPT_NO ?? "?"; // the main session's user prompt this run belongs to
 	let scope: string[] = [];
@@ -758,7 +763,12 @@ function childSide(pi: ExtensionAPI) {
 			}
 			return;
 		}
-		const input = event.input as { path?: string; command?: string };
+		const input = event.input as { path?: string; command?: string; offset?: number; limit?: number };
+		// the same whole-file read after a cut returns the same cut: continue where it stopped (a scout read
+		// SliceTests.cs three times in a row, psx-iso 2026-10-24)
+		if (event.toolName === "read" && input.path && !input.offset && cutReads.has(path.resolve(ctx.cwd, input.path))) {
+			input.offset = cutReads.get(path.resolve(ctx.cwd, input.path))! + 1;
+		}
 		if (event.toolName === "read" && input.path && isHandoffInternal(path.resolve(ctx.cwd, input.path))) {
 			return { block: true, reason: "That is another run's internal file (session log, prompt or request). Your inputs are the reports (.md) and the shared notes." };
 		}
@@ -767,6 +777,7 @@ function childSide(pi: ExtensionAPI) {
 		}
 		if (event.toolName !== "edit" && event.toolName !== "write") return;
 		const file = (event.input as { path: string }).path;
+		cutReads.delete(path.resolve(ctx.cwd, file)); // changed: a fresh read starts at the top
 		if (inScope(file, ctx.cwd, scope)) return;
 		const allowed = scope.length ? scope.join(", ") : "none (read-only task)";
 		return {
@@ -780,13 +791,17 @@ function childSide(pi: ExtensionAPI) {
 	// small model listens, the system prompt alone did not get it used
 	let hints = 0;
 	pi.on("tool_result", async (event) => {
+		calls++;
 		if (!["read", "bash", "grep", "find", "ls"].includes(event.toolName)) return;
 		if ((event.content as any[]).some((c) => c.type !== "text")) return; // an image (looker) is not text to cut
 		const text = textOf(event.content as any);
 		const bytes = Buffer.byteLength(text, "utf8");
-		const input = event.input as { path?: string; command?: string; limit?: number };
+		const input = event.input as { path?: string; command?: string; limit?: number; offset?: number };
 		let hint = "";
-		if (hints < CQ_HINTS) {
+		if (wrapAt && calls >= wrapAt && (calls - wrapAt) % 10 === 0) {
+			hint = `[${calls} tool calls so far: write your report now with what you have. Open points go in the report (Risks, or "check X first" in a step), not into more reading.]`;
+		}
+		if (!hint && hints < CQ_HINTS) {
 			const cmd = input.command ?? "";
 			const lines = text.split("\n").length;
 			const source = (p?: string) => !!p && SOURCE_FILE.test(p);
@@ -795,13 +810,14 @@ function childSide(pi: ExtensionAPI) {
 				hint = "[hint: Unity files: `cq objects <scene|prefab> [word]` (objects with components, scripts by name), `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>`, `cq guid <guid>`]";
 			} else if (event.toolName === "read" && source(input.path) && !input.limit && lines > CQ_HINT_LINES) {
 				hint = `[hint: \`cq outline ${input.path}\` lists this file's symbols with line numbers; read only the ranges you need]`;
-			} else if (event.toolName === "bash" && !/\bcq\b/.test(cmd) && (/\b(grep|rg)\b[^|]*\s-[a-zA-Z]*[rR]/.test(cmd) || /^\s*rg\b/.test(cmd) || (/\b(cat|sed -n)\b/.test(cmd) && SOURCE_FILE.test(cmd) && lines > CQ_HINT_LINES))) {
+			} else if (event.toolName === "bash" && !/\bcq\b/.test(cmd) && (/\b(grep|rg)\b[^|]*\s-[a-zA-Z]*[rR]/.test(cmd) || /^\s*rg\b/.test(cmd) || (/\b(cat|sed -n)\b/.test(cmd) && SOURCE_FILE.test(cmd) && lines > CQ_HINT_LINES) || /grep -n ["']{2}/.test(cmd))) {
 				hint = "[hint: for a symbol, `cq refs <Name>` / `cq defs <Name>` / `cq callers <Name>` answer in a few lines; `cq outline <file>` lists a file's symbols]";
 			}
 			if (hint) hints++;
 		}
 		if (bytes <= CHILD_RESULT_CAP) return hint ? { content: [{ type: "text" as const, text: `${text}\n${hint}` }] } : undefined;
 		const kept = Buffer.from(text, "utf8").subarray(0, CHILD_RESULT_CAP).toString("utf8");
+		if (event.toolName === "read" && input.path) cutReads.set(path.resolve(input.path), (input.offset ?? 1) - 1 + kept.split("\n").length - 1);
 		const how = event.toolName === "read" ? "read the line range you need (offset/limit)" : "narrow the command (grep for the symbol, head/tail, a smaller path)";
 		return { content: [{ type: "text" as const, text: `${kept}\n[output cap: ${bytes - CHILD_RESULT_CAP} more bytes not shown. ${how}.]${hint ? `\n${hint}` : ""}` }] };
 	});
@@ -2008,7 +2024,10 @@ function parentSide(pi: ExtensionAPI) {
 			content: [
 				{
 					type: "text" as const,
-					text: `${kept}\n[context guard: ${bytes - cap} bytes omitted. Delegate broad reading to a scout subagent.]${undoNote}`,
+					// a report cut at 4 KB with "delegate broad reading" was read three times in a row (psx-iso, 2026-10-24)
+					text: handoff
+						? `${kept}\n[report cut here (${bytes - cap} more bytes); reading it again shows the same. Pass it on whole: inputs: ["${path.basename((event.input as { path?: string }).path ?? "", ".md")}"]]${undoNote}`
+						: `${kept}\n[context guard: ${bytes - cap} bytes omitted. Delegate broad reading to a scout subagent.]${undoNote}`,
 				},
 			],
 		};

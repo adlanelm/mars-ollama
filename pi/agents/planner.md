@@ -15,6 +15,7 @@ Ask `cq` (bash) before reading a file; it answers from an index in a few lines:
 - `cq defs <Name>`: where Name is defined (all overloads and overrides).
 - `cq refs <Name> [dir]`: every use of Name, fields and properties too.
 - `cq callers <Name>` / `cq callees <Name>`: who calls a method, what it calls.
+- Unity scenes, prefabs, animators: `cq objects <scene> [word]`, `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>` instead of grep/sed in their YAML.
 Read a whole file only when it is short.
 
 Input format you'll receive:

@@ -5,6 +5,12 @@
 #   cq refs <Name> [path]      every reference to Name: C# by syntax tree (ast-grep), other files by word match (rg)
 #   cq callers <Name>          methods that call Name (codegraph; method calls only, not property/field reads)
 #   cq callees <Name>          what Name calls (codegraph)
+#   Unity scenes, prefabs, animators (cq-unity, next to this script):
+#   cq objects <scene|prefab> [word]   GameObjects with hierarchy path and components (scripts by name), prefab instances
+#   cq where <Script|asset>    which scene/prefab objects use a script or reference an asset
+#   cq block <file> <fileID|Name>   one object with its components, noise dropped, GUIDs resolved to asset paths
+#   cq anim <controller>       animator parameters, states, transitions with conditions
+#   cq guid <guid>             the asset a GUID belongs to
 # Output is cut at CQ_MAX lines (default 40) with a count of the rest. Exit 1 = nothing found.
 # Checked on psx-iso (Unity C#, 2026-10-24): defs exact incl. overloads, refs 12/12, callers right incl.
 # StartCoroutine(Attack()); codegraph misses property references (IsDead: 0 of 11), refs does not.
@@ -12,12 +18,13 @@
 set -euo pipefail
 export DO_NOT_TRACK=1 CODEGRAPH_TELEMETRY=0
 MAX=${CQ_MAX:-40}
-[[ ${1:-} == outline ]] && MAX=${CQ_MAX:-80} # several files at once
+[[ ${1:-} == outline || ${1:-} == block || ${1:-} == objects ]] && MAX=${CQ_MAX:-80} # several files / one big object
 # a model tries a tool once: a bare usage line after its first call made a Flint scout give up on cq (psx-iso:
 # `cq outline` with 4 files, then `cq --help`), so help shows working examples and exits 0 when asked for
 usage() {
-  sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
   echo "Examples: cq outline src/Health.cs src/Player.cs | cq defs Health | cq refs IsDead src/ | cq callers Hit"
+  echo "          cq objects Assets/Scenes/Main.unity Crawler | cq where Health | cq block Assets/Scenes/Main.unity Player | cq anim Assets/Anim/Crew.controller"
   exit "${1:-2}"
 }
 [[ $# -ge 1 ]] || usage
@@ -33,6 +40,8 @@ cap() {
   head -n "$MAX" <<<"$out"
   if ((n > MAX)); then
     if [[ $cmd == outline ]]; then echo "... +$((n - MAX)) more lines: outline fewer files at a time"
+    elif [[ $cmd == block ]]; then echo "... +$((n - MAX)) more lines: block one component by the &fileID after its ---"
+    elif [[ $cmd == objects ]]; then echo "... +$((n - MAX)) more lines: add a word to filter (cq objects <file> <word>)"
     else echo "... +$((n - MAX)) more lines: narrow it with a path (cq $cmd <Name> <dir>)"; fi
   fi
 }
@@ -80,6 +89,10 @@ case $cmd in
     [[ $# -eq 1 ]] || usage
     codegraph_ready
     (cd "$root" && codegraph "$cmd" "$1" --limit 30 2>&1) | grep -v '^\s*$' | cap
+    ;;
+  objects | where | block | anim | guid)
+    # a Unity scene is 5,000 lines of tagged YAML: a scout spent ~10 calls on GUID lookups and sed windows (psx-iso, 2026-10-24)
+    python3 -I "$(dirname "$(realpath "$0")")/cq-unity" "$root" "$cmd" "$@" | cap
     ;;
   *) usage ;;
 esac

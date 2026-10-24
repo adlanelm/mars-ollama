@@ -117,6 +117,7 @@ const CHILD_RESULT_CAP = 12 * 1024;
 const CQ_HINT_LINES = 150;
 const CQ_HINTS = 3;
 const SOURCE_FILE = /\.(cs|py|ts|tsx|js|jsx|mjs|go|rs|java|kt|swift|c|cc|cpp|h|hpp|gd|lua|rb|php)\b/;
+const UNITY_YAML = /\.(unity|prefab|controller|overrideController|asset)\b/;
 // start of llama-swap's --reasoning-budget-message (chat_common): llama-server appends it to the reasoning it cuts
 const BUDGET_MARK = "Thinking budget reached";
 // Escalation: another model family takes over a step its model could not do, after the second overflow retry and after
@@ -789,7 +790,10 @@ function childSide(pi: ExtensionAPI) {
 			const cmd = input.command ?? "";
 			const lines = text.split("\n").length;
 			const source = (p?: string) => !!p && SOURCE_FILE.test(p);
-			if (event.toolName === "read" && source(input.path) && !input.limit && lines > CQ_HINT_LINES) {
+			// Unity YAML first: a scout spent ~10 calls on GUID greps and sed windows in Slice.unity (psx-iso, 2026-10-24)
+			if (event.toolName !== "read" && !/\bcq\b/.test(cmd) && UNITY_YAML.test(cmd) || event.toolName === "read" && UNITY_YAML.test(input.path ?? "")) {
+				hint = "[hint: Unity files: `cq objects <scene|prefab> [word]` (objects with components, scripts by name), `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>`, `cq guid <guid>`]";
+			} else if (event.toolName === "read" && source(input.path) && !input.limit && lines > CQ_HINT_LINES) {
 				hint = `[hint: \`cq outline ${input.path}\` lists this file's symbols with line numbers; read only the ranges you need]`;
 			} else if (event.toolName === "bash" && !/\bcq\b/.test(cmd) && (/\b(grep|rg)\b[^|]*\s-[a-zA-Z]*[rR]/.test(cmd) || /^\s*rg\b/.test(cmd) || (/\b(cat|sed -n)\b/.test(cmd) && SOURCE_FILE.test(cmd) && lines > CQ_HINT_LINES))) {
 				hint = "[hint: for a symbol, `cq refs <Name>` / `cq defs <Name>` / `cq callers <Name>` answer in a few lines; `cq outline <file>` lists a file's symbols]";
@@ -1394,6 +1398,8 @@ function parentSide(pi: ExtensionAPI) {
 		// in the task message, not only the system prompt: with the system prompt alone a Flint scout made 0 cq calls in 31 turns
 		if (!run.agent.tools || run.agent.tools.includes("bash")) {
 			lines.push("CODE QUESTIONS (bash, answers in a few lines, try them before reading or grepping): `cq outline <files>` (symbols with line numbers), `cq defs <Name>`, `cq refs <Name> [dir]`, `cq callers <Name>`, `cq callees <Name>`.");
+			if (fs.existsSync(path.join(gitRoot(run.cwd) ?? run.cwd, "ProjectSettings", "ProjectVersion.txt")))
+				lines.push("UNITY FILES (cq, instead of grep/sed in scene YAML): `cq objects <scene|prefab> [word]`, `cq where <Script|asset>`, `cq block <file> <object|fileID>`, `cq anim <controller>`, `cq guid <guid>`.");
 		}
 		lines.push(
 			"REPORT FORMAT: your final message must start with the line `SUMMARY: <at most 25 words>`, then `FILES: <comma-separated paths you changed, or for a plan the paths the change must touch, or none>`, then details.",
@@ -1443,7 +1449,38 @@ function parentSide(pi: ExtensionAPI) {
 		);
 	}
 
+	// runs from newRun until their outcome (checks and retries included); `active` only covers the child process
+	const inflight = new Set<string>();
+
+	/**
+	 * A goal or inputs naming a run that has not finished wait for it, and get its report as an input: the main agent sent
+	 * scout and planner as two parallel calls, the planner's goal saying "read the scout's report (run 01-scout)", and the
+	 * planner scouted everything itself to 51k context while the scout was still reading (psx-iso, 2026-10-24).
+	 */
+	async function awaitNamed(spec: Spec, signal?: AbortSignal): Promise<Spec> {
+		const text = [spec.goal, ...(spec.inputs ?? [])].join("\n");
+		const ids = [...new Set(text.match(/\b\d{2}-[a-z][\w-]*\b/g) ?? [])].filter((id) => !/\.\w+$/.test(id));
+		if (!ids.length) return spec;
+		// a call in the same message may not have registered its run yet: give it a moment
+		for (let t = 0; t < 30 && ids.some((id) => !runs.has(id)) && !signal?.aborted; t++) await new Promise((r) => setTimeout(r, 100));
+		const waited = ids.filter((id) => inflight.has(id));
+		while (waited.some((id) => inflight.has(id)) && !signal?.aborted) await new Promise((r) => setTimeout(r, 1000));
+		const reports = waited.map((id) => runs.get(id)?.report).filter((f): f is string => !!f && fs.existsSync(f));
+		const inputs = [...(spec.inputs ?? []), ...reports.filter((f) => !spec.inputs?.some((i) => i === f || runs.get(i.replace(/^@/, ""))?.report === f))];
+		return inputs.length ? { ...spec, inputs } : spec;
+	}
+
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
+		spec = await awaitNamed(spec, signal);
+		const held: { id?: string } = {};
+		try {
+			return await runSpecInner(spec, defaultCwd, agents, model, thinking, signal, held);
+		} finally {
+			if (held.id) inflight.delete(held.id);
+		}
+	}
+
+	async function runSpecInner(spec: Spec, defaultCwd: string, agents: AgentConfig[], model: string | undefined, thinking: string | undefined, signal: AbortSignal | undefined, held: { id?: string }) {
 		const served = reportFetch(spec);
 		if (served) return served;
 		// inputs may name earlier runs ("01-scout" or "@01-scout"): the main agent passes ids, not report contents
@@ -1499,6 +1536,8 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		const run = newRun(spec, defaultCwd, agents);
 		if (typeof run === "string") return { id: "-", status: "error", text: run, contextTokens: 0 } as Outcome;
+		held.id = run.id;
+		inflight.add(run.id);
 		// a writing task without a check gets the project's check (.pi/check), so verification never depends on
 		// the main agent remembering to ask for it
 		const canWrite = agentWrites(run.agent);

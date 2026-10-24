@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""Unity YAML questions for cq (scenes, prefabs, animator controllers) without reading 5,000-line files.
+Unity's YAML (%TAG !u!, `--- !u!114 &id stripped`) trips generic parsers, and the answers need GUIDs resolved through
+.meta files, so this splits documents by their `--- !u!` headers and reads the few keys that matter. Standard library only.
+Usage: cq-unity ROOT guid <guid>              asset path of a GUID
+       cq-unity ROOT objects <file> [word]    GameObjects with path and components (scripts by name), prefab instances
+       cq-unity ROOT where <Script|asset>     scenes/prefabs/assets that use a script or reference an asset, on which object
+       cq-unity ROOT block <file> <fileID|Name>  one document (or a GameObject and its components), noise lines dropped
+       cq-unity ROOT anim <controller>        parameters, states, transitions with conditions"""
+import os, re, subprocess, sys
+
+HEAD = re.compile(r"^--- !u!(-?\d+) &(-?\d+)( stripped)?")
+REF = re.compile(r"\{fileID: (-?\d+)(?:, guid: ([0-9a-f]{32}), type: \d+)?\}")
+NOISE = re.compile(r"^\s*((m_ObjectHideFlags|serializedVersion|m_EditorHideFlags|m_Icon|m_NavMeshLayer|m_StaticEditorFlags|m_Name):"
+                   r"|(m_CorrespondingSourceObject|m_PrefabInstance|m_PrefabAsset|m_TransformParent): \{fileID: 0\}"
+                   r"|(m_RemovedComponents|m_RemovedGameObjects|m_AddedGameObjects|m_AddedComponents): \[\]$)")
+TRANSFORMS = {"Transform", "RectTransform"}
+BUILTIN = {"0000000000000000e000000000000000": "builtin extra", "0000000000000000f000000000000000": "builtin default"}
+PARAM = {1: "Float", 3: "Int", 4: "Bool", 9: "Trigger"}
+COND = {1: "", 2: "!", 3: ">", 4: "<", 6: "==", 7: "!="}
+
+
+def sh(root, *args):
+    return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True).stdout.splitlines()
+
+
+def tracked(root, *globs):
+    return sh(root, "ls-files", "-co", "--exclude-standard", "--", *globs)
+
+
+_guids = None
+def guids(root):  # guid -> asset path, from the .meta files
+    global _guids
+    if _guids is None:
+        _guids = dict(BUILTIN)
+        for meta in tracked(root, "*.meta"):
+            try:
+                with open(os.path.join(root, meta), errors="replace") as f:
+                    for line in f:
+                        if line.startswith("guid: "):
+                            _guids[line[6:].strip()] = meta[:-5]
+                            break
+            except OSError:
+                pass
+    return _guids
+
+
+def asset(root, guid):
+    return guids(root).get(guid, guid)
+
+
+def short(root, guid):  # Health.cs -> Health, Crawler.prefab stays
+    p = asset(root, guid)
+    b = os.path.basename(p)
+    return b[:-3] if b.endswith(".cs") else b
+
+
+class Doc:
+    def __init__(self, cls, fid, stripped, line):
+        self.cls, self.id, self.stripped, self.line, self.lines = cls, fid, stripped, line, []
+        self.type = ""
+
+    def get(self, key):  # first top-level `  key: value`
+        for l in self.lines:
+            if l.startswith("  " + key + ":"):
+                return l.split(":", 1)[1].strip()
+        return None
+
+    def ref(self, key):
+        m = REF.search(self.get(key) or "")
+        return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def parse(path):
+    docs, cur = {}, None
+    with open(path, errors="replace") as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            m = HEAD.match(line)
+            if m:
+                cur = Doc(int(m.group(1)), m.group(2), bool(m.group(3)), n)
+                docs[cur.id] = cur
+            elif cur is not None:
+                if not cur.type and line.endswith(":") and not line.startswith(" "):
+                    cur.type = line[:-1]
+                else:
+                    cur.lines.append(line)
+    return docs
+
+
+def comp_name(root, d):
+    if d.type == "MonoBehaviour":
+        _, g = d.ref("m_Script")
+        if g:
+            return short(root, g)
+        ident = d.get("m_EditorClassIdentifier") or ""
+        return ident.split(".")[-1] or "MonoBehaviour"
+    return d.type
+
+
+def scene(root, path):
+    """GameObjects and prefab instances of a scene/prefab: list of (line, id, label, components)."""
+    docs = parse(path)
+    by_go = {}  # GameObject id -> component docs (including components added to prefab-instance objects)
+    for d in docs.values():
+        go, _ = d.ref("m_GameObject")
+        if go and d.cls != 1:
+            by_go.setdefault(go, []).append(d)
+    tf_go, tf_parent = {}, {}
+    for d in docs.values():
+        if d.type in TRANSFORMS:
+            go, _ = d.ref("m_GameObject")
+            tf_go[d.id] = go
+            tf_parent[go] = d.ref("m_Father")[0]
+
+    def inst_name(i):
+        name = None
+        for k, l in enumerate(i.lines):
+            if l.strip() == "propertyPath: m_Name" and k + 1 < len(i.lines):
+                name = i.lines[k + 1].split(":", 1)[1].strip()
+        return name or os.path.splitext(short(root, i.ref("m_SourcePrefab")[1] or ""))[0]
+
+    def name(go):
+        d = docs.get(go)
+        if d is None:
+            return "?"
+        if d.stripped:  # object inside a prefab instance
+            return inst_name(docs[d.ref("m_PrefabInstance")[0]]) if d.ref("m_PrefabInstance")[0] in docs else "?"
+        return d.get("m_Name") or ""
+
+    def tf_of_stripped(fid):  # stripped transform -> its prefab instance's name
+        d = docs.get(fid)
+        if d is not None and d.stripped:
+            p = d.ref("m_PrefabInstance")[0]
+            return inst_name(docs[p]) if p in docs else "?"
+        return None
+
+    def path_of(go):
+        parts, seen = [name(go)], {go}
+        f = tf_parent.get(go)
+        while f and f != "0":
+            s = tf_of_stripped(f)
+            if s is not None:
+                parts.append(s)
+                break
+            g = tf_go.get(f)
+            if not g or g in seen:
+                break
+            seen.add(g)
+            parts.append(name(g))
+            f = tf_parent.get(g)
+        return "/".join(reversed(parts))
+
+    rows = []
+    for d in docs.values():
+        if d.cls == 1 and not d.stripped:
+            comps = [comp_name(root, c) for c in by_go.get(d.id, []) if c.type not in TRANSFORMS]
+            rows.append((d.line, d.id, path_of(d.id), comps))
+        elif d.type == "PrefabInstance":
+            _, g = d.ref("m_SourcePrefab")
+            added = [comp_name(root, c) for go, cs in by_go.items() if docs.get(go) and docs[go].stripped
+                     and docs[go].ref("m_PrefabInstance")[0] == d.id for c in cs]
+            label = f"{inst_name(d)} [prefab {asset(root, g)}]"
+            p = None
+            for l in d.lines:
+                if l.strip().startswith("m_TransformParent:"):
+                    p = REF.search(l).group(1)
+            if p and p != "0" and tf_go.get(p):
+                label = path_of(tf_go[p]) + "/" + label
+            rows.append((d.line, d.id, label, ["+" + a for a in added]))
+    rows.sort()
+    return docs, rows
+
+
+def cmd_guid(root, g):
+    p = guids(root).get(g)
+    if not p:
+        return 1
+    print(p)
+
+
+def cmd_objects(root, path, word=None):
+    _, rows = scene(root, path)
+    for line, fid, label, comps in rows:
+        s = f"{line:6}  &{fid:<20} {label}: {', '.join(comps) or '-'}"
+        if word is None or re.search(r"\b" + re.escape(word) + r"\b", s):
+            print(s)
+
+
+def cmd_where(root, what):
+    gs = [g for g, p in guids(root).items()
+          if os.path.basename(p) in (what, what + ".cs") or p == what]
+    if not gs:
+        print(f"cq where: no asset or script named {what}", file=sys.stderr)
+        return 1
+    files = tracked(root, "*.unity", "*.prefab", "*.asset", "*.controller", "*.overrideController", "*.mat")
+    for g in gs:
+        print(f"== {asset(root, g)}")
+        for rel in files:
+            path = os.path.join(root, rel)
+            try:
+                with open(path, errors="replace") as f:
+                    if g not in f.read():
+                        continue
+            except OSError:
+                continue
+            if rel.endswith((".unity", ".prefab")):
+                docs, rows = scene(root, path)
+                labels = {fid: label for _, fid, label, _ in rows}
+                for d in docs.values():
+                    if d.stripped or not any(g in l for l in d.lines):  # stripped = prefab internals, already under its instance
+                        continue
+                    go, _ = d.ref("m_GameObject")
+                    who = labels.get(go) or labels.get(d.id) or (docs[go].stripped and labels.get(docs[go].ref("m_PrefabInstance")[0])
+                                                                 if go in docs else None) or d.type
+                    how = "script" if d.ref("m_Script")[1] == g else ("prefab instance" if d.type == "PrefabInstance" else "reference")
+                    print(f"{rel}:{d.line}  {who}  ({d.type} {how})")
+            else:
+                n = next(i for i, l in enumerate(open(path, errors="replace"), 1) if g in l)
+                print(f"{rel}:{n}  (reference)")
+
+
+def annotate(root, line):
+    return REF.sub(lambda m: m.group(0) + (f" ({asset(root, m.group(2))})" if m.group(2) else ""), line)
+
+
+def show(root, d, path):
+    head = f"--- {path}:{d.line} &{d.id} {d.type}" + (" (stripped, lives in the prefab)" if d.stripped else "")
+    print(head)
+    if d.type == "PrefabInstance":  # modifications as one line each
+        mods, k = [], 0
+        while k < len(d.lines):
+            l = d.lines[k].strip()
+            if l.startswith("- target:"):
+                prop = d.lines[k + 1].split(":", 1)[1].strip()
+                val = d.lines[k + 2].split(":", 1)[1].strip()
+                obj = d.lines[k + 3].split(":", 1)[1].strip()
+                mods.append(f"    {prop} = {val}" + ("" if obj == "{fileID: 0}" else f" -> {annotate(root, obj)}"))
+                k += 4
+            elif l.startswith(("m_AddedGameObjects:", "m_AddedComponents:")) and not l.endswith("[]"):
+                k += 1
+                while k < len(d.lines) and d.lines[k].startswith("    ") and not d.lines[k].lstrip().startswith("m_"):
+                    k += 1
+                print(f"    {l.split(':')[0]}: (shown below)")
+            else:
+                if not NOISE.match(d.lines[k]) and not l.startswith(("m_Modifications:", "propertyPath", "value:", "objectReference")):
+                    print(annotate(root, d.lines[k]))
+                k += 1
+        pos = [m.split(" = ")[1] for m in mods if re.match(r"\s*m_LocalPosition\.[xyz] = ", m)]
+        rest = [m for m in mods if not re.match(r"\s*m_Local(Position|Rotation|EulerAnglesHint)\.", m)]
+        print("  modifications:" + (f" position ({', '.join(pos)})" if pos else ""))
+        print("\n".join(rest))
+        return
+    for l in d.lines:
+        if not NOISE.match(l) or (l.strip().startswith("m_Name:") and l.strip() != "m_Name:"):
+            print(annotate(root, l))
+
+
+def cmd_block(root, path, key):
+    docs = parse(path)
+    if key in docs:
+        show(root, docs[key], path)
+        return
+    _, rows = scene(root, path)
+    ids = [fid for _, fid, label, _ in rows if label.split(" [prefab ")[0].split("/")[-1] == key]
+    if not ids:
+        print(f"cq block: no fileID or object named {key} in {path} (cq objects {path} {key})", file=sys.stderr)
+        return 1
+    for fid in ids:
+        top = docs[fid]
+        show(root, top, path)
+        if top.type == "PrefabInstance":  # components added in this file sit on stripped objects of the instance
+            mine = {d.id for d in docs.values() if d.stripped and d.ref("m_PrefabInstance")[0] == fid}
+        else:
+            mine = {fid}
+        for d in docs.values():
+            if d.ref("m_GameObject")[0] in mine and not d.stripped and d.type not in TRANSFORMS and d is not top:
+                show(root, d, path)
+
+
+def cmd_anim(root, path):
+    docs = parse(path)
+    states = {d.id: d.get("m_Name") for d in docs.values() if d.type == "AnimatorState"}
+    for d in docs.values():
+        if d.type == "AnimatorController":
+            params, k = [], 0
+            for i, l in enumerate(d.lines):
+                if l.startswith("  - m_Name:") and i + 1 < len(d.lines) and "m_Type:" in d.lines[i + 1]:
+                    params.append(f"{l.split(':', 1)[1].strip()}:{PARAM.get(int(d.lines[i + 1].split(':')[1]), '?')}")
+            print(f"{path}: controller {d.get('m_Name')}; parameters: {', '.join(params) or '-'}")
+
+    def trans(tid, src):
+        t = docs.get(tid)
+        if t is None:
+            return
+        conds, k = [], 0
+        for i, l in enumerate(t.lines):
+            if l.strip().startswith("- m_ConditionMode:"):
+                mode = int(l.split(":")[1])
+                ev = t.lines[i + 1].split(":", 1)[1].strip()
+                th = t.lines[i + 2].split(":", 1)[1].strip()
+                conds.append(f"!{ev}" if mode == 2 else ev if mode == 1 else f"{ev}{COND.get(mode, '?')}{th}")
+        dst = t.ref("m_DstState")[0]
+        to = "Exit" if t.get("m_IsExit") == "1" else states.get(dst, dst)
+        ex = f" exit={t.get('m_ExitTime')}" if t.get("m_HasExitTime") == "1" else ""
+        print(f"    {src} -> {to}  [{' && '.join(conds) or 'no condition'}]{ex} dur={t.get('m_TransitionDuration')}  (line {t.line})")
+
+    for d in docs.values():
+        if d.type == "AnimatorStateMachine":
+            default = d.ref("m_DefaultState")[0]
+            print(f"  layer {d.get('m_Name')} (default state {states.get(default, '-')})")
+            for i, l in enumerate(d.lines):
+                if l.startswith("  m_AnyStateTransitions:"):
+                    for t in d.lines[i + 1:]:
+                        if not t.startswith("  - "):
+                            break
+                        trans(REF.search(t).group(1), "Any State")
+    for d in docs.values():
+        if d.type == "AnimatorState":
+            _, g = d.ref("m_Motion")
+            print(f"  state {d.get('m_Name')}  (line {d.line}) motion {asset(root, g) if g else '-'} speed {d.get('m_Speed')}")
+            for i, l in enumerate(d.lines):
+                if l.startswith("  m_Transitions:"):
+                    for t in d.lines[i + 1:]:
+                        if not t.startswith("  - "):
+                            break
+                        trans(REF.search(t).group(1), d.get("m_Name"))
+
+
+def main():
+    if len(sys.argv) < 4:
+        print(__doc__.split("Usage: ")[1], file=sys.stderr)
+        return 2
+    root, cmd, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+    fn = {"guid": cmd_guid, "objects": cmd_objects, "where": cmd_where, "block": cmd_block, "anim": cmd_anim}.get(cmd)
+    if fn is None:
+        return 2
+    if cmd in ("objects", "block", "anim") and not os.path.isfile(args[0]):
+        print(f"cq {cmd}: no such file: {args[0]}", file=sys.stderr)
+        return 1
+    try:
+        return fn(root, *args) or 0
+    except TypeError:
+        print(__doc__.split("Usage: ")[1], file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

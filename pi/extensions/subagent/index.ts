@@ -803,8 +803,9 @@ function childSide(pi: ExtensionAPI) {
 		const input = event.input as { path?: string; command?: string; limit?: number; offset?: number };
 		let hint = "";
 		if (wrapAt && calls >= wrapAt && (calls - wrapAt) % 10 === 0) {
-			const open = /-scout$/.test(id) ? "as open questions in the report" : 'in the report (Risks, or "check X first" in a step)';
-			hint = `[${calls} tool calls so far: write your report now with what you have. Open points go ${open}, not into more reading.]`;
+			hint = /-scout$/.test(id)
+				? `[${calls} tool calls so far: write your report now with what you have. Open points go into the report as open questions, not into more reading.]`
+				: `[${calls} tool calls so far: write the plan now. Settle a point one \`cq\` call answers (cq anim, cq block) first; the rest go to Risks, not into more reading. Fill in Done-when coverage.]`;
 		}
 		if (!hint && hints < CQ_HINTS) {
 			const cmd = input.command ?? "";

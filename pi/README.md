@@ -131,7 +131,8 @@ so that delegation and context limits are enforced by code, not left to the mode
 **Subagents** (`PI_SUBAGENT=1`; they don't get the `subagent` tool, so they can't recurse)
 - Narrow task: the extension builds the task message (GOAL, DONE WHEN, WRITABLE SCOPE, INPUTS, REPORT FORMAT).
   Each subagent inherits the main session's model, because llama-swap holds only one chat model and a different
-  one would swap.
+  one would swap (a reload, and the main session's prompt cache is gone). Two exceptions: the `looker` agent runs on
+  qwen3.6 (vision), and an overflow's second retry runs on the fallback model (below).
 - Scope enforcement:
   - `edit`/`write` calls outside the scope are blocked.
   - After every run, a git check undoes changes outside the scope, including bash writes. Tracked files are
@@ -153,8 +154,46 @@ so that delegation and context limits are enforced by code, not left to the mode
   is told where the helper's report is.
 
 **Handoff area**: `$PI_HANDOFF_ROOT` (default `/tmp/pi-handoff`), one folder per main session, holding
-`NN-agent.md` (the report, written by the extension), `NN-agent.jsonl` (the session, for resume),
-`NN-agent.prompt.md` and `quarantine/`. Only paths go through the main session.
+`NN-agent.md` (the report, written by the extension), `NN-agent.jsonl` (the session, for resume; `NN-agent.rN.jsonl`
+for overflow retries), `NN-agent.prompt.md`, `notes.md`, `image-N.*` and `quarantine/`. Only paths go through the
+main session.
+- Shared notes: subagents pass facts to each other without the main session relaying them. Each task message names
+  `notes.md` (with its fact count); the `note` tool appends one line, `- [NN-agent] fact`. The main session only
+  gets the path. A plain file was chosen over a memory/blackboard MCP server: no extra tool schemas in every local
+  model's prompt, no service, handoff reads already budgeted, and readable when a run goes wrong.
+- `inputs` take run ids (`"01-scout"` or `"@01-scout"`) as well as paths; ids resolve to that run's report.
+- Images: a prompt with images to a text-only session model (Flint) would lose them. The `input` hook saves them as
+  `image-N.*` and tells the main session to ask the `looker` agent (qwen3.6, read-only) about them. The session
+  keeps its model; only the looker's run swaps.
+
+**Overflow recovery** (the main session never sees the attempts):
+- An overflow is a subagent launch that ended with its thinking cut by the budget on the answer turn (llama-server
+  marks the cut with `--reasoning-budget-message`, "Thinking budget reached..."), ran out of output tokens
+  (stopReason length), or was compacted (`compaction_start` in its event stream). Cuts on tool-calling turns do not
+  count, however many: qwen3.6 at its low budget is cut on most turns and still gets on with the work.
+- Loops are stopped while running: the same tool call with the same arguments 4 times in a row, or 120 turns.
+  Found with thinking budget 0 on Flint: 381 reads of the same (then missing) notes file in 10 minutes. A run that
+  calls `request` more than 3 times is a loop too (the same test asked for its own task 13 times, and the main
+  session resumed it each time without a helper); unlike other resumed runs it gets the fresh retries. A resume
+  with no helper report and no message now says "not answered", not "handled".
+- An overflow is not retried as is. A fresh session gets the task again, reformulated: what ran out, where it
+  stalled (the end of its reasoning), sub-steps first and tools instead of long reasoning (or "read less" for
+  context, "change approach" for loops), notes for facts, `git diff` first for a half-done change, and a
+  `REMAINING:` line if the task does not fit. Retry 1 thinks one level higher; retry 2 also switches to
+  `fallbackModel` (default `mars/qwen3.8-27b-gsq`, another model family; `.pi/harness.json` or `PI_FALLBACK_MODEL`,
+  `""` turns it off). Still overflowing: a report written under a budget cut stays `done` with a warning, anything
+  else is `failed` with "split this goal" (and its REMAINING line).
+- Not restarted: a verified writing run whose answer was only cut short (its check decides) and a resumed run (a
+  fresh session would lose the answer to its request); their overflow is reported.
+- Seen in tests (2026-10-24, synthetic repo): Flint with no shell and a cut turn moved its working into the answer
+  text (21k characters) and was right (2531); with a shell it computed instead of reasoning (55005, three methods).
+  Neither is retried. With budget 0 on a no-shell agent: cut on its answer, retry 1 (low, Flint) looped on a read and
+  was stopped, retry 2 (medium, qwen3.8-27b-gsq) answered 49 (correct) in 2 min; the main session got 3 lines.
+- Overflow notes name models without the provider: `mars/flint-40b-a2.5b` read as a missing file to the path check,
+  which sent the main session searching the disk for it.
+- Images at session start: pi itself picks a vision model (qwen3.6) for a first prompt with images. The hook is for
+  images in a session already on Flint (tested with `--model mars/flint-40b-a2.5b @ocr.png`: saved, asked the
+  looker, correct transcription).
 
 Prompts: `/implement` (scout, planner, worker with `@previous` scope), `/scout-and-plan`, `/implement-and-review`.
 
@@ -168,7 +207,10 @@ The harness picks the thinking level per task, and the level picks a reasoning b
   nothing (its model's `:level` suffix applies). A retry raises from its own level (frontmatter, else the
   `:level` suffix); with neither, the retry passes nothing either.
 - `models.json` sends `thinking_budget_tokens` per level (`samplingParamsByThinkingLevel`): minimal 256, low
-  1024, medium 3072, high 8192, xhigh 16384 (qwen3.8-27b-gsq 8192: xhigh stays at or below half of `maxTokens`, so
+  1024, medium 3072, high 8192, xhigh 16384. Flint (default model) gets minimal 512, low 3072, medium 6144, high
+  12288, xhigh 16384, off 0: a budget only caps, and Flint's own lengths on bench/suite.py are short but long-tailed
+  (median 582, code median 2363, max 7299 apart from one runaway), so 1024 would cut most code steps. Its template
+  ignores `reasoning_effort`; the budget is the only control (qwen3.8-27b-gsq 8192: xhigh stays at or below half of `maxTokens`, so
   the answer still fits). qwen3.6 ignores `reasoning_effort` (minimal reasoned the most), so the budget is
   the real control.
 - pi also sends the level as top-level `reasoning_effort`. The Qwen3.8 template knows only low, medium and xhigh
@@ -185,7 +227,7 @@ nits and the 2-review cap ended it.
 
 ## Compaction
 
-`-np 2 --kv-unified` means the parent and a subagent share one 131072-token KV pool. The parent therefore compacts
+`-np 2 --kv-unified` means the parent and a subagent share one 131072-token KV pool (Flint and qwen3.6 alike). The parent therefore compacts
 at about 64k (`reserveTokens` 65536) and keeps 16k. qwen3.8-27b-gsq (65536 window) overrides this: reserve 16384 and
 keep 12000, with `maxTokens` 16384. pi uses the GSQ quant of Qwen3.8 (64k instead of stock's 48k, bench/gsq-2026-10-24.md);
 stock `qwen3.8-27b` stays in llama-swap for other clients.

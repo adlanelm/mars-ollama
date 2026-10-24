@@ -9,6 +9,8 @@
  *   NN-agent.md            final report (written by this extension, not the model)
  *   NN-agent.jsonl         subagent session, kept so the subagent can be resumed
  *   NN-agent.request.json  written by the subagent's `request` tool
+ *   notes.md               one-line facts subagents share with each other (`note` tool); the main agent only gets the path
+ *   image-N.png            images attached to a prompt while the session model cannot see them (for the looker agent)
  * Only paths and one-line summaries go back to the main agent.
  */
 
@@ -28,7 +30,8 @@ import { type AgentConfig, discoverAgents } from "./agents.ts";
  * `.pi/harness.json` in the session directory or a parent (up to the git root), e.g.
  *   { "enabled": false }                                  turn the harness off for this project
  *   { "maxStepFiles": 3, "turnBudgetKB": 64, "maxReviews": 1, "allowNoGit": true,
- *     "check": "make lint", "fullCheck": "make test" }     overrides (commands run in the project root)
+ *     "check": "make lint", "fullCheck": "make test",       overrides (commands run in the project root)
+ *     "fallbackModel": "mars/qwen3.8-27b-gsq" }
  * PI_HARNESS=off turns it off for one session.
  */
 interface HarnessConfig {
@@ -39,6 +42,7 @@ interface HarnessConfig {
 	allowNoGit?: boolean;
 	check?: string;
 	fullCheck?: string;
+	fallbackModel?: string; // provider/id for an overflowing subagent's second retry; "" turns that step off
 	root?: string; // directory holding .pi/harness.json
 	error?: string;
 }
@@ -88,6 +92,22 @@ const MAX_FULL_CHECKS = 2; // full-check runs (and fix rounds) before the prompt
 const CHECK_RETRIES = 2; // a failed `check` resumes the subagent with the failure this many times
 const CHECK_TIMEOUT_MS = Number(process.env.PI_SUBAGENT_CHECK_TIMEOUT_MS) || 30 * 60 * 1000;
 const CHECK_TAIL_LINES = 15;
+// Overflow: a subagent whose thinking budget was cut while it wrote its answer, that ran out of output tokens, or whose
+// own context was compacted, is retried with a reformulated task, at most this many times. Cuts on tool-calling turns
+// do not count, however many: qwen3.6 at its low budget is cut on most turns and still gets on with the work.
+const MAX_RECOVERIES = 2;
+// a launch that loops never ends on its own: it is stopped while running (thinking budget 0 on Flint: 381 reads of the
+// same missing file in 10 minutes) and handled like an overflow
+const KILL_REPEATS = 4; // the same tool call with the same arguments this many times in a row
+const KILL_TURNS = 120; // turns in one launch
+// a run that keeps asking the main agent (request -> resume -> request) is looping too: with thinking budget 0, Flint
+// asked for its own task ("give me the last two digits of 7^2026") 13 times
+const MAX_REQUESTS = 3;
+// start of llama-swap's --reasoning-budget-message (chat_common): llama-server appends it to the reasoning it cuts
+const BUDGET_MARK = "Thinking budget reached";
+// the second retry switches model family: a model that loops on a task tends to loop on it again (bench/suite.py:
+// qwen3.6 thought 16k+ tokens where Flint and Qwen3.8 needed 1-3k)
+const FALLBACK_MODEL = process.env.PI_FALLBACK_MODEL ?? HC.fallbackModel ?? "mars/qwen3.8-27b-gsq";
 
 // after the budget, bash is limited to checks (no sed/cat paging through files)
 const CHECK_CORE = /^(\.\/)?(Tools\/check|git (status|diff --stat|log --oneline)|python3? -m pytest|pytest|npm (test|run (test|check|lint))|cargo (test|check)|go test|dotnet test|make (test|check))\b[^;&|<>]*$/;
@@ -154,6 +174,31 @@ function finalText(messages: Message[]): string {
 		if (thought) return `(no answer text; last reasoning follows)\n${thought.slice(-3000)}`;
 	}
 	return "";
+}
+
+const thoughtOf = (m: Message) =>
+	((m.content as any[]) ?? [])
+		.filter((c) => c.type === "thinking")
+		.map((c) => c.thinking ?? "")
+		.join("\n");
+
+/**
+ * Did this launch end badly although it may have produced text? Thinking cut by the budget on the final answer (the
+ * answer was forced: "act now with what I have"), output tokens running out (stopReason length), its context
+ * compacted (it lost what it had read), or stopped for looping. Budget cuts on tool-calling turns are normal and not
+ * counted: the model acts and goes on.
+ */
+function overflowOf(messages: Message[], compacted: boolean, looped?: string): Overflow | undefined {
+	const asst = messages.filter((m) => m.role === "assistant");
+	if (!asst.length) return undefined;
+	const last = asst.at(-1)!;
+	const lastThought = [...asst].reverse().map(thoughtOf).find((t) => t.trim()) ?? "";
+	const tail = lastThought.split(BUDGET_MARK)[0].trim().slice(-1200);
+	if (looped) return { kind: "loop", why: looped, tail };
+	if (asst.some((m) => (m as any).stopReason === "length")) return { kind: "length", why: "ran out of output tokens", tail };
+	if (compacted) return { kind: "context", why: "filled its context (it was compacted and lost what it had read)", tail };
+	if (thoughtOf(last).includes(BUDGET_MARK)) return { kind: "budget", why: "ran out of thinking budget while writing its answer", tail };
+	return undefined;
 }
 
 /**
@@ -608,6 +653,19 @@ function childSide(pi: ExtensionAPI) {
 		},
 	});
 
+	// subagents share facts through a file, not through the main agent's context: each one is told its path
+	pi.registerTool({
+		name: "note",
+		label: "Note",
+		description:
+			"Add one durable fact to the shared notes that the other subagents of this session read: a path:line, a signature, a decision, a gotcha. One line; not progress updates, not file contents.",
+		parameters: Type.Object({ fact: Type.String({ description: "One self-contained line, e.g. `Config is loaded in src/config.ts:40 (loadConfig, returns Config | undefined)`" }) }),
+		async execute(_id, params) {
+			fs.appendFileSync(path.join(dir, "notes.md"), `- [${id}] ${params.fact.replace(/\s+/g, " ").trim().slice(0, 300)}\n`);
+			return { content: [{ type: "text", text: "Noted." }], details: {} };
+		},
+	});
+
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName === "bash") {
 			const cmd = (event.input as { command: string }).command;
@@ -648,8 +706,20 @@ interface Run {
 	promptFile: string;
 	answers: string[]; // reports produced for this run's requests, injected on resume
 	check?: string;
-	level?: string; // raised thinking level after a failed check
+	level?: string; // raised thinking level after a failed check or an overflow
 	touched?: Set<string>; // files this run changed (all launches); undefined outside git = unknown
+	task?: string; // the first task message, reformulated on an overflow retry
+	model?: string; // set by an overflow retry: the fallback model
+	recoveries?: number; // overflow retries so far
+	resumed?: boolean; // resumed after NEEDS: a fresh retry would lose the answer, so overflows are only reported
+	requests?: number; // NEEDS so far (MAX_REQUESTS)
+}
+
+/** Why a launch ended badly although it may have produced text (see overflowOf). */
+interface Overflow {
+	kind: "budget" | "length" | "context" | "loop";
+	why: string; // "ran out of thinking budget while answering", for reports and the retry message
+	tail: string; // the end of its last reasoning: where it stalled
 }
 
 interface Outcome {
@@ -659,6 +729,7 @@ interface Outcome {
 	contextTokens: number;
 	out?: string; // done: the subagent's final message
 	scopeNote?: string;
+	overflow?: Overflow;
 }
 
 const TaskSpec = Type.Object({
@@ -794,14 +865,16 @@ function parentSide(pi: ExtensionAPI) {
 			const stamp = new Date().toISOString().slice(5, 16).replace(/[-:T]/g, "");
 			runDir = path.join(HANDOFF_ROOT, `${stamp}-${process.pid}`);
 			fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+			// exists from the start: a subagent told about a missing file reads it again and again
+			fs.writeFileSync(path.join(runDir, "notes.md"), "# Shared notes: one fact per line, written by subagents with the note tool\n");
 		}
 		return runDir;
 	};
 
 	function launch(run: Run, message: string, model: string | undefined, thinking: string | undefined, signal?: AbortSignal) {
-		const tools = [...(run.agent.tools ?? ALL_TOOLS).filter((t) => t !== "request"), "request"];
+		const tools = [...(run.agent.tools ?? ALL_TOOLS).filter((t) => t !== "request" && t !== "note"), "request", "note"];
 		const args = ["--mode", "json", "-p", "--session", run.session, "--tools", tools.join(",")];
-		const model_ = run.agent.model ?? model;
+		const model_ = run.model ?? run.agent.model ?? model;
 		if (model_) args.push("--model", model_);
 		// thinking level per task: a retry's raised level, else the agent's own (scouts think little, planners and
 		// reviewers more), else the main session's. The level selects the reasoning budget in models.json.
@@ -817,6 +890,11 @@ function parentSide(pi: ExtensionAPI) {
 		return new Promise<Outcome>((resolve) => {
 			const messages: Message[] = [];
 			let contextTokens = 0;
+			let compacted = false;
+			let looped: string | undefined; // set when the launch is stopped for looping (KILL_*)
+			let turns = 0;
+			let repeats = 0;
+			let lastCalls = "";
 			let stderr = "";
 			let buf = "";
 			const inv = piInvocation(args);
@@ -839,8 +917,18 @@ function parentSide(pi: ExtensionAPI) {
 				} catch {
 					return;
 				}
+				if (ev.type === "compaction_start") compacted = true;
 				if (ev.type === "message_end" && ev.message) {
 					messages.push(ev.message);
+					if (ev.message.role === "assistant" && !looped) {
+						turns++;
+						const calls = JSON.stringify(((ev.message.content as any[]) ?? []).filter((c) => c.type === "toolCall").map((c) => [c.name, c.arguments]));
+						repeats = calls !== "[]" && calls === lastCalls ? repeats + 1 : 0;
+						lastCalls = calls;
+						if (repeats + 1 >= KILL_REPEATS) looped = `repeated the same ${JSON.parse(calls)[0]?.[0] ?? "tool"} call ${repeats + 1} times in a row and was stopped`;
+						else if (turns >= KILL_TURNS) looped = `ran ${turns} turns without finishing and was stopped`;
+						if (looped) proc.kill("SIGTERM");
+					}
 					if (ev.message.role === "assistant" && ev.message.usage) contextTokens = ev.message.usage.totalTokens || contextTokens;
 				}
 			};
@@ -885,6 +973,12 @@ function parentSide(pi: ExtensionAPI) {
 						req = JSON.parse(fs.readFileSync(reqFile, "utf8"));
 					} catch {}
 					fs.renameSync(reqFile, reqFile.replace(/\.json$/, `.${Date.now()}.json`));
+					run.requests = (run.requests ?? 0) + 1;
+					if (run.requests > MAX_REQUESTS) {
+						const why = `asked the main agent for help ${run.requests} times (last: "${req.need.slice(0, 120)}") and was stopped`;
+						resolve({ id: run.id, status: "error", contextTokens, overflow: { kind: "loop", why, tail: "" }, text: `[${run.id}] ERROR: it ${why}${scopeNote}` });
+						return;
+					}
 					resolve({
 						id: run.id,
 						status: "needs",
@@ -897,17 +991,19 @@ function parentSide(pi: ExtensionAPI) {
 					return;
 				}
 				const out = finalText(messages);
+				const overflow = overflowOf(messages, compacted, looped);
 				if (code !== 0 || !out) {
 					resolve({
 						id: run.id,
 						status: "error",
 						contextTokens,
+						overflow,
 						text: `[${run.id}] ERROR (exit ${code}): ${(stderr || "no output").trim().slice(-SUMMARY_CAP)}${scopeNote}`,
 					});
 					return;
 				}
 				fs.writeFileSync(run.report, out + "\n");
-				resolve({ id: run.id, status: "done", contextTokens, out, scopeNote, text: doneText(run, out, scopeNote) });
+				resolve({ id: run.id, status: "done", contextTokens, out, scopeNote, overflow, text: doneText(run, out, scopeNote) });
 			});
 		});
 	}
@@ -932,8 +1028,79 @@ function parentSide(pi: ExtensionAPI) {
 	 */
 	async function settle(run: Run, outcome: Outcome, check: string | undefined, model?: string, thinking?: string, signal?: AbortSignal): Promise<Outcome> {
 		const notes: string[] = []; // HEAD moved during a check: added to whatever the final outcome is
-		const o = await settleChecks(run, outcome, check, notes, model, thinking, signal);
+		const o = await settleChecks(run, await recover(run, outcome, model, thinking, signal), check, notes, model, thinking, signal);
 		return notes.length ? { ...o, text: o.text + notes.join("") } : o;
+	}
+
+	/**
+	 * An overflowed launch is not retried as is (the same prompt on the same model stalls the same way): a fresh session
+	 * gets the task reformulated (where it stalled, sub-steps first, tools instead of long reasoning, a REMAINING line if
+	 * it does not fit) one thinking level higher; the second retry also switches to FALLBACK_MODEL. All of it stays in
+	 * the handoff area; the main agent gets one line. Still overflowing: a report written under a budget cut is kept as
+	 * done with a warning, anything else fails with "split this goal".
+	 * A verified writing run (it has a check) whose answer was only cut short is left to its check: the check decides,
+	 * and a failure is retried one level higher anyway. A resumed run is not restarted (it would lose the answer to its
+	 * request); its overflow is only reported.
+	 */
+	async function recover(run: Run, outcome: Outcome, model?: string, thinking?: string, signal?: AbortSignal): Promise<Outcome> {
+		const verified = !!run.check && run.scope.length > 0 && agentWrites(run.agent);
+		const log: string[] = [];
+		while (
+			outcome.overflow &&
+			outcome.status !== "needs" &&
+			run.task &&
+			(!run.resumed || outcome.overflow.kind === "loop") &&
+			!(verified && outcome.status === "done" && outcome.overflow.kind === "budget") &&
+			(run.recoveries ?? 0) < MAX_RECOVERIES
+		) {
+			const n = (run.recoveries = (run.recoveries ?? 0) + 1);
+			const ov = outcome.overflow;
+			run.requests = 0;
+			const cur = run.model ?? run.agent.model ?? model;
+			const from = run.level ?? (run.agent.model ? ownLevel(run.agent) : (run.agent.thinking ?? thinking));
+			if (from || !run.agent.model) run.level = raiseLevel(from);
+			if (n >= 2 && FALLBACK_MODEL && FALLBACK_MODEL !== cur) run.model = FALLBACK_MODEL;
+			run.session = path.join(path.dirname(run.report), `${run.id}.r${n}.jsonl`); // fresh context
+			// model ids without the provider: "mars/flint-40b-a2.5b" reads as a file path to the path check at settle
+			const name = (m?: string) => m?.split("/").pop() ?? "session model";
+			log.push(`${ov.why} (${name(cur)}, ${from ?? "default level"}); retry ${n} reformulated at ${run.level ?? "the same level"}${run.model && run.model !== cur ? ` on ${name(run.model)}` : ""}`);
+			outcome = await launch(run, reformulate(run, ov), model, thinking, signal);
+		}
+		const note = log.length ? `\n  overflow: ${log.join("; ")}` : "";
+		const ov = outcome.overflow;
+		if (!ov || outcome.status === "needs") return note ? { ...outcome, text: outcome.text + note } : outcome;
+		const left = outcome.out?.match(/^\W*REMAINING:.*$/m)?.[0]?.trim();
+		const keep = outcome.status === "done" && ov.kind === "budget";
+		const advice = keep
+			? `the answer was written under a budget cut; trust its check, or verify it before relying on it${left ? `. ${left}` : ""}`
+			: `split this goal into smaller subagent tasks (one question or one file each)${left ? `. ${left}` : ""}`;
+		return {
+			...outcome,
+			status: keep ? "done" : "failed",
+			text: `${outcome.text}${note}\n  overflow: ${ov.why}${run.recoveries ? ` after ${run.recoveries} reformulated retries` : ""}: ${advice}.`,
+		};
+	}
+
+	/** The task again, for a fresh session, with what went wrong and how to avoid it (recover). */
+	function reformulate(run: Run, ov: Overflow): string {
+		const how =
+			ov.kind === "context"
+				? "Read less: find the exact symbols with grep, read only the line ranges you need, and do not re-read files."
+				: ov.kind === "loop"
+					? "Do not repeat a call that already failed or gave the same result: a missing file stays missing. Change approach, or report what blocks you."
+					: "Do not work it out in your head at length: first list the sub-steps (one line each), then settle each fact with a tool (grep, read the exact lines, run a short script or the check) and move on.";
+		return [
+			`RETRY: a previous attempt at this task ${ov.why}.`,
+			ov.tail ? `Where it stalled (the end of its reasoning; do not repeat it):\n> ${ov.tail.replace(/\n+/g, "\n> ")}` : "",
+			how,
+			"Put facts you will need again in the shared notes (note tool), not in long reasoning.",
+			run.scope.length ? "Files in your scope may already hold part of the change: look at `git diff -- <file>` first." : "",
+			"If the whole task does not fit, finish a useful part completely and add the line `REMAINING: <what is left>` after FILES.",
+			"",
+			run.task!.replace(/^SHARED NOTES:.*$/m, notesLine(run)),
+		]
+			.filter(Boolean)
+			.join("\n");
 	}
 
 	async function settleChecks(run: Run, outcome: Outcome, check: string | undefined, notes: string[], model?: string, thinking?: string, signal?: AbortSignal): Promise<Outcome> {
@@ -1070,6 +1237,13 @@ function parentSide(pi: ExtensionAPI) {
 		return run;
 	}
 
+	/** Where the shared notes are and how many facts they hold now (a retry gets a fresh count). */
+	function notesLine(run: Run): string {
+		const notes = path.join(path.dirname(run.report), "notes.md");
+		const noted = fs.existsSync(notes) && fs.readFileSync(notes, "utf8").split("\n").filter((l) => l.startsWith("- ")).length;
+		return `SHARED NOTES: ${notes}${noted ? ` (${noted} facts from earlier subagents: read it first)` : " (no facts yet, nothing to read)"}. Record facts later subagents will need with the note tool (one line each: path:line, signatures, decisions).`;
+	}
+
 	function taskMessage(spec: Spec, run: Run): string {
 		const lines = [`GOAL: ${spec.goal}`];
 		if (spec.done_when) lines.push(`DONE WHEN: ${spec.done_when}`);
@@ -1080,6 +1254,7 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		lines.push(`WRITABLE SCOPE: ${run.scope.length ? run.scope.join(", ") : "none (read-only)"}`);
 		if (spec.inputs?.length) lines.push(`INPUTS (read these first): ${spec.inputs.join(", ")}`);
+		lines.push(notesLine(run));
 		lines.push(
 			"REPORT FORMAT: your final message must start with the line `SUMMARY: <at most 25 words>`, then `FILES: <comma-separated paths you changed, or for a plan the paths the change must touch, or none>`, then details.",
 		);
@@ -1111,6 +1286,8 @@ function parentSide(pi: ExtensionAPI) {
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
 		const served = reportFetch(spec);
 		if (served) return served;
+		// inputs may name earlier runs ("01-scout" or "@01-scout"): the main agent passes ids, not report contents
+		if (spec.inputs?.length) spec = { ...spec, inputs: spec.inputs.map((i) => runs.get(i.replace(/^@/, ""))?.report ?? i) };
 		// a subagent asked to copy files out costs minutes of generation (46 KB reports on psx-iso) and the
 		// main context gets them anyway: refuse before spawning
 		if (/\b(verbatim|full (file )?contents?|entire (file|contents?)|in full|whole file|complete contents?)\b/i.test(spec.goal)) {
@@ -1188,7 +1365,8 @@ function parentSide(pi: ExtensionAPI) {
 						: `\n  baseline: the check was already failing before this step without error lines (exit ${r.code}, log ${log}); a failure with that code can't be compared, so it fails without retries.`;
 				headNote = headMovedNote(head, run.cwd);
 			}
-			const o = await settle(run, await launch(run, taskMessage(spec, run), model, thinking, signal), spec.check, model, thinking, signal);
+			run.task = taskMessage(spec, run);
+			const o = await settle(run, await launch(run, run.task, model, thinking, signal), spec.check, model, thinking, signal);
 			// the baseline note explains a failing check; after a pass ("check: exit 0") it only contradicts it
 			return { ...o, text: o.text + (o.status === "done" ? "" : baseNote) + headNote };
 		});
@@ -1216,7 +1394,9 @@ function parentSide(pi: ExtensionAPI) {
 			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and `check`: the command that proves the work (tests, build check). The extension runs it, retries the subagent on failure and tells you the exit code.",
 			"Trust the check result, not a subagent's claims. Do not re-run checks yourself after a passing `check`.",
 			...checkGuidelines(process.cwd()),
-			"Pass information between subagents as handoff report paths in inputs; read a report yourself only when you must decide something from it (handoff reads always work, capped).",
+			"Pass information between subagents as run ids or report paths in inputs (inputs: [\"01-scout\"]); read a report yourself only when you must decide something from it (handoff reads always work, capped). Subagents also share facts through a notes file they read and write themselves: do not relay findings between them.",
+			"A subagent that runs out of thinking budget or context is retried automatically with a reformulated task (and then another model). If it still reports `overflow: ... split this goal`, do not resend it: split it into smaller tasks (one question or one file each), or chain its REMAINING line.",
+			"Images: the looker agent sees them (it runs on the vision model). Ask it specific questions about image files instead of guessing.",
 			"If a subagent returns NEEDS, dispatch another subagent for that need with for set to the waiting run id, then call subagent with resume set to that id. Never do the out-of-scope work by stretching the first subagent's task.",
 			"Do one-line or single-file edits yourself; delegate anything that needs reading more than ~2 files.",
 		],
@@ -1242,8 +1422,13 @@ function parentSide(pi: ExtensionAPI) {
 					fs.writeFileSync(run.promptFile, run.agent.systemPrompt + CONTRACT(run.id, run.scope), { mode: 0o600 });
 				}
 				const widened = params.scope ? ` Your writable scope is now: ${run.scope.join(", ")}.` : "";
-				const answer = run.answers.length ? `Your request was handled. Read: ${run.answers.join(", ")}.` : "Your request was handled.";
+				const answer = run.answers.length
+					? `Your request was handled. Read: ${run.answers.join(", ")}.`
+					: params.message || params.scope
+						? "Your request was handled."
+						: "Your request was not answered (no helper report). Continue without it if you can; otherwise finish with a report that says what blocks you. Do not ask again.";
 				run.answers = [];
+				run.resumed = true;
 				waiting.delete(run.id);
 				const settled = await serialWrite(async () => {
 					const resumed = await launch(run, `${answer}${widened} ${params.message ?? ""}\nContinue your task.`, model, thinking, signal);
@@ -1455,6 +1640,23 @@ function parentSide(pi: ExtensionAPI) {
 			lastSet = key;
 		}
 	};
+
+	// Images on a prompt to a text-only session model (Flint) would be dropped: save them to the handoff area and point
+	// the main agent at the looker agent (vision model). The session keeps its model; only the looker swaps.
+	let images = 0;
+	pi.on("input", async (event, ctx) => {
+		if (!event.images?.length || ctx.model?.input.includes("image")) return { action: "continue" as const };
+		const dir = ensureRunDir();
+		const files = event.images.map((img) => {
+			const f = path.join(dir, `image-${++images}.${(img.mimeType.split("/")[1] ?? "png").replace("jpeg", "jpg")}`);
+			fs.writeFileSync(f, Buffer.from(img.data, "base64"), { mode: 0o600 });
+			return f;
+		});
+		const text =
+			`${event.text}\n\n[${files.length} image(s) attached, saved as ${files.join(", ")}. Your model cannot see images: ask the looker ` +
+			`subagent what you need to know, e.g. subagent({agent: "looker", goal: "<your question about the image>", inputs: ["${files[0]}"]}).]`;
+		return { action: "transform" as const, text, images: [] };
+	});
 
 	pi.on("before_agent_start", async (event) => {
 		if ((event as { messageType?: string }).messageType !== "custom") {

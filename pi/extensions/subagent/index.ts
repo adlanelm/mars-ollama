@@ -113,6 +113,10 @@ const MAX_REQUESTS = 3;
 // subagents: bytes per read/bash/grep/find/ls result. A psx-iso scout `cat`-ed whole files to 59k tokens in 31 turns and
 // was compacted; the main agent has its own, smaller caps (PARENT_*)
 const CHILD_RESULT_CAP = 12 * 1024;
+// cq hints on wasteful reading (see the child's tool_result): source files read past this many lines, at most CQ_HINTS per run
+const CQ_HINT_LINES = 150;
+const CQ_HINTS = 3;
+const SOURCE_FILE = /\.(cs|py|ts|tsx|js|jsx|mjs|go|rs|java|kt|swift|c|cc|cpp|h|hpp|gd|lua|rb|php)\b/;
 // start of llama-swap's --reasoning-budget-message (chat_common): llama-server appends it to the reasoning it cuts
 const BUDGET_MARK = "Thinking budget reached";
 // Escalation: another model family takes over a step its model could not do, after the second overflow retry and after
@@ -767,16 +771,32 @@ function childSide(pi: ExtensionAPI) {
 		};
 	});
 
-	// output cap per result: whole files and wide searches are what fill a subagent's context
+	// output cap per result: whole files and wide searches are what fill a subagent's context. A long read of a source
+	// file or a recursive grep also gets a one-line cq hint (at most CQ_HINTS per run): the moment of waste is when a
+	// small model listens, the system prompt alone did not get it used
+	let hints = 0;
 	pi.on("tool_result", async (event) => {
 		if (!["read", "bash", "grep", "find", "ls"].includes(event.toolName)) return;
 		if ((event.content as any[]).some((c) => c.type !== "text")) return; // an image (looker) is not text to cut
 		const text = textOf(event.content as any);
 		const bytes = Buffer.byteLength(text, "utf8");
-		if (bytes <= CHILD_RESULT_CAP) return;
+		const input = event.input as { path?: string; command?: string; limit?: number };
+		let hint = "";
+		if (hints < CQ_HINTS) {
+			const cmd = input.command ?? "";
+			const lines = text.split("\n").length;
+			const source = (p?: string) => !!p && SOURCE_FILE.test(p);
+			if (event.toolName === "read" && source(input.path) && !input.limit && lines > CQ_HINT_LINES) {
+				hint = `[hint: \`cq outline ${input.path}\` lists this file's symbols with line numbers; read only the ranges you need]`;
+			} else if (event.toolName === "bash" && !/\bcq\b/.test(cmd) && (/\b(grep|rg)\b[^|]*\s-[a-zA-Z]*[rR]/.test(cmd) || /^\s*rg\b/.test(cmd) || (/\b(cat|sed -n)\b/.test(cmd) && SOURCE_FILE.test(cmd) && lines > CQ_HINT_LINES))) {
+				hint = "[hint: for a symbol, `cq refs <Name>` / `cq defs <Name>` / `cq callers <Name>` answer in a few lines; `cq outline <file>` lists a file's symbols]";
+			}
+			if (hint) hints++;
+		}
+		if (bytes <= CHILD_RESULT_CAP) return hint ? { content: [{ type: "text" as const, text: `${text}\n${hint}` }] } : undefined;
 		const kept = Buffer.from(text, "utf8").subarray(0, CHILD_RESULT_CAP).toString("utf8");
 		const how = event.toolName === "read" ? "read the line range you need (offset/limit)" : "narrow the command (grep for the symbol, head/tail, a smaller path)";
-		return { content: [{ type: "text" as const, text: `${kept}\n[output cap: ${bytes - CHILD_RESULT_CAP} more bytes not shown. ${how}.]` }] };
+		return { content: [{ type: "text" as const, text: `${kept}\n[output cap: ${bytes - CHILD_RESULT_CAP} more bytes not shown. ${how}.]${hint ? `\n${hint}` : ""}` }] };
 	});
 }
 
@@ -1363,6 +1383,10 @@ function parentSide(pi: ExtensionAPI) {
 		lines.push(`WRITABLE SCOPE: ${run.scope.length ? run.scope.join(", ") : "none (read-only)"}`);
 		if (spec.inputs?.length) lines.push(`INPUTS (read these first): ${spec.inputs.join(", ")}`);
 		lines.push(notesLine(run));
+		// in the task message, not only the system prompt: with the system prompt alone a Flint scout made 0 cq calls in 31 turns
+		if (!run.agent.tools || run.agent.tools.includes("bash")) {
+			lines.push("CODE QUESTIONS (bash, answers in a few lines, try them before reading or grepping): `cq outline <files>` (symbols with line numbers), `cq defs <Name>`, `cq refs <Name> [dir]`, `cq callers <Name>`, `cq callees <Name>`.");
+		}
 		lines.push(
 			"REPORT FORMAT: your final message must start with the line `SUMMARY: <at most 25 words>`, then `FILES: <comma-separated paths you changed, or for a plan the paths the change must touch, or none>`, then details.",
 		);

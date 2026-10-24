@@ -246,6 +246,10 @@ before reading a file.
   line ranges, 12 KB cap) with a broken `cq outline`: 12 min, 43 turns, 1 compaction; new prompts with `cq` fixed:
   8.5 min, 31 turns, no compaction, complete report, and 0 `cq` calls. The gain came from the prompts and caps; a
   system-prompt mention alone did not get Flint to use `cq` (its first try had failed: `outline` took one file).
+  With a `CODE QUESTIONS:` line in every task message (agents with bash) and a one-line hint on wasteful reads (a
+  source file read past 150 lines without a range, a recursive grep, a long `cat`/`sed`; at most 3 per run): 7.5 min,
+  28 turns, peak 49k (58k before), 4 `cq` calls (outlines of the 4 key files first; Unity YAML still by grep, which
+  ctags does not parse). The planner got `bash` (read-only by prompt and scope check) so it can run `cq` too.
 - Chosen after a docs and reviews pass (2026-10-24): graphify ranked last (C# overloads merged into one node, delegates
   dropped; an independent test found ~5% on-target output against `rg`); Roslyn tools need a .sln and are MCP-only;
   CLIs instead of MCP servers keep tool schemas out of every small-model prompt.

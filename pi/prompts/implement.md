@@ -3,6 +3,9 @@ description: Scout and planner produce small steps, then one worker per step (ha
 ---
 [workers-edit] Implement: $@
 
+Your tools here: read (project docs such as GAME.md and BACKLOG.md, and subagent reports) and subagent. You do not
+look at code: everything about the code comes from the scout.
+
 1. Use the subagent tool in chain mode: scout, then planner (numbered steps, each changing at most 2 files and
    leaving the project building). The scout's goal is 2-4 specific questions the plan depends on (which class
    does X and where, which method to extend, how the tests check Y), with path:line answers; read-only. Not

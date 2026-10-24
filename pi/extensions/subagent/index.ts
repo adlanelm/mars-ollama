@@ -1835,6 +1835,9 @@ function parentSide(pi: ExtensionAPI) {
 		fullTools ??= pi.getActiveTools();
 		const off = new Set<string>(["write"]); // the main agent never creates or overwrites files
 		if (planOnly || workersEdit) off.add("edit");
+		// refused calls alone did not work: the main agent tried find, ls, pwd and `echo hello` (six refusals, no
+		// subagent; psx-iso, 2026-10-24). In /implement it keeps read (docs, reports) and subagent; checks run by themselves
+		if (workersEdit) for (const t of ["bash", "grep", "find", "ls"]) off.add(t);
 		if (edited.size >= PARENT_MAX_EDIT_FILES) off.add("edit");
 		if (spent >= PARENT_TURN_BUDGET) for (const t of DIRECT) off.add(t);
 		const next = fullTools.filter((t) => !off.has(t));

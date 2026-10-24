@@ -96,6 +96,16 @@ models:
   - qwen3.8:128k
   - qwen3.8:64k
   - qwen3.8:latest
+- id: qwen3.8-27b-gsq
+  source: hf
+  repo: ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF
+  revision: d562806dbafae37109975e970aae91b43e73b440
+  files:
+  - name: Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf
+    role: model
+    size: 11771546784
+    sha256: 64b53b64c7aa39f20a7e54bd80582fe595b1d745624ee8a72e92508c0326d810
+  aliases: []
 - id: qwen3.6-35b-a3b
   source: hf
   repo: unsloth/Qwen3.6-35B-A3B-GGUF

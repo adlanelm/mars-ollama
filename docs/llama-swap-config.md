@@ -50,6 +50,7 @@ hooks:
 | Entry | Flags beyond the macros | Why |
 |---|---|---|
 | `qwen3.8-27b` | `-c 49152 --no-mmproj-offload -ub 256` | No `-ngl 99`: `--fit` decides. Since the reranker moved to the GPU it places 63 of 65 layers (2026-10-13); `-c 40960` would fit all 65 (+25% tg). `-ub 256` leaves room for the GPU reranker (about 370 MiB), at -8% prompt speed (367 vs 398 tok/s at ub 512) |
+| `qwen3.8-27b-gsq` | `-c 65536 --no-mmproj-offload -ub 256` | GSQ IQ3_S: all layers on the GPU at 64k with the reranker loaded (stock flips between 32 and 22 tok/s by free VRAM at load). pi's qwen3.8 |
 | `qwen3.6-35b-a3b` | `${moe_common} -c 131072` | `-t 8 -tb 8 -ub 2048 -b 2048` (measured, see below). `--fit` puts the experts of blk 20-39 on the CPU |
 | `gemma4-26b` | `${moe_common} -c 131072` | `--fit` puts the experts of blk 24-29 (6 of 30 layers) on the CPU. `--swa-full` stays off |
 | `granite-vision` | `-np 4 --kv-unified -c 32768 -ngl 99 --temp 0` | One image is about 5.2k tokens (tiling), so the 4 slots share one unified 32k KV pool |

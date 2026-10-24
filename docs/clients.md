@@ -39,6 +39,7 @@ Server sampling defaults for reference (clients can override per request):
 | Model | Server default (thinking) | Override for |
 |---|---|---|
 | `qwen3.8-27b` | temp 1.0, top_p 0.95, top_k 20, min_p 0, presence 0 | Non-thinking: 0.7 / 0.8 / 20, presence 1.5 |
+| `qwen3.8-27b-gsq` | same as `qwen3.8-27b` | Same; send `reasoning_effort` low or medium (template default xhigh overthinks) |
 | `qwen3.6-35b-a3b` | temp 1.0, top_p 0.95, top_k 20, min_p 0, presence 1.5 | **Coding: temp 0.6, presence 0.** Non-thinking: 0.7 / 0.8, presence 1.5 |
 | `gemma4-26b` | temp 1.0, top_p 0.95, top_k 64 | none |
 | `granite-vision`, `granite-docling` | temp 0 | none |

@@ -34,6 +34,19 @@ macros:
 models:
   # ── Chat group (GPU, one at a time) ────────────────────────────
   # Dense 27B: must stay 100% on GPU. 48k context with vision (encoder on CPU).
+  # GSQ-RCO IQ3_S (mixed-precision, 11.0 GiB): 64k all on GPU at 33.6 tok/s, ppl +1.1%, same suite scores (bench/gsq-2026-10-24.md).
+  # pi uses this one; the mmproj is stock's (shared with qwen3.8-27b).
+  "qwen3.8-27b-gsq":
+    name: "Qwen3.8 27B GSQ IQ3_S (dense, 64k, vision)"
+    ttl: 900
+    cmd: |
+      ${gpu_guard} llama-server --port ${PORT}
+      -m /models/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF/Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf
+      --mmproj /models/unsloth/Qwen3.8-27B-GGUF/mmproj-F16.gguf
+      ${chat_common}
+      -c 65536 --no-mmproj-offload -ub 256
+      --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 0
+
   "qwen3.8-27b":
     name: "Qwen3.8 27B (dense, 48k, vision)"
     aliases: ["qwen3.8:latest", "qwen3.8", "qwen3.8:64k", "qwen3.8:128k"]
@@ -201,6 +214,7 @@ routing:
           exclusive: true # loading a member unloads other (non-persistent) groups
           members:
             - qwen3.8-27b
+            - qwen3.8-27b-gsq
             - qwen3.6-35b-a3b
             - gemma4-26b
             - granite-vision

@@ -94,7 +94,7 @@ One entry per model in the [models.md](models.md) picks table; see [`llama-swap/
   aliases: [snowflake-arctic-embed2:latest, snowflake-arctic-embed2:latest_8192]
 ```
 
-Entries in the manifest: qwen3.8-27b, qwen3.6-35b-a3b, gemma4-26b, granite-vision, granite-docling, bge-reranker-v2-m3 (all `hf`), bge-m3, snowflake-arctic-embed2 (`ollama`). `bge-m3` has no fixup, so its `files[].sha256` equals `blob_sha256`.
+Entries in the manifest: qwen3.8-27b, qwen3.8-27b-gsq, qwen3.6-35b-a3b, gemma4-26b, granite-vision, granite-docling, bge-reranker-v2-m3 (all `hf`), bge-m3, snowflake-arctic-embed2 (`ollama`). `bge-m3` has no fixup, so its `files[].sha256` equals `blob_sha256`.
 
 Ollama-imported files live under `~/llm/models/ollama/<model>/<model>-F16.gguf`.
 

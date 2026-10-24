@@ -168,11 +168,11 @@ The harness picks the thinking level per task, and the level picks a reasoning b
   nothing (its model's `:level` suffix applies). A retry raises from its own level (frontmatter, else the
   `:level` suffix); with neither, the retry passes nothing either.
 - `models.json` sends `thinking_budget_tokens` per level (`samplingParamsByThinkingLevel`): minimal 256, low
-  1024, medium 3072, high 8192, xhigh 16384 (qwen3.8-27b 8192: xhigh stays at or below half of `maxTokens`, so
+  1024, medium 3072, high 8192, xhigh 16384 (qwen3.8-27b-gsq 8192: xhigh stays at or below half of `maxTokens`, so
   the answer still fits). qwen3.6 ignores `reasoning_effort` (minimal reasoned the most), so the budget is
   the real control.
 - pi also sends the level as top-level `reasoning_effort`. The Qwen3.8 template knows only low, medium and xhigh
-  (default when unset; `none` turns thinking off) and returns a 500 for `minimal`, so qwen3.8-27b has a
+  (default when unset; `none` turns thinking off) and returns a 500 for `minimal`, so qwen3.8-27b-gsq has a
   `thinkingLevelMap`: off none, minimal low, low low, medium medium, high and xhigh xhigh. Without it, off
   still thought at xhigh and xhigh was clamped to high. Low or medium beat the xhigh default on bench/suite.py.
 - At the limit llama-server closes the reasoning (a hard cut; the model does not plan for it) after injecting
@@ -186,8 +186,9 @@ nits and the 2-review cap ended it.
 ## Compaction
 
 `-np 2 --kv-unified` means the parent and a subagent share one 131072-token KV pool. The parent therefore compacts
-at about 64k (`reserveTokens` 65536) and keeps 16k. qwen3.8-27b (49152 window) overrides this: reserve 8192 and
-keep 10000, with `maxTokens` 16384.
+at about 64k (`reserveTokens` 65536) and keeps 16k. qwen3.8-27b-gsq (65536 window) overrides this: reserve 16384 and
+keep 12000, with `maxTokens` 16384. pi uses the GSQ quant of Qwen3.8 (64k instead of stock's 48k, bench/gsq-2026-10-24.md);
+stock `qwen3.8-27b` stays in llama-swap for other clients.
 
 Tests 2026-10-17, qwen3.6, synthetic repos:
 - `/implement` (add a parameter and a test) took one `subagent` call and 2 min. The main session peaked at 3.5k

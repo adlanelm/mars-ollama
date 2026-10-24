@@ -157,6 +157,9 @@ const ownLevel = (a: AgentConfig) => {
 /** An agent with edit or write (no `tools:` list = all tools). */
 const agentWrites = (a?: AgentConfig) => !a?.tools || a.tools.some((t) => t === "edit" || t === "write");
 const PLAN_ONLY = /\[plan-only\]/i;
+// a prompt containing [workers-edit] (/implement) changes files only through workers: the main agent edited and reverted
+// a test before its first scout, twice (psx-iso, 2026-10-24)
+const WORKERS_EDIT = /\[workers-edit\]/i;
 const PLAN_ONLY_REASON =
 	"This prompt is plan-only: no edits, no writing subagents. Present the plan (files and why) and stop; the user replies with OK to implement.";
 
@@ -959,6 +962,7 @@ function parentSide(pi: ExtensionAPI) {
 	let reviews = 0;
 	// a prompt containing [plan-only] (e.g. /plan, /backlog-item) may read and plan but not change anything
 	let planOnly = false;
+	let workersEdit = false;
 	const checks = new Set<string>(); // check commands given to subagents; the main agent may run them too
 
 	/** Scopes of runs active now or finished since `startSeq`: their in-scope changes are not a violation. */
@@ -1179,9 +1183,13 @@ function parentSide(pi: ExtensionAPI) {
 		if (!ov || outcome.status === "needs") return note ? { ...outcome, text: outcome.text + note } : outcome;
 		const left = outcome.out?.match(/^\W*REMAINING:.*$/m)?.[0]?.trim();
 		const keep = usable(outcome) && (ov.kind === "budget" || ov.kind === "context");
-		const advice = keep
-			? `kept, but ${ov.kind === "budget" ? "its final answer was written under a budget cut" : "it lost part of what it read"}; trust its check, or verify the parts you rely on${left ? `. ${left}` : ""}`
-			: `split this goal into smaller subagent tasks (one question or one file each)${left ? `. ${left}` : ""}`;
+		// a read-only report has no check to trust: "verify the parts you rely on" sent the main agent into three scouts
+		// re-reading 01-scout.md (psx-iso, 2026-10-24), so it is told to pass the report on instead
+		const advice = !keep
+			? `split this goal into smaller subagent tasks (one question or one file each)${left ? `. ${left}` : ""}`
+			: !agentWrites(run.agent)
+				? `the report is complete; use it as it is: pass it to the next step with inputs: ["${run.id}"] (do not re-run or verify it)`
+				: `kept, but ${ov.kind === "budget" ? "its final answer was written under a budget cut" : "it lost part of what it read"}; trust its check, or verify the parts you rely on${left ? `. ${left}` : ""}`;
 		return {
 			...outcome,
 			status: keep ? "done" : "failed",
@@ -1415,6 +1423,26 @@ function parentSide(pi: ExtensionAPI) {
 		};
 	}
 
+	/**
+	 * Refusal text when a scout is sent to read, confirm or summarise another run's report: the main agent spent three
+	 * scouts on "read 01-scout.md and report back its key findings" (psx-iso, 2026-10-24). Long goals slip past
+	 * reportFetch, so this matches any length. A planner or worker given a report to build on is real work.
+	 */
+	function rereadAsk(spec: Spec, agents: AgentConfig[]): string | undefined {
+		const name = spec.agent ?? "scout";
+		if (name !== "scout" || agentWrites(agents.find((a) => a.name === name))) return undefined;
+		// the report itself must be the object ("01-scout's findings"); a new question that cites 01-scout is not refused
+		const hit = [...runs.values()].find(
+			(r) => spec.goal.includes(r.report) || new RegExp(`\\b${r.id}(?:'s)?\\s+(?:report|findings|answers?)\\b`, "i").test(spec.goal),
+		);
+		if (!hit || !/\b(read|confirm|verify|re-?check|summari[sz]e|restate|report back)\b/i.test(spec.goal)) return undefined;
+		return (
+			`Refused: ${hit.id}'s report is finished and its summary is above. A scout re-reading it adds nothing. Pass it to the ` +
+			`next step instead (e.g. subagent({agent: "planner", goal: "...", inputs: ["${hit.id}"]})), or read ${hit.report} yourself. ` +
+			`Send a scout only with a new question the report does not answer.`
+		);
+	}
+
 	async function runSpec(spec: Spec, defaultCwd: string, agents: AgentConfig[], model?: string, thinking?: string, signal?: AbortSignal) {
 		const served = reportFetch(spec);
 		if (served) return served;
@@ -1422,6 +1450,8 @@ function parentSide(pi: ExtensionAPI) {
 		if (spec.inputs?.length) spec = { ...spec, inputs: spec.inputs.map((i) => runs.get(i.replace(/^@/, ""))?.report ?? i) };
 		// a subagent asked to copy files out costs minutes of generation (46 KB reports on psx-iso) and the
 		// main context gets them anyway: refuse before spawning
+		const reread = rereadAsk(spec, agents);
+		if (reread) return { id: "-", status: "error", contextTokens: 0, text: reread } as Outcome;
 		const asks = contentsAsk(spec.goal);
 		if (asks) {
 			// the refusal names the phrase and says to resend: "refused" alone read as "subagents cannot read files here", and
@@ -1765,7 +1795,7 @@ function parentSide(pi: ExtensionAPI) {
 	const applyTools = () => {
 		fullTools ??= pi.getActiveTools();
 		const off = new Set<string>(["write"]); // the main agent never creates or overwrites files
-		if (planOnly) off.add("edit");
+		if (planOnly || workersEdit) off.add("edit");
 		if (edited.size >= PARENT_MAX_EDIT_FILES) off.add("edit");
 		if (spent >= PARENT_TURN_BUDGET) for (const t of DIRECT) off.add(t);
 		const next = fullTools.filter((t) => !off.has(t));
@@ -1813,7 +1843,11 @@ function parentSide(pi: ExtensionAPI) {
 			fullChecks = 0;
 			baselines.clear();
 		}
-		if ((event as { messageType?: string }).messageType !== "custom") planOnly = PLAN_ONLY.test((event as { prompt?: string }).prompt ?? "");
+		if ((event as { messageType?: string }).messageType !== "custom") {
+			const prompt = (event as { prompt?: string }).prompt ?? "";
+			planOnly = PLAN_ONLY.test(prompt);
+			workersEdit = WORKERS_EDIT.test(prompt);
+		}
 		applyTools();
 	});
 

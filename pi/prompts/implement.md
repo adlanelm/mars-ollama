@@ -1,7 +1,7 @@
 ---
 description: Scout and planner produce small steps, then one worker per step (handoff files, narrow scopes)
 ---
-Implement: $@
+[workers-edit] Implement: $@
 
 1. Use the subagent tool in chain mode: scout, then planner (numbered steps, each changing at most 2 files and
    leaving the project building). The scout's goal is 2-4 specific questions the plan depends on (which class

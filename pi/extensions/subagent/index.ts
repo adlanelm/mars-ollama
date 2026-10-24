@@ -1909,6 +1909,20 @@ function parentSide(pi: ExtensionAPI) {
 				return { block: true, reason: PLAN_ONLY_REASON };
 			}
 		}
+		// in /implement the main agent reads project docs and reports, not code: it read 7 source files and grepped the
+		// animator before its first subagent, three runs in a row (psx-iso, 2026-10-24)
+		if (workersEdit && DIRECT.includes(event.toolName) && !isHandoffRead(event.toolName, event.input, ctx.cwd) && !isSkillRead(event.toolName, event.input)) {
+			const p = (event.input as { path?: string }).path ?? "";
+			const cmd = (event.input as { command?: string }).command ?? "";
+			const doc = event.toolName === "read" && /\.(md|txt|toml)$/i.test(p);
+			const allowedBash = event.toolName === "bash" && (isCheckCommand(cmd, checks) || /^\s*(git\s+(status|diff|log|show)\b|ls\b)/.test(cmd));
+			if (!doc && !allowedBash && event.toolName !== "ls") {
+				return {
+					block: true,
+					reason: `In /implement, code questions go to the scout (read project docs like GAME.md yourself). Next step, exactly: ${nextStep(event.toolName, event.input, ctx.cwd)}`,
+				};
+			}
+		}
 		if (event.toolName === "write" && !isHandoffRead("read", event.input, ctx.cwd)) {
 			return {
 				block: true,

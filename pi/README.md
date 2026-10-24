@@ -199,8 +199,12 @@ main session.
   escalation model (`escalationModel`, default `mars/qwen3.8-27b-gsq`, another model family; `.pi/harness.json` or
   `PI_ESCALATION_MODEL`, `""` turns it off). Still overflowing: a report written under a budget cut stays `done` with a warning, anything
   else is `failed` with "split this goal" (and its REMAINING line).
-- Not restarted: a verified writing run whose answer was only cut short (its check decides) and a resumed run (a
-  fresh session would lose the answer to its request); their overflow is reported.
+- Only unusable outcomes are retried: no answer at all, output tokens running out, or a loop. A finished answer whose
+  last turn was cut, or whose run compacted on the way, is kept as `done` with a warning (a writer's check judges
+  it anyway). On psx-iso (2026-10-24) the stricter first version threw away a complete scout report and a complete
+  4-step plan, 30 minutes of retries, and the run was aborted. A resumed run is not restarted unless it loops.
+- Output cap: each read/bash/grep/find/ls result of a subagent is cut at 12 KB with a note to read a line range or
+  narrow the command (images pass whole). The same psx-iso scout `cat`-ed whole files to 59k tokens in 31 turns.
 - Seen in tests (2026-10-24, synthetic repo): Flint with no shell and a cut turn moved its working into the answer
   text (21k characters) and was right (2531); with a shell it computed instead of reasoning (55005, three methods).
   Neither is retried. With budget 0 on a no-shell agent: cut on its answer, retry 1 (low, Flint) looped on a read and

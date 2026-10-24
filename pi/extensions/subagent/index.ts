@@ -103,6 +103,9 @@ const KILL_TURNS = 120; // turns in one launch
 // a run that keeps asking the main agent (request -> resume -> request) is looping too: with thinking budget 0, Flint
 // asked for its own task ("give me the last two digits of 7^2026") 13 times
 const MAX_REQUESTS = 3;
+// subagents: bytes per read/bash/grep/find/ls result. A psx-iso scout `cat`-ed whole files to 59k tokens in 31 turns and
+// was compacted; the main agent has its own, smaller caps (PARENT_*)
+const CHILD_RESULT_CAP = 12 * 1024;
 // start of llama-swap's --reasoning-budget-message (chat_common): llama-server appends it to the reasoning it cuts
 const BUDGET_MARK = "Thinking budget reached";
 // Escalation: another model family takes over a step its model could not do, after the second overflow retry and after
@@ -744,6 +747,18 @@ function childSide(pi: ExtensionAPI) {
 			reason: `${file} is outside your writable scope (${allowed}). Call the request tool if the task needs this change.`,
 		};
 	});
+
+	// output cap per result: whole files and wide searches are what fill a subagent's context
+	pi.on("tool_result", async (event) => {
+		if (!["read", "bash", "grep", "find", "ls"].includes(event.toolName)) return;
+		if ((event.content as any[]).some((c) => c.type !== "text")) return; // an image (looker) is not text to cut
+		const text = textOf(event.content as any);
+		const bytes = Buffer.byteLength(text, "utf8");
+		if (bytes <= CHILD_RESULT_CAP) return;
+		const kept = Buffer.from(text, "utf8").subarray(0, CHILD_RESULT_CAP).toString("utf8");
+		const how = event.toolName === "read" ? "read the line range you need (offset/limit)" : "narrow the command (grep for the symbol, head/tail, a smaller path)";
+		return { content: [{ type: "text" as const, text: `${kept}\n[output cap: ${bytes - CHILD_RESULT_CAP} more bytes not shown. ${how}.]` }] };
+	});
 }
 
 // ---------- main agent side ----------
@@ -1090,21 +1105,23 @@ function parentSide(pi: ExtensionAPI) {
 	 * An overflowed launch is not retried as is (the same prompt on the same model stalls the same way): a fresh session
 	 * gets the task reformulated (where it stalled, sub-steps first, tools instead of long reasoning, a REMAINING line if
 	 * it does not fit) one thinking level higher; the second retry also switches to ESCALATION_MODEL. All of it stays in
-	 * the handoff area; the main agent gets one line. Still overflowing: a report written under a budget cut is kept as
-	 * done with a warning, anything else fails with "split this goal".
-	 * A verified writing run (it has a check) whose answer was only cut short is left to its check: the check decides,
-	 * and a failure is retried one level higher anyway. A resumed run is not restarted (it would lose the answer to its
-	 * request); its overflow is only reported.
+	 * the handoff area; the main agent gets one line. Only unusable outcomes are retried (no answer, out of output tokens,
+	 * a loop); a finished answer that was cut or compacted on the way is kept as done with a warning, and anything still
+	 * unusable after the retries fails with "split this goal". A resumed run is not restarted (it would lose the answer to
+	 * its request) unless it loops; its overflow is only reported.
 	 */
 	async function recover(run: Run, outcome: Outcome, model?: string, thinking?: string, signal?: AbortSignal): Promise<Outcome> {
-		const verified = !!run.check && run.scope.length > 0 && agentWrites(run.agent);
+		// a finished answer is kept even when its last turn was cut or the run compacted on the way: on psx-iso (2026-10-24)
+		// a complete scout report and a complete 4-step plan were thrown away for that, 30 minutes of retries. A writer's
+		// check judges its work anyway. Retried: no answer at all, out of output tokens, or a loop.
+		const usable = (o: Outcome) => o.status === "done" && !(o.out ?? "").startsWith("(no answer text");
 		const log: string[] = [];
 		while (
 			outcome.overflow &&
 			outcome.status !== "needs" &&
 			run.task &&
 			(!run.resumed || outcome.overflow.kind === "loop") &&
-			!(verified && outcome.status === "done" && outcome.overflow.kind === "budget") &&
+			(outcome.overflow.kind === "length" || outcome.overflow.kind === "loop" || !usable(outcome)) &&
 			(run.recoveries ?? 0) < MAX_RECOVERIES
 		) {
 			const n = (run.recoveries = (run.recoveries ?? 0) + 1);
@@ -1122,9 +1139,9 @@ function parentSide(pi: ExtensionAPI) {
 		const ov = outcome.overflow;
 		if (!ov || outcome.status === "needs") return note ? { ...outcome, text: outcome.text + note } : outcome;
 		const left = outcome.out?.match(/^\W*REMAINING:.*$/m)?.[0]?.trim();
-		const keep = outcome.status === "done" && ov.kind === "budget";
+		const keep = usable(outcome) && (ov.kind === "budget" || ov.kind === "context");
 		const advice = keep
-			? `the answer was written under a budget cut; trust its check, or verify it before relying on it${left ? `. ${left}` : ""}`
+			? `kept, but ${ov.kind === "budget" ? "its final answer was written under a budget cut" : "it lost part of what it read"}; trust its check, or verify the parts you rely on${left ? `. ${left}` : ""}`
 			: `split this goal into smaller subagent tasks (one question or one file each)${left ? `. ${left}` : ""}`;
 		return {
 			...outcome,

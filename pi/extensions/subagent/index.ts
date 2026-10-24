@@ -226,6 +226,18 @@ function filesFromReports(reports: string[], cwd: string): string[] {
 }
 
 /**
+ * The phrase in a subagent goal that asks for file contents ("verbatim", "full contents", "in full"...), if any. Negated
+ * mentions don't count: "Do not dump full file contents" was refused on psx-iso, twice.
+ */
+function contentsAsk(goal: string): string | undefined {
+	for (const clause of goal.split(/[.;:!?\n]+/)) {
+		const m = clause.match(/\b(verbatim|full (file )?contents?|entire (file|contents?)|in full|whole file|complete contents?)\b/i);
+		if (m && !/\b(do not|don'?t|never|not|no|without|instead of|avoid(ing)?|rather than)\b/i.test(clause.slice(0, m.index))) return m[0];
+	}
+	return undefined;
+}
+
+/**
  * Which report a subagent goal asks for, when it only asks for one: undefined = real work; `file` = a named handoff
  * file; `id` = that run's report; neither = the latest report. Needs report intent (a handoff file, "handoff", or
  * "report" in a phrase about a subagent's report): a run id alone is not enough ("read the function 03-worker
@@ -1379,12 +1391,15 @@ function parentSide(pi: ExtensionAPI) {
 		if (spec.inputs?.length) spec = { ...spec, inputs: spec.inputs.map((i) => runs.get(i.replace(/^@/, ""))?.report ?? i) };
 		// a subagent asked to copy files out costs minutes of generation (46 KB reports on psx-iso) and the
 		// main context gets them anyway: refuse before spawning
-		if (/\b(verbatim|full (file )?contents?|entire (file|contents?)|in full|whole file|complete contents?)\b/i.test(spec.goal)) {
+		const asks = contentsAsk(spec.goal);
+		if (asks) {
+			// the refusal names the phrase and says to resend: "refused" alone read as "subagents cannot read files here", and
+			// the main agent did the scouting itself and edited a test file (psx-iso, 2026-10-24)
 			return {
 				id: "-",
 				status: "error",
 				contextTokens: 0,
-				text: "Refused: subagents report findings, not file contents. Ask a question (what X does, where Y is, which fields/methods exist and at which path:line), or read the file yourself with read.",
+				text: `Refused because the goal asks for "${asks}": subagents report findings, not file contents. Resend the same task without that phrase, asking for findings instead (what X does, where Y is, which fields/methods exist, at which path:line). Do not do the subagent's investigation yourself.`,
 			} as Outcome;
 		}
 		if (planOnly) {

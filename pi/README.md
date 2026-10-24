@@ -104,6 +104,9 @@ so that delegation and context limits are enforced by code, not left to the mode
   clean review just lets the main session finish.
 - The main session's bash runs commands but cannot change files: each bash call is bracketed by a git snapshot, and any file it changed is undone (tracked files restored, new files quarantined, commits reset), with a note telling it to use edit or a worker. Git commands that change state are blocked. On psx-iso it had patched 3 files with heredoc Python scripts and committed the user's uncommitted settings.
 - Subagent tasks asking for files "verbatim" or "in full" are refused without spawning; subagents report findings.
+  Negated mentions ("do not dump full file contents") don't count, and the refusal names the phrase and says to
+  resend without it: on psx-iso (2026-10-24) that exact negated sentence was refused twice, the main session took
+  "refused" to mean subagents can't read files, scouted itself and edited a test file.
 - Small steps: a writing subagent task may change at most 2 files, named one by one (no directories);
   bigger tasks are refused with "split into steps". Plans (`/plan`, `/backlog-item`, the planner agent) come as
   numbered steps of 1-2 files that each leave the project building, with tests as their own step, run as a

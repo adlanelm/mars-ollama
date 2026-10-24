@@ -32,6 +32,10 @@ usage() {
 [[ $1 == -h || $1 == --help || $1 == help ]] && usage 0
 cmd=$1; shift
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+# a path argument may be absolute (agents pass /home/.../Scripts): make it relative to the root, or "refs X /abs"
+# looked under <root>/home/... and found nothing (psx-iso, 2026-10-24)
+rel() { local p=${1:-}; [[ $p == "$root"/* ]] && p=${p#"$root"/}; [[ $p == "$root" ]] && p=""; printf '%s' "$p"; }
+if [[ $cmd == defs || $cmd == refs ]] && [[ $# -ge 2 ]]; then set -- "$1" "$(rel "$2")"; fi
 
 cap() {
   local out n

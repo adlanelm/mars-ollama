@@ -31,7 +31,7 @@ import { type AgentConfig, discoverAgents } from "./agents.ts";
  *   { "enabled": false }                                  turn the harness off for this project
  *   { "maxStepFiles": 3, "turnBudgetKB": 64, "maxReviews": 1, "allowNoGit": true,
  *     "check": "make lint", "fullCheck": "make test",       overrides (commands run in the project root)
- *     "fallbackModel": "mars/qwen3.8-27b-gsq" }
+ *     "escalationModel": "mars/qwen3.8-27b-gsq" }
  * PI_HARNESS=off turns it off for one session.
  */
 interface HarnessConfig {
@@ -42,7 +42,7 @@ interface HarnessConfig {
 	allowNoGit?: boolean;
 	check?: string;
 	fullCheck?: string;
-	fallbackModel?: string; // provider/id for an overflowing subagent's second retry; "" turns that step off
+	escalationModel?: string; // provider/id that takes over a failing step (overflow retry 2, check retry 3); "" = off
 	root?: string; // directory holding .pi/harness.json
 	error?: string;
 }
@@ -105,9 +105,11 @@ const KILL_TURNS = 120; // turns in one launch
 const MAX_REQUESTS = 3;
 // start of llama-swap's --reasoning-budget-message (chat_common): llama-server appends it to the reasoning it cuts
 const BUDGET_MARK = "Thinking budget reached";
-// the second retry switches model family: a model that loops on a task tends to loop on it again (bench/suite.py:
-// qwen3.6 thought 16k+ tokens where Flint and Qwen3.8 needed 1-3k)
-const FALLBACK_MODEL = process.env.PI_FALLBACK_MODEL ?? HC.fallbackModel ?? "mars/qwen3.8-27b-gsq";
+// Escalation: another model family takes over a step its model could not do, after the second overflow retry and after
+// the second failed check retry. A model that loops on a task tends to loop on it again (bench/suite.py: qwen3.6 thought
+// 16k+ tokens where Flint and Qwen3.8 needed 1-3k). The reviewer agent runs on the same model.
+const ESCALATION_MODEL = process.env.PI_ESCALATION_MODEL ?? HC.escalationModel ?? "mars/qwen3.8-27b-gsq";
+const modelName = (m?: string) => m?.split("/").pop() ?? "session model"; // no provider: "mars/x" reads as a file path
 
 // after the budget, bash is limited to checks (no sed/cat paging through files)
 const CHECK_CORE = /^(\.\/)?(Tools\/check|git (status|diff --stat|log --oneline)|python3? -m pytest|pytest|npm (test|run (test|check|lint))|cargo (test|check)|go test|dotnet test|make (test|check))\b[^;&|<>]*$/;
@@ -710,7 +712,7 @@ interface Run {
 	level?: string; // raised thinking level after a failed check or an overflow
 	touched?: Set<string>; // files this run changed (all launches); undefined outside git = unknown
 	task?: string; // the first task message, reformulated on an overflow retry
-	model?: string; // set by an overflow retry: the fallback model
+	model?: string; // ESCALATION_MODEL once a retry has escalated
 	recoveries?: number; // overflow retries so far
 	resumed?: boolean; // resumed after NEEDS: a fresh retry would lose the answer, so overflows are only reported
 	requests?: number; // NEEDS so far (MAX_REQUESTS)
@@ -1038,7 +1040,7 @@ function parentSide(pi: ExtensionAPI) {
 	/**
 	 * An overflowed launch is not retried as is (the same prompt on the same model stalls the same way): a fresh session
 	 * gets the task reformulated (where it stalled, sub-steps first, tools instead of long reasoning, a REMAINING line if
-	 * it does not fit) one thinking level higher; the second retry also switches to FALLBACK_MODEL. All of it stays in
+	 * it does not fit) one thinking level higher; the second retry also switches to ESCALATION_MODEL. All of it stays in
 	 * the handoff area; the main agent gets one line. Still overflowing: a report written under a budget cut is kept as
 	 * done with a warning, anything else fails with "split this goal".
 	 * A verified writing run (it has a check) whose answer was only cut short is left to its check: the check decides,
@@ -1062,11 +1064,9 @@ function parentSide(pi: ExtensionAPI) {
 			const cur = run.model ?? run.agent.model ?? model;
 			const from = run.level ?? (run.agent.model ? ownLevel(run.agent) : (run.agent.thinking ?? thinking));
 			if (from || !run.agent.model) run.level = raiseLevel(from);
-			if (n >= 2 && FALLBACK_MODEL && FALLBACK_MODEL !== cur) run.model = FALLBACK_MODEL;
+			if (n >= 2 && ESCALATION_MODEL && ESCALATION_MODEL !== cur) run.model = ESCALATION_MODEL;
 			run.session = path.join(path.dirname(run.report), `${run.id}.r${n}.jsonl`); // fresh context
-			// model ids without the provider: "mars/flint-40b-a2.5b" reads as a file path to the path check at settle
-			const name = (m?: string) => m?.split("/").pop() ?? "session model";
-			log.push(`${ov.why} (${name(cur)}, ${from ?? "default level"}); retry ${n} reformulated at ${run.level ?? "the same level"}${run.model && run.model !== cur ? ` on ${name(run.model)}` : ""}`);
+			log.push(`${ov.why} (${modelName(cur)}, ${from ?? "default level"}); retry ${n} reformulated at ${run.level ?? "the same level"}${run.model && run.model !== cur ? ` on ${modelName(run.model)}` : ""}`);
 			outcome = await launch(run, reformulate(run, ov), model, thinking, signal);
 		}
 		const note = log.length ? `\n  overflow: ${log.join("; ")}` : "";
@@ -1163,24 +1163,36 @@ function parentSide(pi: ExtensionAPI) {
 				const last = (key.length ? key : lines.slice(-2)).join(" | ");
 				return { ...outcome, text: `${outcome.text}\n  check: exit 0 (${last.slice(0, 300)})` };
 			}
-			if (attempt >= CHECK_RETRIES) {
+			// after the second failed retry, ESCALATION_MODEL takes over the same session (it sees what was tried) for one
+			// more attempt, unless the step already runs on it
+			const cur = run.model ?? run.agent.model ?? model;
+			const escalate = attempt === CHECK_RETRIES && !!ESCALATION_MODEL && ESCALATION_MODEL !== cur;
+			if (attempt >= CHECK_RETRIES && !escalate) {
 				const last = newErrors ? `new errors: ${newErrors.slice(0, 4).join(" | ")}` : res.tail.split("\n").slice(-4).join("\n    ");
 				return {
 					...outcome,
 					status: "failed",
-					text: `${outcome.text}\n  check: FAILED (${cmp.why ?? exitText(res)}) after ${CHECK_RETRIES} retries, log: ${log}\n    ${last.slice(0, 600)}`,
+					text: `${outcome.text}\n  check: FAILED (${cmp.why ?? exitText(res)}) after ${attempt} retries${attempt > CHECK_RETRIES ? ` (the last on ${modelName(cur)})` : ""}, log: ${log}\n    ${last.slice(0, 600)}`,
 				};
+			}
+			if (escalate) {
+				run.model = ESCALATION_MODEL;
+				notes.push(`\n  escalated: the check still failed after ${CHECK_RETRIES} retries on ${modelName(cur)}; retry ${attempt + 1} on ${modelName(ESCALATION_MODEL)}`);
 			}
 			// a failed check is where reasoning pays: think one level higher on the retry. An agent with its own model
 			// raises from its own level (frontmatter, else the model's `:level` suffix), never the session's; with
 			// neither it is left alone
 			const from = run.level ?? (run.agent.model ? ownLevel(run.agent) : (run.agent.thinking ?? thinking));
 			if (from || !run.agent.model) run.level = raiseLevel(from);
+			const takeOver = escalate
+				? `You are taking over this step from another model: its ${attempt + 1} attempts did not pass the check (they are above in this session). Look at \`git diff\` of your scope first, find the cause instead of repeating its fixes.\n`
+				: "";
 			outcome = await launch(
 				run,
-				newErrors
+				takeOver +
+				(newErrors
 					? `The check \`${check}\` shows errors that were not there before your change (the project already had ${base!.errors.size} known errors, which are not yours to fix):\n${newErrors.slice(0, 12).join("\n")}\nFull log: ${log}\nFix the new errors within your scope, then report again.`
-					: `The check \`${check}\` failed (${cmp.why ?? exitText(res)}). Its last lines:\n${res.tail}\nFull log: ${log}\nFix the cause within your scope, then report again.`,
+					: `The check \`${check}\` failed (${cmp.why ?? exitText(res)}). Its last lines:\n${res.tail}\nFull log: ${log}\nFix the cause within your scope, then report again.`),
 				model,
 				thinking,
 				signal,

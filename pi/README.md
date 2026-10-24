@@ -2,7 +2,8 @@
 
 General config for the [pi](https://pi.dev) coding agent against llama-swap. Install with `bin/pi-setup`:
 `models.json`, `extensions/`, `agents/` and `prompts/` are symlinked into `~/.pi/agent/` (edits apply on the next
-pi start or `/reload`); `settings.json` is copied, because pi writes to it, so re-run after editing it (a live copy that differs is
+pi start or `/reload`); `settings.json` is copied, because pi writes to it, so re-run after editing it (the Flint
+default and the qwen3.8-gsq compaction override sat unapplied until it was re-run on 2026-10-24) (a live copy that differs is
 kept as `settings.json.bak.<timestamp>` first).
 Project-specific skills and prompts go in the project's `.pi/settings.json` (gamekit's game template does this).
 
@@ -131,8 +132,14 @@ so that delegation and context limits are enforced by code, not left to the mode
 **Subagents** (`PI_SUBAGENT=1`; they don't get the `subagent` tool, so they can't recurse)
 - Narrow task: the extension builds the task message (GOAL, DONE WHEN, WRITABLE SCOPE, INPUTS, REPORT FORMAT).
   Each subagent inherits the main session's model, because llama-swap holds only one chat model and a different
-  one would swap (a reload, and the main session's prompt cache is gone). Two exceptions: the `looker` agent runs on
-  qwen3.6 (vision), and an overflow's second retry runs on the fallback model (below).
+  one would swap (a reload, and the main session's prompt cache is gone). The exceptions are pinned with `model:`
+  or escalated: `looker` runs on qwen3.6 (vision); `reviewer` runs on qwen3.8-27b-gsq, a different model family
+  from Flint's workers (two swaps per review, at most 2 reviews per prompt); and a step that still fails is taken
+  over by the escalation model, the same qwen3.8-27b-gsq:
+  - check: after the 2nd failed retry, it resumes the worker's session (it sees what was tried) for one more
+    attempt, told to look at the diff and find the cause instead of repeating the fixes. The tool result says
+    `escalated: ... retry 3 on qwen3.8-27b-gsq`. A step already on that model fails after retry 2 as before.
+  - overflow: retry 2 (below).
 - Scope enforcement:
   - `edit`/`write` calls outside the scope are blocked.
   - After every run, a git check undoes changes outside the scope, including bash writes. Tracked files are
@@ -180,9 +187,9 @@ main session.
 - An overflow is not retried as is. A fresh session gets the task again, reformulated: what ran out, where it
   stalled (the end of its reasoning), sub-steps first and tools instead of long reasoning (or "read less" for
   context, "change approach" for loops), notes for facts, `git diff` first for a half-done change, and a
-  `REMAINING:` line if the task does not fit. Retry 1 thinks one level higher; retry 2 also switches to
-  `fallbackModel` (default `mars/qwen3.8-27b-gsq`, another model family; `.pi/harness.json` or `PI_FALLBACK_MODEL`,
-  `""` turns it off). Still overflowing: a report written under a budget cut stays `done` with a warning, anything
+  `REMAINING:` line if the task does not fit. Retry 1 thinks one level higher; retry 2 also switches to the
+  escalation model (`escalationModel`, default `mars/qwen3.8-27b-gsq`, another model family; `.pi/harness.json` or
+  `PI_ESCALATION_MODEL`, `""` turns it off). Still overflowing: a report written under a budget cut stays `done` with a warning, anything
   else is `failed` with "split this goal" (and its REMAINING line).
 - Not restarted: a verified writing run whose answer was only cut short (its check decides) and a resumed run (a
   fresh session would lose the answer to its request); their overflow is reported.

@@ -1,5 +1,6 @@
 ---
 name: reviewer
+model: mars/qwen3.8-27b-gsq
 thinking: medium
 description: Code review specialist for quality and security analysis
 tools: read, grep, find, ls, bash

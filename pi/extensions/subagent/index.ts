@@ -994,6 +994,10 @@ function parentSide(pi: ExtensionAPI) {
 	// a prompt containing [plan-only] (e.g. /plan, /backlog-item) may read and plan but not change anything
 	let planOnly = false;
 	let workersEdit = false;
+	// /implement: read goes away after 2 refused or repeated reads, until the next subagent call (12 refused reads and
+	// DEVLOG.md read 4 times in a row before any subagent, psx-iso 2026-10-24)
+	let readStrikes = 0;
+	let lastRead = "";
 	const checks = new Set<string>(); // check commands given to subagents; the main agent may run them too
 
 	/** Scopes of runs active now or finished since `startSeq`: their in-scope changes are not a violation. */
@@ -1887,6 +1891,7 @@ function parentSide(pi: ExtensionAPI) {
 		// refused calls alone did not work: the main agent tried find, ls, pwd and `echo hello` (six refusals, no
 		// subagent; psx-iso, 2026-10-24). In /implement it keeps read (docs, reports) and subagent; checks run by themselves
 		if (workersEdit) for (const t of ["bash", "grep", "find", "ls"]) off.add(t);
+		if (workersEdit && readStrikes >= 2) off.add("read");
 		if (edited.size >= PARENT_MAX_EDIT_FILES) off.add("edit");
 		if (spent >= PARENT_TURN_BUDGET) for (const t of DIRECT) off.add(t);
 		const next = fullTools.filter((t) => !off.has(t));
@@ -1935,6 +1940,8 @@ function parentSide(pi: ExtensionAPI) {
 			baselines.clear();
 		}
 		if ((event as { messageType?: string }).messageType !== "custom") {
+			readStrikes = 0;
+			lastRead = "";
 			const prompt = (event as { prompt?: string }).prompt ?? "";
 			planOnly = PLAN_ONLY.test(prompt);
 			workersEdit = WORKERS_EDIT.test(prompt);
@@ -1963,12 +1970,24 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		// in /implement the main agent reads project docs and reports, not code: it read 7 source files and grepped the
 		// animator before its first subagent, three runs in a row (psx-iso, 2026-10-24)
+		if (workersEdit && event.toolName === "subagent" && readStrikes) {
+			readStrikes = 0;
+			lastRead = "";
+			applyTools();
+		}
+		if (workersEdit && event.toolName === "read") {
+			const p = path.resolve(ctx.cwd, (event.input as { path?: string }).path ?? "");
+			if (p === lastRead && ++readStrikes >= 2) applyTools();
+			lastRead = p;
+		}
 		if (workersEdit && DIRECT.includes(event.toolName) && !isHandoffRead(event.toolName, event.input, ctx.cwd) && !isSkillRead(event.toolName, event.input)) {
 			const p = (event.input as { path?: string }).path ?? "";
 			const cmd = (event.input as { command?: string }).command ?? "";
 			const doc = event.toolName === "read" && /\.(md|txt|toml)$/i.test(p);
 			const allowedBash = event.toolName === "bash" && (isCheckCommand(cmd, checks) || /^\s*(git\s+(status|diff|log|show)\b|ls\b)/.test(cmd));
 			if (!doc && !allowedBash && event.toolName !== "ls") {
+				readStrikes++;
+				applyTools();
 				return {
 					block: true,
 					reason: `In /implement, code questions go to the scout (read project docs like GAME.md yourself). Next step, exactly: ${nextStep(event.toolName, event.input, ctx.cwd)}`,

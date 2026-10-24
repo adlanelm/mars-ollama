@@ -700,6 +700,9 @@ function childSide(pi: ExtensionAPI) {
 	// read-only agents are told to write their report after this many tool calls (again every WRAP_EVERY): a planner
 	// re-read what the scout had answered and was grepping Temp/ at 53k context, no plan written (psx-iso, 2026-10-24)
 	const wrapAt = /-scout$/.test(id) ? 20 : /-planner$/.test(id) ? 15 : 0;
+	// nudges were ignored: a planner went on to the Blender rig scripts at 27 calls and 50k context (psx-iso,
+	// 2026-10-24). WRAP_CLOSE calls after the first nudge the reading tools are withdrawn and only the answer is left
+	const WRAP_CLOSE = 15;
 	let calls = 0;
 	const cutReads = new Map<string, number>(); // path -> last line shown by a read that hit the output cap
 	const continued = new Set<string>(); // reads moved past a cut by tool_call: their result says so
@@ -825,6 +828,15 @@ function childSide(pi: ExtensionAPI) {
 	let hints = 0;
 	pi.on("tool_result", async (event) => {
 		calls++;
+		if (wrapAt && calls === wrapAt + WRAP_CLOSE) {
+			pi.setActiveTools(pi.getActiveTools().filter((t) => !["read", "bash", "grep", "find", "ls"].includes(t)));
+			return {
+				content: [
+					...(event.content as any),
+					{ type: "text" as const, text: `[${calls} tool calls: reading is closed. Write your report now from what you have; open points go into it.]` },
+				],
+			};
+		}
 		if (!["read", "bash", "grep", "find", "ls"].includes(event.toolName)) return;
 		if ((event.content as any[]).some((c) => c.type !== "text")) return; // an image (looker) is not text to cut
 		const text = textOf(event.content as any);
@@ -854,7 +866,13 @@ function childSide(pi: ExtensionAPI) {
 			if (unityHints < CQ_HINTS && (event.toolName !== "read" && !/\bcq\b/.test(cmd) && UNITY_YAML.test(cmd) || event.toolName === "read" && UNITY_YAML.test(input.path ?? ""))) {
 				unityHints++;
 				hints--; // counted below, but against its own allowance
-				hint = "[hint: Unity files: `cq objects <scene|prefab> [word]` (objects with components, scripts by name), `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>`, `cq guid <guid>`]";
+				// the exact command for the file at hand: a generic list was ignored three times, `cq outline <that file>` was used
+				const f = (input.path ?? cmd.match(/[\w./-]+\.(unity|prefab|controller|overrideController|asset)\b/)?.[0] ?? "").replace(/^\/.*?\/(Assets\/)/, "$1");
+				hint = /\.controller$/.test(f)
+					? `[hint: \`cq anim ${f}\` lists this animator's parameters, states and transitions in ~15 lines]`
+					: /\.(unity|prefab)$/.test(f)
+						? `[hint: \`cq objects ${f} <word>\` lists its objects with components (scripts by name); \`cq block ${f} <object>\` shows one object and its values]`
+						: "[hint: Unity files: `cq objects <scene|prefab> [word]`, `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>`, `cq guid <guid>`]";
 			} else if (hints < CQ_HINTS && event.toolName === "read" && source(input.path) && !input.limit && lines > CQ_HINT_LINES) {
 				hint = `[hint: \`cq outline ${input.path}\` lists this file's symbols with line numbers; read only the ranges you need]`;
 			} else if (hints < CQ_HINTS && event.toolName === "bash" && !/\bcq\b/.test(cmd) && (/\b(grep|rg)\b[^|]*\s-[a-zA-Z]*[rR]/.test(cmd) || /^\s*rg\b/.test(cmd) || (/\b(cat|sed -n)\b/.test(cmd) && SOURCE_FILE.test(cmd) && lines > CQ_HINT_LINES) || /grep -n ["']{2}/.test(cmd))) {

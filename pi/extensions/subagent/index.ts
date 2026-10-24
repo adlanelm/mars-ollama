@@ -20,7 +20,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, discoverAgents } from "./agents.ts";
 
@@ -71,6 +71,13 @@ function loadHarnessConfig(cwd: string): HarnessConfig {
 }
 
 const HC = loadHarnessConfig(process.cwd());
+
+// pi/bin (next to this extension's real directory: extensions/ is symlinked from the repo) on the PATH of the main
+// session and every subagent, for `cq` (code questions: outline, defs, refs, callers, callees without reading files)
+try {
+	const bin = path.join(path.dirname(fs.realpathSync(path.join(getAgentDir(), "extensions"))), "bin");
+	if (fs.existsSync(path.join(bin, "cq")) && !(process.env.PATH ?? "").split(":").includes(bin)) process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+} catch {}
 const HARNESS_ON = process.env.PI_HARNESS !== "off" && HC.enabled !== false;
 const num = (v: unknown, d: number) => (typeof v === "number" && v > 0 ? v : d);
 
@@ -270,7 +277,7 @@ function reportGoal(goal: string, ids: string[], handoffRoot: string): { file?: 
 }
 
 // untracked build artefacts a subagent's check run may create; never treated as scope violations
-const ARTEFACT = /(^|\/)(__pycache__|\.pytest_cache|\.mypy_cache|node_modules|\.venv|target|build|dist|obj|Library|Temp|Logs|\.godot)(\/|$)|\.pyc$/;
+const ARTEFACT = /(^|\/)(__pycache__|\.pytest_cache|\.mypy_cache|node_modules|\.venv|target|build|dist|obj|Library|Temp|Logs|\.godot|\.codegraph)(\/|$)|\.pyc$/;
 
 /** `.pi/<name>` in the task cwd or a parent (up to the git root), run as `bash <file>`. */
 function projectFile(cwd: string, name: string): string | undefined {
@@ -1501,6 +1508,7 @@ function parentSide(pi: ExtensionAPI) {
 			"Pass information between subagents as run ids or report paths in inputs (inputs: [\"01-scout\"]); read a report yourself only when you must decide something from it (handoff reads always work, capped). Subagents also share facts through a notes file they read and write themselves: do not relay findings between them.",
 			"A subagent that runs out of thinking budget or context is retried automatically with a reformulated task (and then another model). If it still reports `overflow: ... split this goal`, do not resend it: split it into smaller tasks (one question or one file each), or chain its REMAINING line.",
 			"Images: the looker agent sees them (it runs on the vision model). Ask it specific questions about image files instead of guessing.",
+			"Subagents (and you) have `cq` for code questions without reading files: `cq outline <file>`, `cq defs <Name>`, `cq refs <Name>`, `cq callers <Name>`, `cq callees <Name>`. Give scouts 2-3 specific questions each (or parallel scouts, one question each), not \"find all code relevant to X\": a broad brief made a psx-iso scout page through scene files to 57k tokens.",
 			"If a subagent returns NEEDS, dispatch another subagent for that need with for set to the waiting run id, then call subagent with resume set to that id. Never do the out-of-scope work by stretching the first subagent's task.",
 			"Do one-line or single-file edits yourself; delegate anything that needs reading more than ~2 files.",
 		],

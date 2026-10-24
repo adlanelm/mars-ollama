@@ -220,6 +220,36 @@ main session.
 
 Prompts: `/implement` (scout, planner, worker with `@previous` scope), `/scout-and-plan`, `/implement-and-review`.
 
+## Code questions: `cq`
+
+`bin/cq` answers code questions from an index instead of reading files. The subagent extension puts `pi/bin` on
+the PATH of the main session and every subagent, and the scout, planner, worker and reviewer prompts say to ask it
+before reading a file.
+
+| Command | Tool | Notes |
+|---|---|---|
+| `cq outline <file>` | universal-ctags | symbols with line numbers; then read only those lines |
+| `cq defs <Name> [path]` | universal-ctags (`ctags -x`, no tags file) | all overloads and overrides; tracked and new files |
+| `cq refs <Name> [path]` | ast-grep (C# identifiers) + `rg -w` (other files) | fields and properties too; Unity scenes via `rg` |
+| `cq callers/callees <Name>` | codegraph (`.codegraph/` SQLite index) | method calls only, not property or field reads |
+
+- Output is cut at `CQ_MAX` lines (40) with a count of the rest; exit 1 = nothing found.
+- codegraph's index is built on first use, synced before each query (~0.3 s, so a worker's edit from the step before
+  is seen without a watcher), listed in `.git/info/exclude`, and ignored by the scope check. Telemetry is off
+  (`codegraph telemetry off`, and `DO_NOT_TRACK=1` in `cq`). Install it with npm, not its installer script, which
+  writes into CLAUDE.md/AGENTS.md and registers MCP servers.
+- Checked on psx-iso (Unity C#, 37 files, 2026-10-24) against `git grep`: defs exact (4 `Interact` overloads and
+  overrides), refs 12/12 for `IsDead`, callers right (also through `StartCoroutine(Attack())`, method vs enum member
+  told apart). codegraph alone found 0 of 11 `IsDead` uses, hence `refs` on ast-grep.
+- Scout A/B on the psx-iso clone (2026-10-24, one run each, the same 4-question goal): old prompts, no `cq`: stopped
+  after 35 min and 99 turns with no answer (compacted twice, re-reading files); new prompts (answer what was asked,
+  line ranges, 12 KB cap) with a broken `cq outline`: 12 min, 43 turns, 1 compaction; new prompts with `cq` fixed:
+  8.5 min, 31 turns, no compaction, complete report, and 0 `cq` calls. The gain came from the prompts and caps; a
+  system-prompt mention alone did not get Flint to use `cq` (its first try had failed: `outline` took one file).
+- Chosen after a docs and reviews pass (2026-10-24): graphify ranked last (C# overloads merged into one node, delegates
+  dropped; an independent test found ~5% on-target output against `rg`); Roslyn tools need a .sln and are MCP-only;
+  CLIs instead of MCP servers keep tool schemas out of every small-model prompt.
+
 ## Thinking per task
 
 The harness picks the thinking level per task, and the level picks a reasoning budget:

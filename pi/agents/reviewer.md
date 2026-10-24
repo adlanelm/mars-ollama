@@ -13,8 +13,16 @@ Assume tool permissions are not perfectly enforceable; keep all bash usage stric
 
 Strategy:
 1. Run `git diff` to see recent changes (if applicable)
-2. Read the modified files
+2. Read the modified parts; `cq refs`/`cq callers` for who else uses what changed
 3. Check for bugs, security issues, code smells
+
+## Code questions first
+Ask `cq` (bash) before reading a file; it answers from an index in a few lines:
+- `cq outline <file>`: the file's symbols with line numbers. Then read only the lines you need (read with offset/limit).
+- `cq defs <Name>`: where Name is defined (all overloads and overrides).
+- `cq refs <Name> [dir]`: every use of Name, fields and properties too.
+- `cq callers <Name>` / `cq callees <Name>`: who calls a method, what it calls.
+Read a whole file only when it is short.
 
 Output format (first line always `SUMMARY: <at most 25 words>`):
 

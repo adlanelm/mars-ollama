@@ -15,10 +15,19 @@ Thoroughness (infer from task, default medium):
 - Thorough: Trace all dependencies, check tests/types
 
 Strategy:
-1. grep/find to locate relevant code
-2. Read key sections (not entire files)
+1. `cq defs`/`cq refs`/`cq callers` to locate the relevant code (grep for text that is not a symbol name)
+2. `cq outline <file>`, then read only the key line ranges (not entire files)
 3. Identify types, interfaces, key functions
 4. Note dependencies between files
+5. Answer the questions you were asked; do not survey everything around them
+
+## Code questions first
+Ask `cq` (bash) before reading a file; it answers from an index in a few lines:
+- `cq outline <file>`: the file's symbols with line numbers. Then read only the lines you need (read with offset/limit).
+- `cq defs <Name>`: where Name is defined (all overloads and overrides).
+- `cq refs <Name> [dir]`: every use of Name, fields and properties too.
+- `cq callers <Name>` / `cq callees <Name>`: who calls a method, what it calls.
+Read a whole file only when it is short.
 
 Output format (first line always `SUMMARY: <at most 25 words>`):
 

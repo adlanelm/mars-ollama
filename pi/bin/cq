@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# cq: code questions without reading files, for pi agents (the subagent extension puts pi/bin on their PATH).
+#   cq outline <file|dir>...   symbols of files (a dir: its tracked files): line, kind, name, signature (ctags)
+#   cq defs <Name> [path]      where Name is defined (ctags, tracked and new files)
+#   cq refs <Name> [path]      every reference to Name: C# by syntax tree (ast-grep), other files by word match (rg)
+#   cq callers <Name>          methods that call Name (codegraph; method calls only, not property/field reads)
+#   cq callees <Name>          what Name calls (codegraph)
+# Output is cut at CQ_MAX lines (default 40) with a count of the rest. Exit 1 = nothing found.
+# Checked on psx-iso (Unity C#, 2026-10-24): defs exact incl. overloads, refs 12/12, callers right incl.
+# StartCoroutine(Attack()); codegraph misses property references (IsDead: 0 of 11), refs does not.
+# codegraph keeps its index in <root>/.codegraph (listed in .git/info/exclude, synced before each query: ~0.3 s).
+set -euo pipefail
+export DO_NOT_TRACK=1 CODEGRAPH_TELEMETRY=0
+MAX=${CQ_MAX:-40}
+[[ ${1:-} == outline ]] && MAX=${CQ_MAX:-80} # several files at once
+# a model tries a tool once: a bare usage line after its first call made a Flint scout give up on cq (psx-iso:
+# `cq outline` with 4 files, then `cq --help`), so help shows working examples and exits 0 when asked for
+usage() {
+  sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+  echo "Examples: cq outline src/Health.cs src/Player.cs | cq defs Health | cq refs IsDead src/ | cq callers Hit"
+  exit "${1:-2}"
+}
+[[ $# -ge 1 ]] || usage
+[[ $1 == -h || $1 == --help || $1 == help ]] && usage 0
+cmd=$1; shift
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+cap() {
+  local out n
+  out=$(cat)
+  [[ -n $out ]] || { echo "cq $cmd: nothing found"; return 1; }
+  n=$(wc -l <<<"$out")
+  head -n "$MAX" <<<"$out"
+  if ((n > MAX)); then
+    if [[ $cmd == outline ]]; then echo "... +$((n - MAX)) more lines: outline fewer files at a time"
+    else echo "... +$((n - MAX)) more lines: narrow it with a path (cq $cmd <Name> <dir>)"; fi
+  fi
+}
+
+# tracked plus new (untracked, not ignored) files under a path, NUL-separated
+files() { git -C "$root" ls-files -z -co --exclude-standard -- "${1:-.}" 2>/dev/null | sed -z "s|^|$root/|"; }
+
+codegraph_ready() {
+  command -v codegraph >/dev/null || { echo "cq: codegraph is not installed" >&2; exit 2; }
+  if [[ ! -d $root/.codegraph ]]; then
+    codegraph init "$root" >/dev/null 2>&1
+    local ex=$root/.git/info/exclude
+    [[ -f $ex ]] && ! grep -qx '.codegraph/' "$ex" && echo '.codegraph/' >>"$ex"
+  fi
+  codegraph sync "$root" >/dev/null 2>&1 || true
+}
+
+case $cmd in
+  outline)
+    [[ $# -ge 1 ]] || usage
+    for f in "$@"; do
+      if [[ -d $f ]]; then git -C "$f" ls-files -z -co --exclude-standard . 2>/dev/null | sed -z "s|^|$f/|"
+      elif [[ -f $f ]]; then printf '%s\0' "$f"
+      else echo "cq outline: no such file or directory: $f" >&2; fi
+    done | xargs -0 -r ctags -x --sort=no 2>/dev/null |
+      awk '{if ($4 != f) {f = $4; g = f; sub("^'"$root"'/", "", g); print "== " g} line=$3; kind=$2; name=$1; $1=$2=$3=$4=""; sub(/^ +/, ""); printf "%5s  %-10s %-28s %s\n", line, kind, name, $0}' | cap
+    ;;
+  defs)
+    [[ $# -ge 1 ]] || usage
+    files "${2:-}" | xargs -0 -r ctags -x 2>/dev/null | awk -v n="$1" '$1 == n {f=$4; sub("^'"$root"'/", "", f); line=$3; kind=$2; $1=$2=$3=$4=""; sub(/^ +/, ""); print f ":" line "  " kind "  " $0}' | cap
+    ;;
+  refs)
+    [[ $# -ge 1 && $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "cq refs <Identifier> [path]"; exit 2; }
+    {
+      # the list first: grep -q stopping early would SIGPIPE the producer and fail the pipeline under pipefail
+      list=$(files "${2:-}" | tr '\0' '\n')
+      if grep -q '\.cs$' <<<"$list"; then
+        ast-grep scan --inline-rules "{id: r, language: csharp, rule: {kind: identifier, regex: \"^$1\$\"}}" --json=stream "$root/${2:-}" 2>/dev/null |
+          jq -r '"\(.file):\(.range.start.line + 1): \(.lines | gsub("^\\s+"; "") | .[0:160])"'
+      fi
+      files "${2:-}" | grep -zv '\.cs$' | xargs -0 -r rg -nw --no-heading -- "$1" 2>/dev/null | cut -c1-200 || true
+    } | sed "s|^$root/||" | sort -u -t: -k1,1 -k2,2n | cap
+    ;;
+  callers | callees)
+    [[ $# -eq 1 ]] || usage
+    codegraph_ready
+    (cd "$root" && codegraph "$cmd" "$1" --limit 30 2>&1) | grep -v '^\s*$' | cap
+    ;;
+  *) usage ;;
+esac

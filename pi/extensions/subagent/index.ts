@@ -703,6 +703,35 @@ function childSide(pi: ExtensionAPI) {
 	let calls = 0;
 	const cutReads = new Map<string, number>(); // path -> last line shown by a read that hit the output cap
 	const continued = new Set<string>(); // reads moved past a cut by tool_call: their result says so
+	let unityHints = 0; // the Unity cq hint has its own allowance: the shared one was used up before a scout hit scene YAML
+	let tracked: string[] | undefined;
+	/** Near-miss of a missing path among tracked files: Flint reads "Psx" as "Psz" (PszSliceGameplay.cs, psx-iso). */
+	const didYouMean = (missing: string): string | undefined => {
+		if (!tracked) {
+			try {
+				tracked = git(process.cwd(), ["ls-files", "-co", "--exclude-standard"]).split("\n").filter(Boolean);
+			} catch {
+				tracked = [];
+			}
+		}
+		const want = path.basename(missing).toLowerCase();
+		const dist = (a: string, b: string) => {
+			if (Math.abs(a.length - b.length) > 2) return 9;
+			const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+			for (let i = 1; i <= a.length; i++) {
+				let prev = d[0];
+				d[0] = i;
+				for (let j = 1; j <= b.length; j++) {
+					const tmp = d[j];
+					d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+					prev = tmp;
+				}
+			}
+			return d[b.length];
+		};
+		const hits = tracked.filter((f) => dist(path.basename(f).toLowerCase(), want) <= 2);
+		return hits.length && hits.length <= 3 ? hits.join(", ") : undefined;
+	};
 	const dir = process.env.PI_HANDOFF_DIR ?? HANDOFF_ROOT;
 	const promptNo = process.env.PI_PROMPT_NO ?? "?"; // the main session's user prompt this run belongs to
 	let scope: string[] = [];
@@ -802,21 +831,33 @@ function childSide(pi: ExtensionAPI) {
 		const bytes = Buffer.byteLength(text, "utf8");
 		const input = event.input as { path?: string; command?: string; limit?: number; offset?: number };
 		let hint = "";
-		if (wrapAt && calls >= wrapAt && (calls - wrapAt) % 10 === 0) {
+		if (/No such file or directory|ENOENT|not found/i.test(text.slice(0, 2000))) {
+			const cands = [input.path ?? "", ...((input.command ?? "").match(/[\w./-]+\.\w{1,12}\b/g) ?? [])].filter((p) => p && !fs.existsSync(path.resolve(p)));
+			for (const c of cands) {
+				const m = didYouMean(c);
+				if (m) {
+					hint = `[${c} does not exist; did you mean ${m}?]`;
+					break;
+				}
+			}
+		}
+		if (!hint && wrapAt && calls >= wrapAt && (calls - wrapAt) % 10 === 0) {
 			hint = /-scout$/.test(id)
 				? `[${calls} tool calls so far: write your report now with what you have. Open points go into the report as open questions, not into more reading.]`
 				: `[${calls} tool calls so far: write the plan now. Settle a point one \`cq\` call answers (cq anim, cq block) first; the rest go to Risks, not into more reading. Fill in Done-when coverage.]`;
 		}
-		if (!hint && hints < CQ_HINTS) {
+		if (!hint && (hints < CQ_HINTS || unityHints < CQ_HINTS)) {
 			const cmd = input.command ?? "";
 			const lines = text.split("\n").length;
 			const source = (p?: string) => !!p && SOURCE_FILE.test(p);
 			// Unity YAML first: a scout spent ~10 calls on GUID greps and sed windows in Slice.unity (psx-iso, 2026-10-24)
-			if (event.toolName !== "read" && !/\bcq\b/.test(cmd) && UNITY_YAML.test(cmd) || event.toolName === "read" && UNITY_YAML.test(input.path ?? "")) {
+			if (unityHints < CQ_HINTS && (event.toolName !== "read" && !/\bcq\b/.test(cmd) && UNITY_YAML.test(cmd) || event.toolName === "read" && UNITY_YAML.test(input.path ?? ""))) {
+				unityHints++;
+				hints--; // counted below, but against its own allowance
 				hint = "[hint: Unity files: `cq objects <scene|prefab> [word]` (objects with components, scripts by name), `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>`, `cq guid <guid>`]";
-			} else if (event.toolName === "read" && source(input.path) && !input.limit && lines > CQ_HINT_LINES) {
+			} else if (hints < CQ_HINTS && event.toolName === "read" && source(input.path) && !input.limit && lines > CQ_HINT_LINES) {
 				hint = `[hint: \`cq outline ${input.path}\` lists this file's symbols with line numbers; read only the ranges you need]`;
-			} else if (event.toolName === "bash" && !/\bcq\b/.test(cmd) && (/\b(grep|rg)\b[^|]*\s-[a-zA-Z]*[rR]/.test(cmd) || /^\s*rg\b/.test(cmd) || (/\b(cat|sed -n)\b/.test(cmd) && SOURCE_FILE.test(cmd) && lines > CQ_HINT_LINES) || /grep -n ["']{2}/.test(cmd))) {
+			} else if (hints < CQ_HINTS && event.toolName === "bash" && !/\bcq\b/.test(cmd) && (/\b(grep|rg)\b[^|]*\s-[a-zA-Z]*[rR]/.test(cmd) || /^\s*rg\b/.test(cmd) || (/\b(cat|sed -n)\b/.test(cmd) && SOURCE_FILE.test(cmd) && lines > CQ_HINT_LINES) || /grep -n ["']{2}/.test(cmd))) {
 				hint = "[hint: for a symbol, `cq refs <Name>` / `cq defs <Name>` / `cq callers <Name>` answer in a few lines; `cq outline <file>` lists a file's symbols]";
 			}
 			if (hint) hints++;
@@ -1415,7 +1456,7 @@ function parentSide(pi: ExtensionAPI) {
 		const what = !facts.length
 			? " (no facts yet, nothing to read)"
 			: ` (${[now && `${now} from this prompt (p${promptNo})`, old && `${old} from earlier prompts, which may be outdated if those files changed since: check before relying on them`].filter(Boolean).join(", ")}; read it first)`;
-		return `SHARED NOTES: ${notes}${what}. Record facts later subagents will need with the note tool (one line each: path:line, signatures, decisions).`;
+		return `SHARED NOTES: ${notes}${what}. Record facts later subagents will need by calling the \`note\` tool (a tool like read: note({fact: "..."}); not by writing the file), one line each: path:line, signatures, decisions.`;
 	}
 
 	function taskMessage(spec: Spec, run: Run): string {
@@ -1577,13 +1618,16 @@ function parentSide(pi: ExtensionAPI) {
 					text: "Refused: not a git repository, so this subagent's changes could not be scoped, checked against a snapshot or undone. Ask the user to run `git init` and commit first (or set allowNoGit in .pi/harness.json).",
 				} as Outcome;
 			}
-			if (writes && ((spec.scope?.length ?? 0) > MAX_STEP_FILES || dirs.length)) {
+			// assets a step's generator writes (Unity controller, prefab, scene) are listed in scope but are not hand-edited
+			// code: they do not count toward the step size
+			const codeFiles = (spec.scope ?? []).filter((f) => !UNITY_YAML.test(f) && !/\.meta$/.test(f));
+			if (writes && (codeFiles.length > MAX_STEP_FILES || dirs.length)) {
 				return {
 					id: "-",
 					status: "error",
 					contextTokens: 0,
 					text:
-						`Refused: one step changes at most ${MAX_STEP_FILES} files, listed by name (got ${spec.scope?.length ?? 0}${dirs.length ? `, directories: ${dirs.join(", ")}` : ""}). ` +
+						`Refused: one step changes at most ${MAX_STEP_FILES} code files, listed by name (got ${codeFiles.length}${dirs.length ? `, directories: ${dirs.join(", ")}` : ""}). ` +
 						"Split it into steps that each leave the project compiling, and run them as a chain (one worker per step; tests as their own step).",
 				} as Outcome;
 			}

@@ -21,7 +21,13 @@ listed "confirm the crawler has it" as a risk.
 
 Values saved in data files (scenes, prefabs, animator controllers, config assets) are separate from the code that
 created them: changing an editor setup script or a script default does not change a scene that already exists. If
-the outcome depends on such a value, a step changes the data file too (or the plan says how it gets regenerated).
+the outcome depends on such a value, a step changes the data file too.
+
+A generator (an editor script or tool that writes an asset) changes nothing until it runs. A step that changes a
+generator also runs it: name the exact command in the step (Unity: `<editor> -batchmode -quit -projectPath .
+-executeMethod <Namespace.Class.Method>`, the batch method next to the menu item) and list the files it writes in
+that step's files. A psx-iso plan changed the crawler's animator generator but never ran it, so the test step
+would have asserted states the controller did not have.
 
 ## Code questions first
 Ask `cq` (bash) before reading a file; it answers from an index in a few lines:
@@ -41,6 +47,11 @@ Output format (first line always `SUMMARY: <at most 25 words>`; second line `FIL
 ## Goal
 One sentence summary of what needs to be done.
 
+## Design
+3-5 lines: the options you considered, the one you chose and why. If the plan adds or changes something the
+project's design doc defines (GAME.md: player verbs, pillars, core loop, or a README's stated scope), start this
+section with `DESIGN CHANGE: <what>`; the main agent asks the user before the workers run.
+
 ## Steps
 Numbered, one line each, in order:
 1. <what> | files: <1-2 full paths; (new) for new ones> | proves it: <what a test or the finished code shows>
@@ -48,7 +59,8 @@ Numbered, one line each, in order:
 Each step changes at most 2 files and leaves the project building. Tests are their own step, after the code
 they test. Shared test setup changes only as a named step. A worker runs each step on its own, without seeing
 the others, so every step names exact paths, functions and the expected result. The project check runs by itself
-after every step: do not tell workers to run it, Unity or the test suite.
+after every step: do not tell workers to run it or the test suite (a generator command a step names is different:
+the worker runs that).
 
 ## Done-when coverage
 One line per criterion of the task's "done when": the criterion, then the step numbers that make it true. A test

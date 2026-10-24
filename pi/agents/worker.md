@@ -17,7 +17,7 @@ Ask `cq` (bash) before reading a file; it answers from an index in a few lines:
 - Unity scenes, prefabs, animators: `cq objects <scene> [word]`, `cq where <Script>`, `cq block <file> <object>`, `cq anim <controller>` instead of grep/sed in their YAML.
 Read a whole file only when it is short.
 
-The project check (the CHECK line in your task) runs by itself when you finish; do not run it, Unity or the full test suite yourself. If it fails you are resumed with its output. You may run a quick command the task names (one unit test, a script) and report its result honestly.
+The project check (the CHECK line in your task) runs by itself when you finish; do not run it or the full test suite yourself. If it fails you are resumed with its output. A command the task names you do run: a generator that rebuilds an asset from the script you changed (e.g. `Unity -batchmode -quit -projectPath . -executeMethod Ns.Class.Method`), one test, a script. Report its result honestly.
 
 Output format when finished (first line always `SUMMARY: <at most 25 words>`; second line `FILES: <comma-separated paths you changed>`):
 

@@ -703,6 +703,9 @@ function childSide(pi: ExtensionAPI) {
 	// nudges were ignored: a planner went on to the Blender rig scripts at 27 calls and 50k context (psx-iso,
 	// 2026-10-24). WRAP_CLOSE calls after the first nudge the reading tools are withdrawn and only the answer is left
 	const WRAP_CLOSE = 15;
+	const MAX_NOTES = 12;
+	let notesWritten = 0;
+	const notesSeen = new Set<string>();
 	let calls = 0;
 	const cutReads = new Map<string, number>(); // path -> last line shown by a read that hit the output cap
 	const continued = new Set<string>(); // reads moved past a cut by tool_call: their result says so
@@ -769,7 +772,14 @@ function childSide(pi: ExtensionAPI) {
 			"Add one durable fact to the shared notes that the other subagents of this session read: a path:line, a signature, a decision, a gotcha. One line; not progress updates, not file contents.",
 		parameters: Type.Object({ fact: Type.String({ description: "One self-contained line, e.g. `Config is loaded in src/config.ts:40 (loadConfig, returns Config | undefined)`" }) }),
 		async execute(_id, params) {
-			fs.appendFileSync(path.join(dir, "notes.md"), `- [p${promptNo} ${id}] ${params.fact.replace(/\s+/g, " ").trim().slice(0, 300)}\n`);
+			// a planner whose reading tools were closed called note 48 times ("No more notes; running real investigation
+			// commands"), filling the shared notes with filler (psx-iso, 2026-10-24): capped per run, repeats dropped
+			const fact = params.fact.replace(/\s+/g, " ").trim().slice(0, 300);
+			if (notesWritten >= MAX_NOTES || notesSeen.has(fact.toLowerCase()))
+				return { content: [{ type: "text", text: `Not noted (${notesWritten >= MAX_NOTES ? `${MAX_NOTES} notes is the limit per run` : "already noted"}). Write your report now.` }], details: {} };
+			notesSeen.add(fact.toLowerCase());
+			notesWritten++;
+			fs.appendFileSync(path.join(dir, "notes.md"), `- [p${promptNo} ${id}] ${fact}\n`);
 			return { content: [{ type: "text", text: "Noted." }], details: {} };
 		},
 	});
@@ -829,11 +839,12 @@ function childSide(pi: ExtensionAPI) {
 	pi.on("tool_result", async (event) => {
 		calls++;
 		if (wrapAt && calls === wrapAt + WRAP_CLOSE) {
-			pi.setActiveTools(pi.getActiveTools().filter((t) => !["read", "bash", "grep", "find", "ls"].includes(t)));
+			// every tool goes, note and request too: with note left, a planner spent 48 calls on it instead of the plan
+			pi.setActiveTools([]);
 			return {
 				content: [
 					...(event.content as any),
-					{ type: "text" as const, text: `[${calls} tool calls: reading is closed. Write your report now from what you have; open points go into it.]` },
+					{ type: "text" as const, text: `[${calls} tool calls: your tools are closed. Your next message is your final report${/-planner$/.test(id) ? " (the plan, in the output format)" : ""}, starting with SUMMARY:; open points go into it.]` },
 				],
 			};
 		}

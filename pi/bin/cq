@@ -18,7 +18,8 @@
 set -euo pipefail
 export DO_NOT_TRACK=1 CODEGRAPH_TELEMETRY=0
 MAX=${CQ_MAX:-40}
-[[ ${1:-} == outline || ${1:-} == block || ${1:-} == objects ]] && MAX=${CQ_MAX:-80} # several files / one big object
+[[ ${1:-} == block || ${1:-} == objects ]] && MAX=${CQ_MAX:-80}
+[[ ${1:-} == outline ]] && MAX=${CQ_MAX:-120} # 3 C# files at 80 lines were cut and read as "truncated oddly" # several files / one big object
 # a model tries a tool once: a bare usage line after its first call made a Flint scout give up on cq (psx-iso:
 # `cq outline` with 4 files, then `cq --help`), so help shows working examples and exits 0 when asked for
 usage() {
@@ -39,7 +40,9 @@ cap() {
   n=$(wc -l <<<"$out")
   head -n "$MAX" <<<"$out"
   if ((n > MAX)); then
-    if [[ $cmd == outline ]]; then echo "... +$((n - MAX)) more lines: outline fewer files at a time"
+    if [[ $cmd == outline ]]; then
+      local rest; rest=$(tail -n +$((MAX + 1)) <<<"$out" | sed -n 's/^== //p' | tr '\n' ' ')
+      echo "... +$((n - MAX)) more lines: the rest of the last file above${rest:+ and ${rest% }}. Outline those on their own"
     elif [[ $cmd == block ]]; then echo "... +$((n - MAX)) more lines: block one component by the &fileID after its ---"
     elif [[ $cmd == objects ]]; then echo "... +$((n - MAX)) more lines: add a word to filter (cq objects <file> <word>)"
     else echo "... +$((n - MAX)) more lines: narrow it with a path (cq $cmd <Name> <dir>)"; fi

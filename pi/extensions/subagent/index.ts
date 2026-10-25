@@ -588,14 +588,14 @@ function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: 
 	for (const p of changedPaths(snap.root)) {
 		const abs = path.join(snap.root, p);
 		if (inScope(abs, cwd, scope)) continue;
+		const now = fs.existsSync(abs) && fs.statSync(abs).isFile() ? fs.readFileSync(abs, "latin1") : null;
+		if (snap.dirty.has(p) && hash(snap.dirty.get(p)!) === hash(now)) continue; // already dirty before the run, untouched
 		if (mine && !mine(p)) {
 			others.push(p);
 			continue;
 		}
-		const now = fs.existsSync(abs) && fs.statSync(abs).isFile() ? fs.readFileSync(abs, "latin1") : null;
 		if (snap.dirty.has(p)) {
 			const before = snap.dirty.get(p)!;
-			if (hash(before) === hash(now)) continue; // already dirty before the run, untouched
 			if (before === null) fs.rmSync(abs, { force: true });
 			else fs.writeFileSync(abs, before, "latin1");
 			fixed.push(`${p} (restored)`);

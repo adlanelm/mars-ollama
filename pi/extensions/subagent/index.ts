@@ -1732,6 +1732,7 @@ function parentSide(pi: ExtensionAPI) {
 				// existing files, and new ones whose directory exists (a step that only creates a file)
 				const named = [...new Set(spec.goal.match(/[\w./-]+\.\w{1,12}\b/g) ?? [])].filter((f) => {
 					const abs = path.resolve(cwd0, f);
+					if (abs.startsWith(path.resolve(HANDOFF_ROOT) + path.sep)) return false; // a report named as input, not a file to change
 					return fs.existsSync(abs) ? fs.statSync(abs).isFile() : f.includes("/") && fs.existsSync(path.dirname(abs));
 				});
 				// the same goal again without scope: the main agent resent step 2 three times unchanged (psx-iso, 2026-10-25).
@@ -1744,6 +1745,7 @@ function parentSide(pi: ExtensionAPI) {
 			if (writes && name === "worker" && !spec.scope?.length && !spec.for) {
 				const named = [...new Set(spec.goal.match(/[\w./-]+\.\w{1,12}\b/g) ?? [])].filter((f) => {
 					const abs = path.resolve(cwd0, f);
+					if (abs.startsWith(path.resolve(HANDOFF_ROOT) + path.sep)) return false; // a report named as input, not a file to change
 					return fs.existsSync(abs) ? fs.statSync(abs).isFile() : f.includes("/") && fs.existsSync(path.dirname(abs));
 				});
 				return {

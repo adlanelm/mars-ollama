@@ -701,7 +701,9 @@ function childSide(pi: ExtensionAPI) {
 	const id = process.env.PI_SUBAGENT_ID ?? "subagent";
 	// read-only agents are told to write their report after this many tool calls (again every WRAP_EVERY): a planner
 	// re-read what the scout had answered and was grepping Temp/ at 53k context, no plan written (psx-iso, 2026-10-24)
-	const wrapAt = /-scout$/.test(id) ? 20 : /-planner$/.test(id) ? 15 : 0;
+	// workers too: one ran a generator four times chasing a log Unity had deleted with Temp/, the change long done
+	// (psx-iso, 2026-10-25)
+	const wrapAt = /-scout$/.test(id) ? 20 : /-planner$/.test(id) ? 15 : /-worker$/.test(id) ? 30 : 0;
 	// nudges were ignored: a planner went on to the Blender rig scripts at 27 calls and 50k context (psx-iso,
 	// 2026-10-24). WRAP_CLOSE calls after the first nudge the reading tools are withdrawn and only the answer is left
 	const WRAP_CLOSE = 15;
@@ -786,7 +788,14 @@ function childSide(pi: ExtensionAPI) {
 		},
 	});
 
+	// refusals say they come from the harness: a worker took "Search inside the project ... not /tmp" for a transient
+	// glitch of the bash tool and retried variations (psx-iso, 2026-10-25)
 	pi.on("tool_call", async (event, ctx) => {
+		const r = await guard(event, ctx);
+		if (r?.block) r.reason = `[harness rule, not an error: do not retry variations] ${r.reason}`;
+		return r;
+	});
+	async function guard(event: any, ctx: any): Promise<{ block: true; reason: string } | undefined> {
 		if (event.toolName === "bash") {
 			const cmd = (event.input as { command: string }).command;
 			if (GIT_WRITE.test(cmd)) {
@@ -811,6 +820,22 @@ function childSide(pi: ExtensionAPI) {
 			return;
 		}
 		const input = event.input as { path?: string; command?: string; offset?: number; limit?: number };
+		// a scene is thousands of lines: whole reads paged on from the last cut and never reached line 651, the one a grep
+		// had found (psx-iso Slice.unity, 2026-10-25)
+		if (event.toolName === "read" && input.path && !input.offset && !input.limit && UNITY_YAML.test(input.path)) {
+			const abs = path.resolve(ctx.cwd, input.path);
+			let size = 0;
+			try {
+				size = fs.statSync(abs).size;
+			} catch {}
+			if (size > CHILD_RESULT_CAP) {
+				const f = path.relative(ctx.cwd, abs);
+				return {
+					block: true,
+					reason: `${f} is ${Math.round(size / 1024)} KB of Unity YAML, too big to read whole. ${/\.controller$/.test(f) ? `\`cq anim ${f}\` lists its states and transitions. ` : ""}\`cq objects ${f} <word>\` lists objects with components, \`cq block ${f} <object|fileID>\` shows one with its values; or \`grep -n\` for the line and read with offset/limit around it.`,
+				};
+			}
+		}
 		// the same whole-file read after a cut returns the same cut: continue where it stopped (a scout read
 		// SliceTests.cs three times in a row, psx-iso 2026-10-24)
 		// only a whole-file read (no offset, no limit): "first 60 lines" with limit alone was moved too, and a scout
@@ -834,7 +859,7 @@ function childSide(pi: ExtensionAPI) {
 			block: true,
 			reason: `${file} is outside your writable scope (${allowed}). Call the request tool if the task needs this change.`,
 		};
-	});
+	}
 
 	// output cap per result: whole files and wide searches are what fill a subagent's context. A long read of a source
 	// file or a recursive grep also gets a one-line cq hint (at most CQ_HINTS per run): the moment of waste is when a
@@ -868,10 +893,22 @@ function childSide(pi: ExtensionAPI) {
 				}
 			}
 		}
+		// a compile error for a name one letter off: Flint wrote PszCharacters and read it back as right (psx-iso, 2026-10-25)
+		if (!hint) {
+			for (const m of text.matchAll(/error CS0(?:103|246): The (?:name|type or namespace name) '(\w+)'/g)) {
+				const f = didYouMean(`${m[1]}.cs`);
+				if (f) {
+					hint = `[${m[1]} does not exist; did you mean ${path.basename(f.split(", ")[0], ".cs")} (${f})? Compare the letters.]`;
+					break;
+				}
+			}
+		}
 		if (!hint && wrapAt && calls >= wrapAt && (calls - wrapAt) % 10 === 0) {
 			hint = /-scout$/.test(id)
 				? `[${calls} tool calls so far: write your report now with what you have. Open points go into the report as open questions, not into more reading.]`
-				: `[${calls} tool calls so far: write the plan now. Settle a point one \`cq\` call answers (cq anim, cq block) first; the rest go to Risks, not into more reading. Fill in Done-when coverage.]`;
+				: /-worker$/.test(id)
+					? `[${calls} tool calls so far: when the task's change is made, write your report now; the check runs after it. A side question (a missing log, a stray file) goes into the report, not into more calls.]`
+					: `[${calls} tool calls so far: write the plan now. Settle a point one \`cq\` call answers (cq anim, cq block) first; the rest go to Risks, not into more reading. Fill in Done-when coverage.]`;
 		}
 		if (!hint && (hints < CQ_HINTS || unityHints < CQ_HINTS)) {
 			const cmd = input.command ?? "";
@@ -1000,6 +1037,7 @@ const CONTRACT = (id: string, scope: string[]) => `
 You are subagent ${id}. The main agent gave you one narrow task; stay inside it.
 - Writable scope: ${scope.length ? scope.join(", ") : "none: this is a read-only task"}. Edits outside it are blocked.
 ${scope.length ? "- If the task needs anything outside it (information you cannot find, a change outside your scope, a decision), call the \`request\` tool with exactly what you need and stop. Do not work around it; you will be resumed with the answer." : "- What you could not find goes into your report as an open question. Call the \`request\` tool only for a decision you cannot make yourself, then stop."}
+- Git is the main agent's: leave commits to it, whatever the project's own rules say about committing.
 - Your final message is saved as your report. Its first line must be \`SUMMARY: <at most 25 words>\`. Then details, at most 600 words, citing path:line instead of pasting file contents.`;
 
 /** What the main agent is told about this project's checks and git (computed once per session). */
@@ -1070,6 +1108,7 @@ function parentSide(pi: ExtensionAPI) {
 	// a prompt containing [plan-only] (e.g. /plan, /backlog-item) may read and plan but not change anything
 	let planOnly = false;
 	let workersEdit = false;
+	let projectTrusted = false;
 	// /implement: read goes away after 2 refused or repeated reads, until the next subagent call (12 refused reads and
 	// DEVLOG.md read 4 times in a row before any subagent, psx-iso 2026-10-24)
 	let readStrikes = 0;
@@ -1104,6 +1143,9 @@ function parentSide(pi: ExtensionAPI) {
 		// its own level (see settle); with neither, nothing is passed and its model's `:level` suffix applies.
 		const level = run.level ?? run.agent.thinking ?? (run.agent.model ? undefined : thinking);
 		if (level) args.push("--thinking", level);
+		// project trust is the main session's: untrusted, `pi -p` skips the project's .pi/settings.json, so AGENTS.md told
+		// workers to load a skill none of them was given (psx-iso unity-csharp, 2026-10-25)
+		if (projectTrusted) args.push("--approve");
 		args.push("--append-system-prompt", run.promptFile, message);
 
 		const snap = snapshot(run.cwd);
@@ -2017,7 +2059,8 @@ function parentSide(pi: ExtensionAPI) {
 		return { action: "transform" as const, text, images: [] };
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		projectTrusted = ctx.isProjectTrusted?.() ?? false;
 		if ((event as { messageType?: string }).messageType !== "custom") {
 			promptNo++;
 			toolCalls = 0;
@@ -2041,7 +2084,9 @@ function parentSide(pi: ExtensionAPI) {
 			lastRead = "";
 			const prompt = (event as { prompt?: string }).prompt ?? "";
 			planOnly = PLAN_ONLY.test(prompt);
-			workersEdit = WORKERS_EDIT.test(prompt);
+			// a resumed /implement session keeps the mode: the answer to its design question had no tag, and the main agent
+			// read project files itself again (psx-iso, 2026-10-25)
+			workersEdit = WORKERS_EDIT.test(prompt) || ctx.sessionManager.getEntries().some((e: any) => e.type === "message" && e.message?.role === "user" && WORKERS_EDIT.test(JSON.stringify(e.message.content)));
 		}
 		applyTools();
 	});

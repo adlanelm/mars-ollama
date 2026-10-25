@@ -1097,6 +1097,7 @@ function checkGuidelines(cwd: string): string[] {
 
 function parentSide(pi: ExtensionAPI) {
 	const runs = new Map<string, Run>();
+	const scopeRefused = new Set<string>(); // worker goals refused once for a missing scope
 	// parallel runs share the worktree: a run's scope check must not undo a concurrent run's in-scope work
 	const active = new Set<Run>();
 	let seq = 0;
@@ -1729,6 +1730,18 @@ function parentSide(pi: ExtensionAPI) {
 			// approval instead of editing (psx-iso, 2026-10-24)
 			if (writes && name === "worker" && !spec.scope?.length && !spec.for) {
 				// existing files, and new ones whose directory exists (a step that only creates a file)
+				const named = [...new Set(spec.goal.match(/[\w./-]+\.\w{1,12}\b/g) ?? [])].filter((f) => {
+					const abs = path.resolve(cwd0, f);
+					return fs.existsSync(abs) ? fs.statSync(abs).isFile() : f.includes("/") && fs.existsSync(path.dirname(abs));
+				});
+				// the same goal again without scope: the main agent resent step 2 three times unchanged (psx-iso, 2026-10-25).
+				// The suggestion is taken as the scope when it is unambiguous
+				const key = spec.goal.slice(0, 400);
+				const suggested = named.slice(0, MAX_STEP_FILES);
+				if (scopeRefused.has(key) && named.length && named.length <= MAX_STEP_FILES) spec = { ...spec, scope: suggested };
+				else scopeRefused.add(key);
+			}
+			if (writes && name === "worker" && !spec.scope?.length && !spec.for) {
 				const named = [...new Set(spec.goal.match(/[\w./-]+\.\w{1,12}\b/g) ?? [])].filter((f) => {
 					const abs = path.resolve(cwd0, f);
 					return fs.existsSync(abs) ? fs.statSync(abs).isFile() : f.includes("/") && fs.existsSync(path.dirname(abs));

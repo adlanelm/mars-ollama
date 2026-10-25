@@ -573,8 +573,9 @@ function touchedFiles(snap: Snapshot): string[] {
  * `headMoved`: HEAD changed meanwhile. Not undone: a commit from another terminal (the user's) looks the same as
  * one the run made, and the changes it holds are hidden from this check.
  */
-function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: string): { fixed: string[]; headMoved?: string } {
+function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: string, mine?: (p: string) => boolean): { fixed: string[]; headMoved?: string; others?: string[] } {
 	const fixed: string[] = [];
+	const others: string[] = [];
 	let headMoved: string | undefined;
 	let tracked: Set<string>;
 	try {
@@ -587,6 +588,10 @@ function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: 
 	for (const p of changedPaths(snap.root)) {
 		const abs = path.join(snap.root, p);
 		if (inScope(abs, cwd, scope)) continue;
+		if (mine && !mine(p)) {
+			others.push(p);
+			continue;
+		}
 		const now = fs.existsSync(abs) && fs.statSync(abs).isFile() ? fs.readFileSync(abs, "latin1") : null;
 		if (snap.dirty.has(p)) {
 			const before = snap.dirty.get(p)!;
@@ -607,7 +612,28 @@ function enforceScope(snap: Snapshot, scope: string[], cwd: string, quarantine: 
 			fixed.push(`${p} (new file moved to ${dest})`);
 		}
 	}
-	return { fixed, headMoved };
+	return { fixed, headMoved, others };
+}
+
+/**
+ * Whether a subagent's own tool calls could have changed a path: its edit/write/bash arguments name the file, or it
+ * ran a program that writes files it does not name (a Unity -executeMethod generator, a script). A file the user saved
+ * in their editor during the run was "restored from HEAD" as a planner's scope violation (psx-iso CrewPatrol.cs, Rider,
+ * 2026-10-25).
+ */
+function ownChanges(sessionFile: string): (p: string) => boolean {
+	let args = "";
+	try {
+		for (const line of fs.readFileSync(sessionFile, "utf8").split("\n")) {
+			if (!line.includes('"toolCall"')) continue;
+			const e = JSON.parse(line);
+			for (const c of e.message?.content ?? []) if (c.type === "toolCall" && c.name !== "read") args += JSON.stringify(c.arguments) + "\n";
+		}
+	} catch {
+		return () => true; // unknown: enforce
+	}
+	if (/-executeMethod|\b(python3?|node|npm|npx|make|dotnet|cargo|go run|uv run)\b|\.sh\b|\bbash [^-]/.test(args)) return () => true;
+	return (p) => args.includes(path.basename(p));
 }
 
 /** HEAD's commit, "" outside git or in a repo without commits. */
@@ -1216,15 +1242,17 @@ function parentSide(pi: ExtensionAPI) {
 				const allowed = [...run.scope, ...concurrentScopes(startSeq)];
 				finished.push({ seq: ++seq, scope: run.scope });
 				let violations: string[] = [];
+				let others: string[] | undefined;
 				let headMoved: string | undefined;
 				try {
-					if (snap) ({ fixed: violations, headMoved } = enforceScope(snap, allowed, run.cwd, path.join(path.dirname(run.report), "quarantine", run.id)));
+					if (snap) ({ fixed: violations, headMoved, others } = enforceScope(snap, allowed, run.cwd, path.join(path.dirname(run.report), "quarantine", run.id), ownChanges(run.session)));
 				} catch (e) {
 					violations = [`scope check failed (${(e as Error).message.slice(0, 200)}); review git status`];
 				}
 				const shown = violations.slice(0, 5).join(", ") + (violations.length > 5 ? `, +${violations.length - 5} more` : "");
 				const scopeNote =
 					(violations.length ? `\n  SCOPE VIOLATION, undone: ${shown}. Widen the scope (resume with scope) or delegate those files.` : "") +
+					(others?.length ? `\n  Changed during the run but not by this subagent's tools (the user's editor?), left as is: ${others.slice(0, 5).join(", ")}.` : "") +
 					(headMoved ? `\n  HEAD moved during the run (${headMoved}); not undone, the files in those commits were not scope-checked. Tell the user.` : "");
 				// files this launch changed, recorded for every outcome: a resumed launch's snapshot already sees a NEEDS
 				// launch's edits as dirty, so the run's own set is the only record of them

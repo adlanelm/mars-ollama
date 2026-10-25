@@ -107,6 +107,10 @@ const MAX_RECOVERIES = 2;
 // same missing file in 10 minutes) and handled like an overflow
 const KILL_REPEATS = 4; // the same tool call with the same arguments this many times in a row
 const KILL_TURNS = 120; // turns in one launch
+const LIVE_LINES = 4; // recent actions per running subagent in the live widget
+const LIVE_STREAM_ROWS = 3; // rows of the text a running subagent is generating now
+const LIVE_WIDTH = 140; // characters per widget row
+const LIVE_REDRAW_MS = 150;
 // a run that keeps asking the main agent (request -> resume -> request) is looping too: with thinking budget 0, Flint
 // asked for its own task ("give me the last two digits of 7^2026") 13 times
 const MAX_REQUESTS = 3;
@@ -1100,6 +1104,47 @@ function parentSide(pi: ExtensionAPI) {
 	const scopeRefused = new Set<string>(); // worker goals refused once for a missing scope
 	// parallel runs share the worktree: a run's scope check must not undo a concurrent run's in-scope work
 	const active = new Set<Run>();
+	// Live view for the user: what each running subagent is doing, in a widget above the editor. The model never sees
+	// it (the main agent still gets one line per run); the full session stays in the run's .jsonl in the handoff area.
+	let ui: { setWidget(key: string, content: string[] | undefined): void } | undefined;
+	// stream: the reply (or reasoning, marked ~) being generated now, shown as its last LIVE_STREAM_ROWS rows
+	const live = new Map<Run, { turns: number; tokens: number; lines: string[]; stream: string; thinking: boolean }>();
+	let liveTimer: ReturnType<typeof setTimeout> | undefined;
+	const drawLive = () => {
+		liveTimer = undefined;
+		if (!ui) return;
+		if (!live.size) return ui.setWidget("subagents", undefined);
+		const out: string[] = [];
+		for (const [run, v] of live) {
+			out.push(`▸ ${run.id}  turn ${v.turns} · ${Math.round(v.tokens / 1000)}k ctx · ${run.session}`);
+			for (const l of v.lines) out.push(`    ${l}`);
+			const s = v.stream.replace(/\s+/g, " ").trim();
+			if (!s) continue;
+			// rows start at multiples of LIVE_WIDTH, so the last row fills up as the text is generated
+			const last = Math.floor((s.length - 1) / LIVE_WIDTH);
+			for (let r = Math.max(0, last - LIVE_STREAM_ROWS + 1); r <= last; r++) out.push(`    ${v.thinking ? "~" : "»"} ${s.slice(r * LIVE_WIDTH, (r + 1) * LIVE_WIDTH)}`);
+		}
+		ui.setWidget("subagents", out);
+	};
+	// token deltas arrive many times a second: redraw at most every LIVE_REDRAW_MS
+	const showLive = (now = false) => {
+		if (now || !live.size) {
+			if (liveTimer) clearTimeout(liveTimer);
+			return drawLive();
+		}
+		liveTimer ??= setTimeout(drawLive, LIVE_REDRAW_MS);
+	};
+	const oneLine = (s: string, max = 110) => {
+		const t = s.replace(/\s+/g, " ").trim();
+		return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+	};
+	const liveLine = (run: Run, line: string) => {
+		const v = live.get(run);
+		if (!v || !line) return;
+		v.lines.push(oneLine(line));
+		if (v.lines.length > LIVE_LINES) v.lines.shift();
+		showLive();
+	};
 	let seq = 0;
 	const finished: { seq: number; scope: string[] }[] = [];
 	let runDir: string | undefined;
@@ -1181,6 +1226,8 @@ function parentSide(pi: ExtensionAPI) {
 		const snap = snapshot(run.cwd);
 		const startSeq = seq;
 		active.add(run);
+		live.set(run, { turns: 0, tokens: 0, lines: [oneLine(`${run.agent.name}: ${message}`)], stream: "", thinking: false });
+		showLive(true);
 		return new Promise<Outcome>((resolve) => {
 			const messages: Message[] = [];
 			let contextTokens = 0;
@@ -1212,7 +1259,37 @@ function parentSide(pi: ExtensionAPI) {
 				} catch {
 					return;
 				}
-				if (ev.type === "compaction_start") compacted = true;
+				if (ev.type === "compaction_start") {
+					compacted = true;
+					liveLine(run, "[compacting]");
+				}
+				if (ev.type === "message_update") {
+					const d = ev.assistantMessageEvent;
+					const v = live.get(run);
+					if (v && (d?.type === "text_delta" || d?.type === "thinking_delta")) {
+						const thinking = d.type === "thinking_delta";
+						if (thinking !== v.thinking) v.stream = "";
+						v.thinking = thinking;
+						v.stream = (v.stream + (d.delta ?? "")).slice(-LIVE_STREAM_ROWS * LIVE_WIDTH * 2);
+						showLive();
+					}
+				}
+				if (ev.type === "tool_execution_start") {
+					const a = ev.args ?? {};
+					liveLine(run, `${ev.toolName} ${a.command ?? a.path ?? a.pattern ?? JSON.stringify(a)}`);
+				}
+				if (ev.type === "tool_execution_end" && ev.isError) liveLine(run, `  ${ev.toolName} failed`);
+				if (ev.type === "message_end" && ev.message?.role === "assistant") {
+					const v = live.get(run);
+					if (v) {
+						v.turns++;
+						v.tokens = ev.message.usage?.totalTokens || v.tokens;
+						v.stream = "";
+					}
+					const said = textOf(ev.message.content as any).trim();
+					if (said) liveLine(run, `» ${said}`);
+					else showLive();
+				}
 				if (ev.type === "message_end" && ev.message) {
 					messages.push(ev.message);
 					if (ev.message.role === "assistant" && !looped) {
@@ -1240,6 +1317,8 @@ function parentSide(pi: ExtensionAPI) {
 				signal?.removeEventListener("abort", kill);
 				if (buf.trim()) onLine(buf);
 				active.delete(run);
+				live.delete(run);
+				showLive(true);
 				const allowed = [...run.scope, ...concurrentScopes(startSeq)];
 				finished.push({ seq: ++seq, scope: run.scope });
 				let violations: string[] = [];
@@ -2115,6 +2194,7 @@ function parentSide(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		projectTrusted = ctx.isProjectTrusted?.() ?? false;
+		ui = ctx.hasUI ? ctx.ui : undefined;
 		if ((event as { messageType?: string }).messageType !== "custom") {
 			promptNo++;
 			toolCalls = 0;

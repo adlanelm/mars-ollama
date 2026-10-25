@@ -15,5 +15,9 @@ If the plan's Design section starts with `DESIGN CHANGE:`, ask the user before r
 2. Read the plan report, then run its steps as a second chain: one worker per step, in order, with
    scope = exactly that step's files (the call's `scope` parameter; files named only in the goal are not writable) and goal = that step's line plus the context the worker needs.
 
-The project checks run automatically after each step and at the end; do not tell workers to run them. If a step returns NEEDS, handle it as your
+The project checks run automatically after each step and at the end; do not tell workers or scouts to run them,
+and do not ask a scout what they do: a step's result carries its check result, and the full check result comes when you finish.
+A worker reads the files it changes itself: give it the change in words (what to add or say, in which section), never exact
+file text you had a scout copy out. When the steps are done and the plan names doc updates (GAME.md, BACKLOG.md, DEVLOG.md),
+one worker does them all. If a step returns NEEDS, handle it as your
 guidelines say, resume the run, and continue with the remaining steps.

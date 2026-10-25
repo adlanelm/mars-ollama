@@ -249,7 +249,7 @@ function filesFromReports(reports: string[], cwd: string): string[] {
  */
 function contentsAsk(goal: string): string | undefined {
 	for (const clause of goal.split(/[.;:!?\n]+/)) {
-		const m = clause.match(/\b(verbatim|full (file )?contents?|entire (file|contents?)|in full|whole file|complete contents?)\b/i);
+		const m = clause.match(/\b(verbatim|full (file )?contents?|entire (file|contents?)|in full|whole file|complete contents?|character for character|exact current text)\b/i);
 		if (m && !/\b(do not|don'?t|never|not|no|without|instead of|avoid(ing)?|rather than)\b/i.test(clause.slice(0, m.index))) return m[0];
 	}
 	return undefined;
@@ -713,6 +713,9 @@ function childSide(pi: ExtensionAPI) {
 	let calls = 0;
 	const cutReads = new Map<string, number>(); // path -> last line shown by a read that hit the output cap
 	const continued = new Set<string>(); // reads moved past a cut by tool_call: their result says so
+	// after a compaction the model no longer has the lines before a cut: a worker got "[continued from line 419]" for a
+	// file it remembered not reading (psx-iso, 2026-10-25)
+	pi.on("session_compact", async () => cutReads.clear());
 	let unityHints = 0; // the Unity cq hint has its own allowance: the shared one was used up before a scout hit scene YAML
 	let tracked: string[] | undefined;
 	/** Near-miss of a missing path among tracked files: Flint reads "Psx" as "Psz" (PszSliceGameplay.cs, psx-iso). */
@@ -907,7 +910,7 @@ function childSide(pi: ExtensionAPI) {
 			hint = /-scout$/.test(id)
 				? `[${calls} tool calls so far: write your report now with what you have. Open points go into the report as open questions, not into more reading.]`
 				: /-worker$/.test(id)
-					? `[${calls} tool calls so far: when the task's change is made, write your report now; the check runs after it. A side question (a missing log, a stray file) goes into the report, not into more calls.]`
+					? `[${calls} tool calls so far: make the task's change now if it is not made yet, then write your report; the check runs after it. A side question (a stale log, a timestamp, git history) goes into the report, not into more calls.]`
 					: `[${calls} tool calls so far: write the plan now. Settle a point one \`cq\` call answers (cq anim, cq block) first; the rest go to Risks, not into more reading. Fill in Done-when coverage.]`;
 		}
 		if (!hint && (hints < CQ_HINTS || unityHints < CQ_HINTS)) {
@@ -1660,6 +1663,10 @@ function parentSide(pi: ExtensionAPI) {
 		// main context gets them anyway: refuse before spawning
 		const reread = rereadAsk(spec, agents);
 		if (reread) return { id: "-", status: "error", contextTokens: 0, text: reread } as Outcome;
+		// the main agent sent a scout to run .pi/check after the last step, then the harness ran it again (psx-iso, 2026-10-25)
+		const checks = [projectCheck(defaultCwd), projectFullCheck(defaultCwd), ".pi/check", ".pi/check-fast"].filter(Boolean) as string[];
+		if (agents.find((x) => x.name === (spec.agent ?? "scout")) && !agentWrites(agents.find((x) => x.name === (spec.agent ?? "scout"))) && checks.some((c) => spec.goal.includes(c)) && /\b(run|execute|exit code)\b/i.test(spec.goal))
+			return { id: "-", status: "error", contextTokens: 0, text: "Refused: the project checks run by themselves (after every step, and the full check once when you finish). Do not send a subagent to run them; finish, and the full check result comes back to you." } as Outcome;
 		const asks = contentsAsk(spec.goal);
 		if (asks) {
 			// the refusal names the phrase and says to resend: "refused" alone read as "subagents cannot read files here", and
@@ -1790,6 +1797,7 @@ function parentSide(pi: ExtensionAPI) {
 			"Give each subagent ONE narrow goal with exact paths, a writable scope (only the files it should change; none for scouts/reviewers) and \`check\` only for something the project checks do not already cover (a specific test). The extension runs it, retries the subagent on failure and tells you the exit code.",
 			"Trust the check result, not a subagent's claims. Do not re-run checks yourself after a passing `check`.",
 			...checkGuidelines(process.cwd()),
+			`Today is ${new Date().toISOString().slice(0, 10)} (for DEVLOG entries and dates; no subagent needed to find it out).`,
 			"Pass information between subagents as run ids or report paths in inputs (inputs: [\"01-scout\"]); read a report yourself only when you must decide something from it (handoff reads always work, capped). Subagents also share facts through a notes file they read and write themselves: do not relay findings between them.",
 			"A subagent that runs out of thinking budget or context is retried automatically with a reformulated task (and then another model). If it still reports `overflow: ... split this goal`, do not resend it: split it into smaller tasks (one question or one file each), or chain its REMAINING line.",
 			"Images: the looker agent sees them (it runs on the vision model). Ask it specific questions about image files instead of guessing.",

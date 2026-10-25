@@ -1664,8 +1664,8 @@ function parentSide(pi: ExtensionAPI) {
 		const reread = rereadAsk(spec, agents);
 		if (reread) return { id: "-", status: "error", contextTokens: 0, text: reread } as Outcome;
 		// the main agent sent a scout to run .pi/check after the last step, then the harness ran it again (psx-iso, 2026-10-25)
-		const checks = [projectCheck(defaultCwd), projectFullCheck(defaultCwd), ".pi/check", ".pi/check-fast"].filter(Boolean) as string[];
-		if (agents.find((x) => x.name === (spec.agent ?? "scout")) && !agentWrites(agents.find((x) => x.name === (spec.agent ?? "scout"))) && checks.some((c) => spec.goal.includes(c)) && /\b(run|execute|exit code)\b/i.test(spec.goal))
+		const checkCmds = [projectCheck(defaultCwd), projectFullCheck(defaultCwd), ".pi/check", ".pi/check-fast"].filter(Boolean) as string[];
+		if (agents.find((x) => x.name === (spec.agent ?? "scout")) && !agentWrites(agents.find((x) => x.name === (spec.agent ?? "scout"))) && checkCmds.some((c) => spec.goal.includes(c)) && /\b(run|execute|exit code)\b/i.test(spec.goal))
 			return { id: "-", status: "error", contextTokens: 0, text: "Refused: the project checks run by themselves (after every step, and the full check once when you finish). Do not send a subagent to run them; finish, and the full check result comes back to you." } as Outcome;
 		const asks = contentsAsk(spec.goal);
 		if (asks) {
@@ -1721,7 +1721,7 @@ function parentSide(pi: ExtensionAPI) {
 			}
 			// assets a step's generator writes (Unity controller, prefab, scene) are listed in scope but are not hand-edited
 			// code: they do not count toward the step size
-			const codeFiles = (spec.scope ?? []).filter((f) => !UNITY_YAML.test(f) && !/\.meta$/.test(f));
+			const codeFiles = (spec.scope ?? []).filter((f) => !UNITY_YAML.test(f) && !/\.(meta|md)$/.test(f)); // docs do not break the build (GAME/BACKLOG/DEVLOG in one step, psx-iso)
 			if (writes && (codeFiles.length > MAX_STEP_FILES || dirs.length)) {
 				return {
 					id: "-",

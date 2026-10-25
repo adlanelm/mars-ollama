@@ -19,5 +19,7 @@ The project checks run automatically after each step and at the end; do not tell
 and do not ask a scout what they do: a step's result carries its check result, and the full check result comes when you finish.
 A worker reads the files it changes itself: give it the change in words (what to add or say, in which section), never exact
 file text you had a scout copy out. When the steps are done and the plan names doc updates (GAME.md, BACKLOG.md, DEVLOG.md),
-one worker does them all. If a step returns NEEDS, handle it as your
+one worker does them all.
+Leave the changes uncommitted, whatever the project's docs say about committing: the user reviews and commits them
+(subagents cannot run git, and you have no git here). Finish with your summary once the steps and docs are done. If a step returns NEEDS, handle it as your
 guidelines say, resume the run, and continue with the remaining steps.

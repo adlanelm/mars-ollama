@@ -1693,9 +1693,10 @@ function parentSide(pi: ExtensionAPI) {
 		// main context gets them anyway: refuse before spawning
 		const reread = rereadAsk(spec, agents);
 		if (reread) return { id: "-", status: "error", contextTokens: 0, text: reread } as Outcome;
-		// the main agent sent a scout to run .pi/check after the last step, then the harness ran it again (psx-iso, 2026-10-25)
+		// the main agent sent a scout to run .pi/check after the last step, then the harness ran it again; next run it asked
+		// "what is the project's check", "run the project check" and "how do I run the PlayMode suite" (psx-iso, 2026-10-25)
 		const checkCmds = [projectCheck(defaultCwd), projectFullCheck(defaultCwd), ".pi/check", ".pi/check-fast"].filter(Boolean) as string[];
-		if (agents.find((x) => x.name === (spec.agent ?? "scout")) && !agentWrites(agents.find((x) => x.name === (spec.agent ?? "scout"))) && checkCmds.some((c) => spec.goal.includes(c)) && /\b(run|execute|exit code)\b/i.test(spec.goal))
+		if (agents.find((x) => x.name === (spec.agent ?? "scout")) && !agentWrites(agents.find((x) => x.name === (spec.agent ?? "scout"))) && (checkCmds.some((c) => spec.goal.includes(c)) || /\bTools\/check\b|\bBuildCheck\b/.test(spec.goal) || (/\b(run|execute|invok\w*|exit code)\b/i.test(spec.goal) && /\b(project('s)?|full|the) check\b|\bplay ?mode (test )?suite\b|\bbatch ?mode\b|\btest suite\b/i.test(spec.goal))))
 			return { id: "-", status: "error", contextTokens: 0, text: "Refused: the project checks run by themselves (after every step, and the full check once when you finish). Do not send a subagent to run them; finish, and the full check result comes back to you." } as Outcome;
 		const asks = contentsAsk(spec.goal);
 		if (asks) {

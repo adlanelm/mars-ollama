@@ -14,7 +14,13 @@
     "reserveTokens": 65536,
     "keepRecentTokens": 16000,
     "modelOverrides": {
-      "mars/qwen3.8-27b-gsq": { "reserveTokens": 16384, "keepRecentTokens": 12000 }
+      "mars/qwen3.8-27b-gsq": {
+        "reserveTokens": 16384,
+        "keepRecentTokens": 12000
+      },
+      "mars/flint-40b-a2.5b": {
+        "reserveTokens": 32768
+      }
     }
   }
 }

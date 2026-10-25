@@ -1287,7 +1287,9 @@ function parentSide(pi: ExtensionAPI) {
 		)
 			.trim()
 			.slice(0, SUMMARY_CAP);
-		return `[${run.id}] done, report: ${run.report} (read it yourself with read if you need more than the summary)\n  ${summary}${scopeNote}`;
+		// the files a writing step changed: without them the main agent sent scouts to run git status (psx-iso, 2026-10-25)
+		const changed = run.scope.length && run.touched ? `\n  changed: ${[...run.touched].map((f) => path.relative(run.cwd, f)).join(", ") || "none"}` : "";
+		return `[${run.id}] done, report: ${run.report} (read it yourself with read if you need more than the summary)\n  ${summary}${changed}${scopeNote}`;
 	}
 
 	/**

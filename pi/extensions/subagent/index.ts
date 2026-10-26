@@ -32,6 +32,10 @@ import { type AgentConfig, discoverAgents } from "./agents.ts";
  *   { "maxStepFiles": 3, "turnBudgetKB": 64, "maxReviews": 1, "allowNoGit": true,
  *     "check": "make lint", "fullCheck": "make test",       overrides (commands run in the project root)
  *     "escalationModel": "mars/qwen3.8-27b-gsq" }
+ *   { "writeCommands": ["Tools/comfy/gen", "Tools/audio/"] } the main session's bash may create/change files with these
+ *                                                          (generators whose output the user reviews), see isWriteCommand
+ *   { "pauseWhile": [{ "process": "krita", "message": "..." }] } prompts are not sent to the model while such a process
+ *                                                          runs (it holds the GPU, e.g. Krita with ComfyUI)
  * PI_HARNESS=off turns it off for one session.
  */
 interface HarnessConfig {
@@ -43,6 +47,8 @@ interface HarnessConfig {
 	check?: string;
 	fullCheck?: string;
 	escalationModel?: string; // provider/id that takes over a failing step (overflow retry 2, check retry 3); "" = off
+	writeCommands?: string[]; // program prefixes whose file changes the main session's bash keeps (isWriteCommand)
+	pauseWhile?: { process: string; message?: string }[]; // exact process names (pgrep -x) that pause the main session
 	root?: string; // directory holding .pi/harness.json
 	error?: string;
 }
@@ -146,6 +152,32 @@ function isCheckCommand(cmd: string, extra: Set<string>): boolean {
 		c = c.replace(/\s*(2>&1|>\s*\S+|\|\s*(tail|head)(\s+-n)?(\s+-?\d+)?)\s*$/, "");
 	}
 	return extra.has(c) || CHECK_CORE.test(c);
+}
+/**
+ * A project generator from `writeCommands` (gamekit: Tools/comfy/gen, Tools/audio/music): its new and changed files are
+ * kept, not undone like other main-session bash writes (gen's 4 concept images were quarantined the moment they were
+ * written, psx-iso-pitest 2026-10-26). One command only: a leading `cd X &&`, `timeout N` and output redirection or a
+ * `| tail` are allowed, any other chaining is not. The program is the first word, the script of `uv run`/`python`, or
+ * the `--python` script of blender.
+ */
+function isWriteCommand(cmd: string, prefixes: string[] | undefined, cwd: string): boolean {
+	if (!prefixes?.length) return false;
+	let c = cmd.trim().replace(/^cd\s+(?:'[^']*'|\\.|[^\s'\\])+\s*&&\s*/, "").replace(/^timeout\s+\d+[smh]?\s+/, "");
+	for (let prev = ""; prev !== c; ) {
+		prev = c;
+		c = c.replace(/\s*(2>&1|>\s*\S+|\|\s*(tail|head)(\s+-n)?(\s+-?\d+)?)\s*$/, "");
+	}
+	// quoted arguments (prompts) may hold anything; outside them no chaining, substitution or here-docs
+	if (/[;&|<>`]|\$\(/.test(c.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""'))) return false;
+	const words = c.split(/\s+/);
+	let prog = words[0];
+	if (/^(uv|python3?)$/.test(prog)) prog = words.slice(words[0] === "uv" ? 2 : 1).find((w, i, a) => !w.startsWith("-") && !/^--with$/.test(a[i - 1] ?? "")) ?? "";
+	else if (/(^|\/)blender$/.test(prog)) prog = words[words.indexOf("--python") + 1] ?? "";
+	// an absolute or cwd-relative path to the same program counts: prefixes are relative to the harness.json directory
+	const root = HC.root ?? cwd;
+	const abs = path.resolve(cwd, prog);
+	if (abs.startsWith(root + path.sep)) prog = path.relative(root, abs);
+	return prefixes.some((p) => prog.startsWith(p.replace(/^\.\//, "")));
 }
 const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"]; // pi's levels (it also has max)
@@ -2193,6 +2225,22 @@ function parentSide(pi: ExtensionAPI) {
 	// Images on a prompt to a text-only session model (Flint) would be dropped: save them to the handoff area and point
 	// the main agent at the looker agent (vision model). The session keeps its model; only the looker swaps.
 	let images = 0;
+	// Pause while a GPU app runs (gamekit: Krita with ComfyUI). A chat-model load then makes ComfyUI /free its weights
+	// into RAM next to the reloading model, which ran the host out of memory (2026-10-15). The prompt never reaches the model.
+	pi.on("input", async (event, ctx) => {
+		for (const p of HC.pauseWhile ?? []) {
+			let up = false;
+			try {
+				execFileSync("pgrep", ["-x", p.process], { stdio: "ignore" });
+				up = true;
+			} catch {}
+			if (!up) continue;
+			const msg = `${p.message ?? `${p.process} is running and holds the GPU: close it first.`} Your message was not sent; send it again then.`;
+			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+			return { action: "handled" as const };
+		}
+		return { action: "continue" as const };
+	});
 	pi.on("input", async (event, ctx) => {
 		if (!event.images?.length || ctx.model?.input.includes("image")) return { action: "continue" as const };
 		const dir = ensureRunDir();
@@ -2323,7 +2371,7 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		// the main agent's bash may run things, not change files: snapshot now (the call is allowed), undo any file
 		// change after
-		if (event.toolName === "bash") {
+		if (event.toolName === "bash" && !isWriteCommand((event.input as { command: string }).command, HC.writeCommands, ctx.cwd)) {
 			const snap = snapshot(ctx.cwd);
 			if (snap) bashSnaps.set(event.toolCallId, { snap, startSeq: seq });
 		}

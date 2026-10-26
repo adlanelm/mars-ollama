@@ -41,9 +41,12 @@ The harness is on in every pi session (user-level extension), no project setup n
   Run `git init` and commit, or set `allowNoGit`.
 - `.pi/harness.json` (per project, searched up to the git root): `{"enabled": false}` turns the harness off.
   Overrides: `maxStepFiles`, `turnBudgetKB`, `maxReviews`, `allowNoGit`, `check`, `fullCheck` (commands run in
-  the project root). `PI_HARNESS=off` turns it off for one session.
-- New game projects from gamekit's `game-init` get `.pi/settings.json`, `.pi/check-fast` and `.pi/check` from
-  the templates.
+  the project root), `writeCommands` (program prefixes, e.g. `["Tools/comfy/gen"]`, whose file changes the main
+  session's bash keeps), `pauseWhile` (`[{"process": "krita", "message": "..."}]`: while a process with that exact name
+  runs, prompts are not sent to the model; gamekit pauses for Krita, whose ComfyUI and a reloading chat model together
+  ran the host out of RAM). `PI_HARNESS=off` turns it off for one session.
+- New game projects from gamekit's `game-init` get `.pi/settings.json`, `.pi/harness.json` (its generators as
+  `writeCommands`), `.pi/check-fast` and `.pi/check` from the templates.
 
 ## Tested on a non-game project: ehi-ledger (2026-10-18)
 
@@ -103,7 +106,7 @@ so that delegation and context limits are enforced by code, not left to the mode
   defects. Its SUMMARY comes back as a message, with one more turn to fix the issues through a worker or explain
   why not. There are at most 2 reviews per prompt (the second after fixes), none in plan-only prompts, and a
   clean review just lets the main session finish.
-- The main session's bash runs commands but cannot change files: each bash call is bracketed by a git snapshot, and any file it changed is undone (tracked files restored, new files quarantined, commits reset), with a note telling it to use edit or a worker. Git commands that change state are blocked. On psx-iso it had patched 3 files with heredoc Python scripts and committed the user's uncommitted settings.
+- The main session's bash runs commands but cannot change files: each bash call is bracketed by a git snapshot, and any file it changed is undone (tracked files restored, new files quarantined, commits reset), with a note telling it to use edit or a worker. Git commands that change state are blocked. On psx-iso it had patched 3 files with heredoc Python scripts and committed the user's uncommitted settings. Exception: a single command whose program matches `writeCommands` keeps its files (gamekit's `Tools/comfy/gen` concept images were quarantined the moment they were written); chaining (`;`, `&&` after a leading `cd`, pipes other than `| tail`, here-docs, `$(...)`) loses the exception.
 - Subagent tasks asking for files "verbatim" or "in full" are refused without spawning; subagents report findings.
   Negated mentions ("do not dump full file contents") don't count, and the refusal names the phrase and says to
   resend without it: on psx-iso (2026-10-24) that exact negated sentence was refused twice, the main session took

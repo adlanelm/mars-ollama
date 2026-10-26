@@ -122,6 +122,10 @@ so that delegation and context limits are enforced by code, not left to the mode
   the prompt finishes while files are unverified, at most 2 fix rounds, before the review. A full check marks
   the files it covered as verified, pass or fail (a failure is reported); files changed after it started stay
   unverified, also into the next prompt. Without a check-fast, `.pi/check` runs per step as before.
+  Changes to docs only (`.md`, `.txt`) don't trigger it. Before the prompt's first code change (a writing step or
+  a main-session edit) the full check runs once as a baseline; a failure with no new error lines is reported as
+  "still fails as before, tell the user" instead of a fix round. On psx-iso a known red PlayMode test sent the
+  agent to fix crawler code after it had only added an ASSETS.md row.
 - Waiting runs: while a subagent waits with NEEDS, other runs' checks are deferred (its half-done change would fail them) and recorded with their command. When the last waiting run's resume ends (whatever its outcome), each deferred check runs once and its result comes back in that resume's tool result (reported, not retried). A prompt that would finish with runs still waiting is sent back once to resume them.
 - Grounding: a plan-only prompt that finishes without having looked at code (no non-Markdown read, search or subagent) is sent back once.
 - Path check: before a prompt finishes, file paths in the final answer that are presented as existing (not on a "new"/"create" line) and do not exist send the session back once to look at the code. On psx-iso a plan read only GAME.md and BACKLOG.md and named wrong paths.

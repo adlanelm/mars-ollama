@@ -530,6 +530,9 @@ function compareToBaseline(
 		: { verdict: "pass", why: `baseline was already failing: ${base.errors.size} known errors before the first step, ${now.size} now` };
 }
 
+/** Docs need no tests: their changes skip the full check and its baseline. */
+const isDoc = (file: string) => /\.(md|txt)$/i.test(file);
+
 function inScope(file: string, cwd: string, scope: string[]): boolean {
 	// Unity writes <asset>.meta next to every asset: it belongs to the asset's scope
 	const abs = path.resolve(cwd, file).replace(/\.meta$/, "");
@@ -1138,7 +1141,7 @@ function parentSide(pi: ExtensionAPI) {
 	const active = new Set<Run>();
 	// Live view for the user: what each running subagent is doing, in a widget above the editor. The model never sees
 	// it (the main agent still gets one line per run); the full session stays in the run's .jsonl in the handoff area.
-	let ui: { setWidget(key: string, content: string[] | undefined): void } | undefined;
+	let ui: { setWidget(key: string, content: string[] | undefined): void; notify(msg: string, type?: "info" | "warning" | "error"): void } | undefined;
 	// stream: the reply (or reasoning, marked ~) being generated now, shown as its last LIVE_STREAM_ROWS rows
 	const live = new Map<Run, { turns: number; tokens: number; lines: string[]; stream: string; thinking: boolean }>();
 	let liveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1194,6 +1197,17 @@ function parentSide(pi: ExtensionAPI) {
 	};
 	const unverified = new Set<string>(); // files changed and not yet covered by a full check (kept until one has run on them)
 	let fullChecks = 0;
+	/**
+	 * The full check's result before this prompt's first code change (in `baselines`), so a test that was already red
+	 * is not handed to the main agent to fix (psx-iso: a known PlayMode failure after an ASSETS.md row).
+	 */
+	const fullBaseline = async (cwd: string, signal?: AbortSignal) => {
+		const full = projectFullCheck(cwd);
+		if (!full || baselines.has(baselineKey(cwd, full))) return;
+		ui?.notify(`Running the full check once before the first change, to know what already fails: ${full}`, "info");
+		const r = await runCheck(full, cwd, path.join(ensureRunDir(), "full-baseline.log"), signal);
+		if (!r.aborted) baselines.set(baselineKey(cwd, full), { code: r.code, errors: errorLines(r.out, cwd), timedOut: r.timedOut });
+	};
 	const track = (run: Run, o: Outcome) => {
 		if (o.status === "needs") waiting.add(run.id);
 		else waiting.delete(run.id);
@@ -1918,6 +1932,7 @@ function parentSide(pi: ExtensionAPI) {
 		const outcome = await (canWrite && run.scope.length ? serialWrite : (f: () => Promise<Outcome>) => f())(async () => {
 			let baseNote = "";
 			let headNote = "";
+			if (canWrite && run.scope.length) await fullBaseline(run.cwd, signal);
 			// one baseline per cwd and check: a step in another directory or repo gets its own
 			const key = spec.check && baselineKey(run.cwd, spec.check);
 			if (spec.check && key && canWrite && run.scope.length && !baselines.has(key)) {
@@ -2127,6 +2142,9 @@ function parentSide(pi: ExtensionAPI) {
 		// full check (tests) once the steps are done: per-step checks were the fast ones
 		const full = projectFullCheck(ctx.cwd);
 		let fullMoved = ""; // HEAD moved during a passing full check: goes into the review message, else its own
+		let fullStatus = ""; // a full check that was red before this prompt: reported like fullMoved, not to fix
+		// docs (an ASSETS.md row) don't need the tests
+		for (const f of unverified) if (isDoc(f)) unverified.delete(f);
 		if (!planOnly && full && unverified.size && fullChecks < MAX_FULL_CHECKS) {
 			fullChecks++;
 			const log = path.join(ensureRunDir(), `full-check-${fullChecks}.log`);
@@ -2137,16 +2155,24 @@ function parentSide(pi: ExtensionAPI) {
 			// the files this check covered, pass or fail (a failure is reported below); files changed after it
 			// started stay unverified, also into the next prompt
 			for (const f of covered) unverified.delete(f);
-			if (res.code !== 0) {
+			const cmp = compareToBaseline(res, baselines.get(baselineKey(ctx.cwd, full)), ctx.cwd);
+			// red before this prompt and nothing new: the user's to know, not the agent's to fix
+			if (cmp.verdict === "pass" && res.code !== 0)
+				fullStatus = `\`${full}\` still fails as it did before this prompt's changes (${exitText(res)}, no new errors), so it is not from these steps: tell the user, don't fix it. Log: ${log}`;
+			else if (res.code !== 0) {
+				const what =
+					cmp.verdict === "new"
+						? `has new errors that were not there before this prompt's changes:\n${cmp.newErrors!.slice(0, 10).join("\n")}`
+						: `failed (${exitText(res)}${cmp.why ? `; ${cmp.why}` : ""}) after your steps. Last lines:\n${res.tail}`;
 				const content =
-					`[full check ${fullChecks}/${MAX_FULL_CHECKS}] \`${full}\` failed (${exitText(res)}) after your steps. Last lines:\n${res.tail}\nLog: ${log}${fullMoved}\n` +
+					`[full check ${fullChecks}/${MAX_FULL_CHECKS}] \`${full}\` ${what}\nLog: ${log}${fullMoved}\n` +
 					"Fix it with a worker step (scope = the 1-2 files at fault), then finish; the full check runs again.";
 				return { entries: [{ type: "custom_message", customType: "full-check", content, display: true }], continue: true };
 			}
 		}
 		const movedOnly = () => {
-			if (!fullMoved) return;
-			const content = `[full check ${fullChecks}/${MAX_FULL_CHECKS}] passed.${fullMoved}`;
+			if (!fullMoved && !fullStatus) return;
+			const content = `[full check ${fullChecks}/${MAX_FULL_CHECKS}] ${fullStatus || "passed."}${fullMoved}`;
 			return { entries: [{ type: "custom_message" as const, customType: "full-check", content, display: true }], continue: true };
 		};
 		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS) return movedOnly();
@@ -2172,11 +2198,11 @@ function parentSide(pi: ExtensionAPI) {
 		const clean = out.status === "done" && /SUMMARY:\W*(0|no|zero)\s+(issues|problems|defects)/i.test(out.text);
 		const content =
 			`[auto-review ${reviews}/${MAX_REVIEWS} of ${files.join(", ")}]\n${out.text}\n` +
-			(fullMoved ? `[full check ${fullChecks}/${MAX_FULL_CHECKS}] passed.${fullMoved}\n` : "") +
+			(fullMoved || fullStatus ? `[full check ${fullChecks}/${MAX_FULL_CHECKS}] ${fullStatus || "passed."}${fullMoved}\n` : "") +
 			(clean
 				? "No issues: finish your answer to the user."
 				: "Fix the real issues with a worker (scope = the affected files; read the report path for details) or tell the user why not, then finish.");
-		return { entries: [{ type: "custom_message", customType: "auto-review", content, display: true }], continue: !clean || !!fullMoved };
+		return { entries: [{ type: "custom_message", customType: "auto-review", content, display: true }], continue: !clean || !!fullMoved || !!fullStatus };
 	});
 
 	// Context guard: the main agent cannot pull large outputs into its own context. Per call, output is capped;
@@ -2349,6 +2375,7 @@ function parentSide(pi: ExtensionAPI) {
 						`subagent({agent: "worker", goal: "<the change you were making, self-contained>", scope: ["${path.relative(ctx.cwd, file)}"]})`,
 				};
 			}
+			if (!isDoc(file)) await fullBaseline(ctx.cwd);
 			edited.add(file);
 			changed.add(file);
 			unverified.add(file);

@@ -1755,10 +1755,19 @@ function parentSide(pi: ExtensionAPI) {
 			const ids = (spec.for.match(/\d{2}-[a-z][\w-]*/g) ?? []).filter((i) => runs.has(i));
 			if (ids.length) spec = { ...spec, for: undefined, inputs: [...(spec.inputs ?? []), ...ids] };
 		}
+		// `for` used as a task label inside tasks (`for: "props-a"`, `"r1"`): the refusal said "leave for out", the main
+		// agent dropped it only at the top level and was refused 8 times in a row (psx-iso-pitest, 2026-10-25). Run it
+		// as a new task and say so.
+		let dropped = "";
+		if (spec.for && !runs.has(spec.for)) {
+			dropped = `\n  (for "${spec.for}" ignored: it is not a run id, ran as a new task. \`for\` only names a run that returned NEEDS.)`;
+			spec = { ...spec, for: undefined };
+		}
 		spec = await awaitNamed(spec, signal);
 		const held: { id?: string } = {};
 		try {
-			return await runSpecInner(spec, defaultCwd, agents, model, thinking, signal, held);
+			const out = await runSpecInner(spec, defaultCwd, agents, model, thinking, signal, held);
+			return dropped ? { ...out, text: out.text + dropped } : out;
 		} finally {
 			if (held.id) inflight.delete(held.id);
 		}
@@ -1971,6 +1980,12 @@ function parentSide(pi: ExtensionAPI) {
 				const late = await serialWrite(() => runDeferred(signal));
 				return reply([settled, ...late]);
 			}
+
+			// tasks/chain entries without an agent take the call's top-level one: a scout call with tasks that only had
+			// scopes ran them as workers and was refused for the step size (psx-iso-pitest, 2026-10-25)
+			const withAgent = <T extends { agent?: string }>(t: T): T => (t.agent || !params.agent ? t : { ...t, agent: params.agent });
+			if (params.chain?.length) params.chain = params.chain.map(withAgent);
+			if (params.tasks?.length) params.tasks = params.tasks.map(withAgent);
 
 			if (params.chain?.length) {
 				const outs: Outcome[] = [];

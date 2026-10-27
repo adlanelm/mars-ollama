@@ -156,16 +156,17 @@ function isCheckCommand(cmd: string, extra: Set<string>): boolean {
 /**
  * A project generator from `writeCommands` (gamekit: Tools/comfy/gen, Tools/audio/music): its new and changed files are
  * kept, not undone like other main-session bash writes (gen's 4 concept images were quarantined the moment they were
- * written, psx-iso-pitest 2026-10-26). One command only: a leading `cd X &&`, `timeout N` and output redirection or a
- * `| tail` are allowed, any other chaining is not. The program is the first word, the script of `uv run`/`python`, or
+ * written, psx-iso-pitest 2026-10-26). One command only: a leading `cd X &&`, `timeout N` and output redirection, a
+ * `| tail` or `; echo "EXIT=$?"` are allowed, any other chaining is not. The program is the first word, the script of `uv run`/`python`, or
  * the `--python` script of blender.
  */
 function isWriteCommand(cmd: string, prefixes: string[] | undefined, cwd: string): boolean {
 	if (!prefixes?.length) return false;
-	let c = cmd.trim().replace(/^cd\s+(?:'[^']*'|\\.|[^\s'\\])+\s*&&\s*/, "").replace(/^timeout\s+\d+[smh]?\s+/, "");
+	// line continuations (the skills' commands are wrapped with `\`) are one line
+	let c = cmd.replace(/\\\r?\n/g, " ").trim().replace(/^cd\s+(?:'[^']*'|\\.|[^\s'\\])+\s*&&\s*/, "").replace(/^timeout\s+\d+[smh]?\s+/, "");
 	for (let prev = ""; prev !== c; ) {
 		prev = c;
-		c = c.replace(/\s*(2>&1|>\s*\S+|\|\s*(tail|head)(\s+-n)?(\s+-?\d+)?)\s*$/, "");
+		c = c.replace(/\s*(2>&1|>\s*\S+|\|\s*(tail|head)(\s+-n)?(\s+-?\d+)?|;\s*echo\s+"?EXIT=\$\?"?)\s*$/, "");
 	}
 	// quoted arguments (prompts) may hold anything; outside them no chaining, substitution or here-docs
 	if (/[;&|<>`]|\$\(/.test(c.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""'))) return false;
@@ -2080,6 +2081,11 @@ function parentSide(pi: ExtensionAPI) {
 		},
 	});
 
+	// a correction turn's answer replaced the hand-off (psx-iso: music takes, the last answer only fixed a path and
+	// said "the takes above"): the user reads the last answer only
+	const WHOLE_ANSWER =
+		" Then end with your whole answer again, not only the fix: the user reads only your last message (what you made, the `!Tools/open` lines, what you need from them).";
+
 	// Automatic review: before the main agent finishes a prompt that changed files, a read-only reviewer reads
 	// the diff. Its one-line result comes back as a message with one more turn to act on it.
 	// (event.context.canContinue describes the context before our entries; it is false whenever the assistant spoke
@@ -2117,10 +2123,15 @@ function parentSide(pi: ExtensionAPI) {
 			const lastAssistant = [...event.context.llmMessages].reverse().find((m) => m.role === "assistant");
 			const text = lastAssistant ? textOf(lastAssistant.content as any) : "";
 			const missing = new Set<string>();
+			let fenced = false; // commands in code blocks name outputs that don't exist yet (psx-iso: a music loop)
 			for (const line of text.split("\n")) {
+				if (/^\s*```/.test(line)) fenced = !fenced;
+				if (fenced) continue;
 				if (/\b(new|create[sd]?|creating|add(s|ed)? a)\b/i.test(line)) continue;
 				if (/\b(not exist|doesn'?t exist|does not exist|missing|not found|no such)\b/i.test(line)) continue;
 				for (const m of line.matchAll(/(?:~|\/)?[\w.-]+(?:\/[\w.-]+)+\.\w{1,8}\b/g)) {
+					// placeholders: <audio>/Music/x.wav, x_<SEED>.wav
+					if (/[<>]/.test(line[m.index! - 1] ?? "") || /^[<>]/.test(line.slice(m.index! + m[0].length))) continue;
 					const f = m[0].replace(/^~(?=\/)/, os.homedir());
 					if (f.startsWith(path.resolve(HANDOFF_ROOT))) continue;
 					if (!fs.existsSync(path.resolve(ctx.cwd, f))) missing.add(m[0]);
@@ -2128,8 +2139,8 @@ function parentSide(pi: ExtensionAPI) {
 			}
 			if (missing.size) {
 				const content =
-					`These files in your answer do not exist: ${[...missing].slice(0, 8).join(", ")}. ` +
-					"Look at the actual code (read, or a scout with a question) before answering, and correct the paths and the plan. Mark files that are genuinely new as (new).";
+					`Automatic path check (not the user): these files in your answer do not exist: ${[...missing].slice(0, 8).join(", ")}. ` +
+					"If one is an output a later step makes, mark it (new). Otherwise look at the actual code (read, or a scout with a question) and correct the paths and the plan." + WHOLE_ANSWER;
 				return { entries: [{ type: "custom_message", customType: "paths", content, display: true }], continue: true };
 			}
 		}
@@ -2166,13 +2177,13 @@ function parentSide(pi: ExtensionAPI) {
 						: `failed (${exitText(res)}${cmp.why ? `; ${cmp.why}` : ""}) after your steps. Last lines:\n${res.tail}`;
 				const content =
 					`[full check ${fullChecks}/${MAX_FULL_CHECKS}] \`${full}\` ${what}\nLog: ${log}${fullMoved}\n` +
-					"Fix it with a worker step (scope = the 1-2 files at fault), then finish; the full check runs again.";
+					"Fix it with a worker step (scope = the 1-2 files at fault), then finish; the full check runs again." + WHOLE_ANSWER;
 				return { entries: [{ type: "custom_message", customType: "full-check", content, display: true }], continue: true };
 			}
 		}
 		const movedOnly = () => {
 			if (!fullMoved && !fullStatus) return;
-			const content = `[full check ${fullChecks}/${MAX_FULL_CHECKS}] ${fullStatus || "passed."}${fullMoved}`;
+			const content = `[full check ${fullChecks}/${MAX_FULL_CHECKS}] ${fullStatus || "passed."}${fullMoved}${WHOLE_ANSWER}`;
 			return { entries: [{ type: "custom_message" as const, customType: "full-check", content, display: true }], continue: true };
 		};
 		if (planOnly || changed.size === 0 || reviews >= MAX_REVIEWS) return movedOnly();
@@ -2201,7 +2212,7 @@ function parentSide(pi: ExtensionAPI) {
 			(fullMoved || fullStatus ? `[full check ${fullChecks}/${MAX_FULL_CHECKS}] ${fullStatus || "passed."}${fullMoved}\n` : "") +
 			(clean
 				? "No issues: finish your answer to the user."
-				: "Fix the real issues with a worker (scope = the affected files; read the report path for details) or tell the user why not, then finish.");
+				: "Fix the real issues with a worker (scope = the affected files; read the report path for details) or tell the user why not, then finish." + WHOLE_ANSWER);
 		return { entries: [{ type: "custom_message", customType: "auto-review", content, display: true }], continue: !clean || !!fullMoved || !!fullStatus };
 	});
 
@@ -2220,6 +2231,10 @@ function parentSide(pi: ExtensionAPI) {
 	let groundNudged = false;
 	let waitReminded = false;
 	const edited = new Set<string>();
+	// failed edits in a row per file: Flint used edit (old text = new text) to look at a file, then retried broken
+	// edits on it 50 times (psx-iso, 2026-10-27)
+	const editFails = new Map<string, number>();
+	const MAX_EDIT_FAILS = 3;
 	const nextStep = (tool: string, input: unknown, cwd: string) => {
 		const p = (input as { path?: string }).path;
 		const target = p ? ` in ${path.relative(cwd, path.resolve(cwd, p))}` : tool === "bash" ? ` (you tried: ${(input as { command?: string }).command?.slice(0, 80)})` : "";
@@ -2295,6 +2310,7 @@ function parentSide(pi: ExtensionAPI) {
 			// per user prompt only: a settle hook's continuation must not reset the caps (reviews, full checks) or it loops
 			spent = 0;
 			edited.clear();
+			editFails.clear();
 			changed.clear();
 			reviews = 0;
 			// `unverified` is kept: a full check removes the files it covered (its failure was reported), so a
@@ -2367,6 +2383,19 @@ function parentSide(pi: ExtensionAPI) {
 		}
 		if (event.toolName === "edit" || event.toolName === "write") {
 			const file = path.resolve(ctx.cwd, (event.input as { path: string }).path);
+			const input = event.input as { edits?: { oldText?: string; newText?: string }[]; oldText?: string; newText?: string };
+			const pairs = input.edits ?? (input.oldText !== undefined ? [input] : []);
+			if (event.toolName === "edit" && pairs.length && pairs.every((e) => e.oldText === e.newText)) {
+				return { block: true, reason: "This edit changes nothing (old text = new text). To look at a file, use read." };
+			}
+			if ((editFails.get(file) ?? 0) >= MAX_EDIT_FAILS) {
+				return {
+					block: true,
+					reason:
+						`Your last ${MAX_EDIT_FAILS} edits to ${path.relative(ctx.cwd, file)} failed: stop editing it in this prompt. ` +
+						"If an earlier edit broke it, say so to the user (they can restore it with git) and go on with the task.",
+				};
+			}
 			if (!edited.has(file) && edited.size >= PARENT_MAX_EDIT_FILES) {
 				return {
 					block: true,
@@ -2405,6 +2434,11 @@ function parentSide(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
+		if (event.toolName === "edit") {
+			const file = path.resolve(ctx.cwd, (event.input as { path?: string }).path ?? "");
+			const failed = (event as { isError?: boolean }).isError || /^(Could not find|No changes made)/.test(textOf(event.content as any));
+			editFails.set(file, failed ? (editFails.get(file) ?? 0) + 1 : 0);
+		}
 		let undoNote = "";
 		const entry = event.toolName === "bash" ? bashSnaps.get(event.toolCallId) : undefined;
 		if (entry) {

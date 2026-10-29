@@ -231,6 +231,23 @@ main session.
 
 Prompts: `/implement` (scout, planner, then one worker per plan step with that step's files as scope), `/scout-and-plan`, `/plan`, `/implement-and-review`.
 
+## Web: searxng on jupiter
+
+`extensions/web/` adds two tools:
+- `web_search`: the searxng JSON API at `https://jupiter.internal:8888` (override with `PI_SEARXNG_URL`).
+  It returns up to 8 results (max 15): title, URL and a snippet of about 300 chars, plus searxng answers and infoboxes.
+- `web_fetch`: one http(s) page as text. HTML loses scripts, styles and page chrome. Output comes 12 KB at a time,
+  and an `offset` continues from where the last call stopped.
+
+searxng is served by the homelab chart `openwebui-searxng` behind Traefik's `searxng` entrypoint, with TLS only.
+Plain `http://jupiter:8888` returns Traefik's 404. The certificate comes from step-ca, so requests also trust
+the system CA store (`tls.getCACertificates("system")`). Node's bundled list alone fails with
+`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`.
+
+The main session has the tools, and so do scout and planner (through their `tools:`); workers, reviewers and the
+looker do not. The caps are in the tools themselves, because the main session's output budget does not count them.
+If jupiter is down, the tools return a one-line error and the agent continues without the web.
+
 ## Code questions: `cq`
 
 `bin/cq` answers code questions from an index instead of reading files. The subagent extension puts `pi/bin` on

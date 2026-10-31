@@ -1,0 +1,844 @@
+#!/usr/bin/env python3
+"""library-md: turn a Calibre library into a Markdown copy for local RAG, sorted into topic folders, outdated books marked.
+
+  library-md [all|convert|classify|caption|place|status|skip] [--lib ~/MEGA/mainlib] [--out ~/llm/library-md]
+             [--ids 12,40] [--limit N] [--retry-failed] [--reclassify] [--model qwen3.6-35b-a3b]
+
+Stages (`all` runs them in order; each one is resumable, Ctrl-C and rerun picks up where it stopped):
+  convert   best format per book -> Markdown cache. EPUB/AZW3/MOBI/FB2/CHM: pandoc (via an ebook-convert EPUB
+            for non-EPUB), docling as fallback. PDF: docling-proxy, OCR only when the text layer is missing.
+            Figures are kept as cache files with a `<!-- figure:HASH -->` marker; small, vector and repeated images
+            (icons, logos) are dropped.
+  classify  local LLM (llama-swap) reads the Calibre metadata, headings and opening pages and returns the category,
+            topics, year and status current|outdated|timeless with a reason.
+  caption   a vision model (granite-vision-4.1) describes each kept figure, with the text around it as context;
+            decorative images are dropped. Captions are stored per image hash, so duplicates are described once.
+  place     writes OUT/<Category>/<Title - Author (Year)>[ [OUTDATED]].md with YAML front matter and the figure
+            descriptions in place, plus catalog.csv and README.md. Books deleted from Calibre lose their output file.
+The Calibre library is only read. State and the Markdown cache live in OUT/.library-md/ (keep it out of uploads).
+GPU: docling and the light caption model share the GPU, so in `all` a caption worker describes the figures of converted
+books while convert runs. It stops when convert ends, because qwen3.6 (classify) and granite-vision are in the same
+llama-swap group and would swap on every request; leftover figures are described after classify. Docling waits only
+for ComfyUI. Each LLM stage unloads its model when done, and only one library-md runs at once.
+Spec: docs/library-md.md.
+"""
+import argparse, base64, csv, datetime as dt, fcntl, hashlib, html, json, os, pathlib, re, shutil, signal, sqlite3, struct
+import subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+
+CATEGORIES = {  # folder name: what belongs there (shown to the LLM)
+    "Software Architecture": "system design, distributed systems, DDD, microservices, data mesh, integration, APIs",
+    "Software Engineering": "craft and practice: clean code, testing, refactoring, DevOps practice, release engineering, patterns",
+    "Programming Languages": "books about one language or its ecosystem (C, Go, Java, Rust, Python, ...)",
+    "Algorithms & Computer Science": "algorithms, data structures, theory, compilers, distributed algorithms",
+    "Infrastructure & Operations": "Kubernetes, cloud, networking, SRE, system administration, observability",
+    "Operating Systems": "OS internals, kernels, systems programming",
+    "Data & AI": "databases, data engineering, analytics, machine learning, AI",
+    "Security": "information security, cryptography, secure development",
+    "Game Development": "game design, engines, graphics, game programming",
+    "Electronics & Hardware": "electronics, embedded, signal processing, hardware",
+    "Engineering Management": "leading engineering teams, engineering org design, tech leadership, hiring engineers",
+    "Management & Leadership": "general management, leadership, strategy, organisations",
+    "Product Management": "product discovery, product strategy, agile product work",
+    "Finance & Accounting": "accounting, finance, fintech, banking, payments, investing",
+    "Business & Economics": "business, entrepreneurship, economics, marketing, sales",
+    "Negotiation & Communication": "negotiation, persuasion, communication, writing",
+    "Psychology & Personal Development": "psychology, self-help, productivity, habits, learning",
+    "Career": "interviews, career growth, job search",
+    "Science & Mathematics": "maths, physics and other sciences not covered above",
+    "Fiction & Literature": "novels, stories, literature",
+    "Other": "anything that fits none of the above",
+}
+STATUSES = ["current", "outdated", "timeless"]
+FORMAT_ORDER = ["EPUB", "AZW3", "AZW", "MOBI", "FB2", "CHM", "MD", "TXT", "PDF"]  # first available wins
+OCR_LANG = {"eng": "en", "rus": "ru", "deu": "de", "swe": "sv", "fra": "fr", "spa": "es"}
+STATE_COLS = ["id", "title", "src", "src_sig", "method", "conv_status", "conv_error", "task_id", "chars",
+              "cls_status", "cls_error", "cls_json", "cls_model", "final_path", "final_sig", "updated",
+              "conv_version", "figures", "cap_status"]
+CONV_VERSION = 2  # 2: figures kept for the caption stage
+FIGURE = re.compile(r"<!-- figure:([0-9a-f]{16}) -->")
+CAPTION_PROMPT = ("This picture is from the book \"{title}\". Text around it:\n<<<\n{context}\n>>>\n"
+                  "Describe the picture in 2-4 sentences for search: what kind of image it is (diagram, chart, table, "
+                  "screenshot, photo), its title and labels, and the key values, relations or takeaways. Start with the "
+                  "content, e.g. \"Architecture diagram: ...\"; do not mention the book or say \"The image is\". "
+                  "Do not repeat the surrounding text. If it carries no information (book cover, logo, decorative "
+                  "photo, ornament), answer only: DECORATIVE")
+
+ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+ap.add_argument("stage", nargs="?", default="all", choices=["all", "convert", "classify", "caption", "place", "status", "skip"])
+ap.add_argument("--lib", default="~/MEGA/mainlib")
+ap.add_argument("--out", default="~/llm/library-md")
+ap.add_argument("--ids", help="comma-separated Calibre book ids (default: all)")
+ap.add_argument("--limit", type=int, help="process at most N pending books per stage")
+ap.add_argument("--retry-failed", action="store_true", help="retry books whose convert or classify failed")
+ap.add_argument("--reclassify", action="store_true", help="classify again even if done")
+ap.add_argument("--docling", default="http://localhost:8000")
+ap.add_argument("--llm", default="http://localhost:11434")
+ap.add_argument("--model", default="qwen3.6-35b-a3b")
+ap.add_argument("--thinking", action="store_true", help="let the model reason before answering (slower, better outdated calls)")
+ap.add_argument("--epub-engine", default="pandoc", choices=["pandoc", "docling"],
+                help="pandoc keeps code blocks; docling 2.138 joins them into one line")
+ap.add_argument("--min-text", type=int, default=200, help="PDF chars per page below which the text layer counts as missing")
+ap.add_argument("--pdf-timeout", type=int, default=6 * 3600, help="seconds per PDF in docling")
+ap.add_argument("--no-gpu-wait", action="store_true", help="start docling even if a chat model or ComfyUI holds the GPU")
+ap.add_argument("--caption-model", default="granite-vision-4.1")
+ap.add_argument("--caption-skip", default="Fiction & Literature", help="comma-separated categories whose figures are not described")
+ap.add_argument("--figure-min-area", type=int, default=40000, help="pixels (w*h) below which an image is dropped as an icon")
+a = ap.parse_args()
+
+LIB = pathlib.Path(a.lib).expanduser()
+OUT = pathlib.Path(a.out).expanduser()
+WORK = OUT / ".library-md"
+CACHE = WORK / "cache"
+TODAY = dt.date.today().isoformat()
+
+
+def log(msg):
+    print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
+
+
+def write_atomic(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+# ---------- Calibre (read-only) ----------
+
+def calibre_books():
+    con = sqlite3.connect(f"file:{LIB / 'metadata.db'}?mode=ro", uri=True)
+    q = lambda sql: con.execute(sql).fetchall()
+    books = {}
+    for bid, title, path, pubdate in q("select id, title, path, pubdate from books"):
+        year = int(pubdate[:4]) if pubdate and pubdate[:4].isdigit() and int(pubdate[:4]) >= 1800 else None
+        books[bid] = dict(id=bid, title=title, path=path, year=year, authors=[], tags=[], langs=[], formats={},
+                          publisher=None, isbn=None, comments=None)
+    for bid, name in q("select l.book, a.name from books_authors_link l join authors a on a.id = l.author order by l.id"):
+        books[bid]["authors"].append(name.replace("|", ","))  # Calibre stores commas in names as |
+    for bid, name in q("select l.book, t.name from books_tags_link l join tags t on t.id = l.tag"):
+        books[bid]["tags"].append(name)
+    for bid, code in q("select l.book, g.lang_code from books_languages_link l join languages g on g.id = l.lang_code order by l.item_order"):
+        books[bid]["langs"].append(code)
+    for bid, name in q("select l.book, p.name from books_publishers_link l join publishers p on p.id = l.publisher"):
+        books[bid]["publisher"] = name
+    for bid, val in q("select book, val from identifiers where type = 'isbn'"):
+        books[bid]["isbn"] = val
+    for bid, text in q("select book, text from comments"):
+        books[bid]["comments"] = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text or ""))).strip()
+    for bid, fmt, name in q("select book, format, name from data"):
+        books[bid]["formats"][fmt.upper()] = LIB / books[bid]["path"] / f"{name}.{fmt.lower()}"
+    con.close()
+    return books
+
+
+def pick_source(book):
+    for fmt in FORMAT_ORDER:
+        p = book["formats"].get(fmt)
+        if p and p.exists():
+            return fmt, p
+    return None, None
+
+
+# ---------- state ----------
+
+def state_db():
+    WORK.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(WORK / "state.db", timeout=60)  # the caption worker writes from its own thread
+    con.row_factory = sqlite3.Row
+    con.execute(f"create table if not exists books ({', '.join(c + (' integer primary key' if c == 'id' else '') for c in STATE_COLS)})")
+    have = {r[1] for r in con.execute("pragma table_info(books)")}
+    for c in STATE_COLS:
+        if c not in have:  # state from an older version of this script
+            con.execute(f"alter table books add column {c}")
+    con.execute("create table if not exists captions (hash text primary key, caption text, error text, model text, updated text)")
+    return con
+
+
+def save(con, bid, **kw):
+    kw["updated"] = dt.datetime.now().isoformat(timespec="seconds")
+    con.execute("insert or ignore into books (id) values (?)", (bid,))
+    con.execute(f"update books set {', '.join(k + ' = ?' for k in kw)} where id = ?", (*kw.values(), bid))
+    con.commit()
+
+
+def row(con, bid):
+    r = con.execute("select * from books where id = ?", (bid,)).fetchone()
+    return dict(r) if r else {}
+
+
+# ---------- GPU etiquette (one GPU user at a time) ----------
+
+def gpu_users():
+    """docling may run next to llama-swap models (user, 2026-10-30), but not next to ComfyUI."""
+    ps = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True).stdout.split()
+    return [n for n in ps if "comfy" in n.lower()]
+
+
+def wait_for_gpu():
+    if a.no_gpu_wait:
+        return
+    told = False
+    while users := gpu_users():
+        if not told:
+            log(f"waiting for the GPU (in use by {', '.join(users)}); stop ComfyUI or use --no-gpu-wait")
+            told = True
+        time.sleep(30)
+
+
+# ---------- conversion ----------
+
+IMAGE_REF = re.compile(r"!\[[^\]]*\]\(\s*<?(data:image/[\w.+-]+;base64,[A-Za-z0-9+/=\s]+|[^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+
+
+def image_size(data):
+    """(ext, width, height) for the formats the vision model reads, else None."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        return ("png", *struct.unpack(">II", data[16:24]))
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ("gif", *struct.unpack("<HH", data[6:10]))
+    if data[:2] == b"BM" and len(data) >= 26:
+        w, h = struct.unpack("<ii", data[18:26])
+        return ("bmp", w, abs(h))
+    if data[:2] == b"\xff\xd8":
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            if marker in (0xD8, 0x01, 0xFF) or 0xD0 <= marker <= 0xD7:
+                i += 1 if marker == 0xFF else 2
+                continue
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                return ("jpg", w, h)
+            i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+    return None
+
+
+def keep_figures(bid, md, base=None):
+    """Replace image refs (data URIs or files under base) by figure markers; save the kept images to CACHE/<bid>/."""
+    out = CACHE / str(bid)
+    shutil.rmtree(out, ignore_errors=True)
+    found = []
+    for m in IMAGE_REF.finditer(md):
+        ref, data = m.group(1), None
+        try:
+            if ref.startswith("data:"):
+                data = base64.b64decode(re.sub(r"\s", "", ref.split(",", 1)[1]))
+            elif base:
+                p = (base / urllib.parse.unquote(ref)).resolve()
+                data = p.read_bytes() if p.is_relative_to(base.resolve()) and p.is_file() else None
+        except (ValueError, OSError):
+            pass
+        found.append((m, data, hashlib.sha256(data).hexdigest()[:16] if data else None))
+    counts = {}
+    for _, _, h in found:
+        counts[h] = counts.get(h, 0) + 1
+    parts, last, kept = [], 0, 0
+    for m, data, h in found:
+        size = image_size(data) if data else None
+        keep = size and size[1] >= 64 and size[2] >= 64 and size[1] * size[2] >= a.figure_min_area and counts[h] < 3
+        parts.append(md[last:m.start()])
+        if keep:
+            path = out / f"{h}.{size[0]}"
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                kept += 1
+            parts.append(f"\n\n<!-- figure:{h} -->\n\n")
+        last = m.end()
+    parts.append(md[last:])
+    return "".join(parts), kept
+
+
+def clean_md(text):
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)  # image refs left over (dropped images)
+    text = text.replace("<!-- image -->", "").replace("<!-- formula-not-decoded -->", "[formula]")
+    text = re.sub(r"&(amp|lt|gt|quot);", lambda m: html.unescape(m.group(0)), text)  # docling escapes these in plain text
+    text = re.sub(r"\[([^\]]+)\]\((?:#|[^)\s]*\.x?html?)[^)]*\)", r"\1", text)  # links into the book's own files
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip() + "\n"
+
+
+def run(cmd, timeout=900):
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if p.returncode:
+        raise RuntimeError(f"{cmd[0]} exit {p.returncode}: {(p.stderr or p.stdout).strip()[-400:]}")
+    return p.stdout
+
+
+def multipart(fields, path, filename):
+    boundary = uuid.uuid4().hex
+    body = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields)
+    body += (f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="{filename}"\r\n'
+             f"Content-Type: application/octet-stream\r\n\r\n").encode() + path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
+def http_json(url, data=None, ctype=None, timeout=120):
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": ctype} if ctype else {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def docling(con, bid, path, ocr, langs, timeout):
+    """Convert one file through docling-proxy's async API. The task id is saved, so a rerun resumes polling it."""
+    task = row(con, bid).get("task_id")
+    if task:
+        try:
+            http_json(f"{a.docling}/v1/status/poll/{task}")
+        except urllib.error.HTTPError:
+            task = None  # proxy no longer knows it: submit again
+    if not task:
+        wait_for_gpu()
+        fields = [("to_formats", "md"), ("image_export_mode", "embedded"), ("do_picture_description", "false"),
+                  ("do_table_structure", "true"), ("table_mode", "accurate"), ("pdf_backend", "dlparse_v4"),
+                  ("do_ocr", str(ocr).lower()), ("force_ocr", str(ocr).lower()), ("ocr_engine", "easyocr")]
+        fields += [("ocr_lang", OCR_LANG.get(l, "en")) for l in (langs or ["eng"])]
+        body, ctype = multipart(fields, path, f"book-{bid}{path.suffix.lower()}")
+        task = http_json(f"{a.docling}/v1/convert/file/async", body, ctype, timeout=600)["task_id"]
+        save(con, bid, task_id=task)
+    start = time.time()
+    while True:
+        st = http_json(f"{a.docling}/v1/status/poll/{task}")
+        if st["task_status"] == "success":
+            break
+        if st["task_status"] == "failure":
+            save(con, bid, task_id=None)
+            raise RuntimeError(f"docling: {st.get('error_message') or 'failure'}")
+        if time.time() - start > timeout:
+            raise RuntimeError(f"docling: no result after {timeout} s (task {task} left running, rerun resumes it)")
+        time.sleep(5)
+    res = http_json(f"{a.docling}/v1/result/{task}", timeout=600)
+    save(con, bid, task_id=None)
+    if res.get("status") not in ("success", "partial_success"):
+        raise RuntimeError(f"docling: {res.get('status')} {res.get('errors')}")
+    return res["document"]["md_content"] or ""
+
+
+def pdf_info(path):
+    pages = int(re.search(r"^Pages:\s+(\d+)", run(["pdfinfo", str(path)], 60), re.M).group(1))
+    first = max(1, pages // 3)  # sample the middle: covers and front matter are often images
+    last = min(pages, first + 19)
+    text = run(["pdftotext", "-q", "-f", str(first), "-l", str(last), str(path), "-"], 300)
+    return pages, len(re.sub(r"\s", "", text)) / (last - first + 1)
+
+
+def convert_book(con, book, fmt, path):
+    """Returns (method, markdown with figure markers, figures kept)."""
+    if fmt in ("MD", "TXT"):
+        return "copy", path.read_text(encoding="utf-8", errors="replace"), 0
+    if fmt == "PDF":
+        pages, density = pdf_info(path)
+        ocr = density < a.min_text
+        md = docling(con, book["id"], path, ocr, book["langs"], a.pdf_timeout)
+        if not ocr and len(IMAGE_REF.sub("", md)) / pages < a.min_text / 4:  # text layer present but docling got little out of it
+            log(f"  #{book['id']} little text without OCR ({len(md)} chars / {pages} pages), retrying with OCR")
+            return "docling-pdf-ocr", *keep_figures(book["id"], docling(con, book["id"], path, True, book["langs"], a.pdf_timeout))
+        return ("docling-pdf-ocr" if ocr else "docling-pdf"), *keep_figures(book["id"], md)
+    with tempfile.TemporaryDirectory(prefix="library-md-") as tmp:
+        epub = path
+        if fmt != "EPUB":
+            epub = pathlib.Path(tmp) / "book.epub"
+            run(["ebook-convert", str(path), str(epub)], 1800)
+        errors = []
+        engines = ["pandoc", "docling"] if a.epub_engine == "pandoc" else ["docling", "pandoc"]
+        for engine in engines:
+            try:
+                if engine == "pandoc":  # media land in tmp/media, refs are paths below tmp
+                    md = run(["pandoc", "-f", "epub", "-t", "gfm-raw_html", "--wrap=none", f"--extract-media={tmp}/media",
+                              str(epub)], 900)
+                else:
+                    md = docling(con, book["id"], epub, False, book["langs"], 3600)
+                if len(IMAGE_REF.sub("", md).strip()) >= 1000:
+                    return f"{engine}-{fmt.lower()}", *keep_figures(book["id"], md, pathlib.Path(tmp))
+                errors.append(f"{engine}: only {len(md.strip())} chars")
+            except (RuntimeError, OSError, subprocess.TimeoutExpired, urllib.error.URLError, KeyError) as e:
+                errors.append(f"{engine}: {e}")
+        raise RuntimeError("; ".join(errors))
+
+
+def stage_convert(con, books, ids):
+    todo = []
+    for bid in ids:
+        fmt, path = pick_source(books[bid])
+        r = row(con, bid)
+        if r.get("conv_status") == "skipped":  # `library-md skip --ids N`
+            continue
+        if not fmt:
+            if r.get("conv_status") != "nosource":
+                save(con, bid, title=books[bid]["title"], conv_status="nosource", conv_error="no readable format on disk")
+            continue
+        st = path.stat()
+        sig = f"{fmt}:{st.st_size}:{int(st.st_mtime)}"
+        cached = r.get("conv_status") == "done" and (CACHE / f"{bid}.md").exists()
+        if r.get("src_sig") == sig and (cached and (r.get("conv_version") or 1) >= CONV_VERSION
+                                        or r.get("conv_status") == "failed" and not a.retry_failed):
+            continue
+        if r.get("src_sig") == sig and cached and fmt == "PDF" and r.get("figures") != -1:
+            if len(run(["pdfimages", "-list", str(path)], 300).splitlines()) <= 2:
+                save(con, bid, conv_version=CONV_VERSION, figures=0)  # older conversion, but there are no images to keep
+                continue
+            save(con, bid, figures=-1)  # has images: re-convert, and don't scan it again on the next start
+        todo.append((r.get("src_sig") == sig and cached, bid, fmt, path, sig))
+    todo = [t[1:] for t in sorted(todo, key=lambda t: t[0])]  # never-converted books first, then older conversions
+    todo = todo[: a.limit] if a.limit else todo
+    log(f"convert: {len(todo)} pending")
+    for n, (bid, fmt, path, sig) in enumerate(todo, 1):
+        book, t0 = books[bid], time.time()
+        log(f"[{n}/{len(todo)}] #{bid} {fmt} {book['title'][:70]}")
+        try:
+            method, md, figures = convert_book(con, book, fmt, path)
+            md = clean_md(md)
+            if len(FIGURE.sub("", md)) < 1000:
+                raise RuntimeError(f"only {len(md)} chars extracted (image-only book?)")
+            write_atomic(CACHE / f"{bid}.md", md)
+            reset = {} if row(con, bid).get("src_sig") == sig else {"cls_status": None}  # new content: classify again
+            save(con, bid, title=book["title"], src=str(path.relative_to(LIB)), src_sig=sig, method=method,
+                 conv_status="done", conv_error=None, chars=len(md), conv_version=CONV_VERSION, figures=figures,
+                 cap_status=None, **reset)
+            log(f"  done: {method}, {len(md):,} chars, {figures} figures, {time.time() - t0:.0f} s")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired, urllib.error.URLError, KeyError, AttributeError) as e:
+            save(con, bid, title=book["title"], src=str(path.relative_to(LIB)), src_sig=sig, conv_status="failed", conv_error=str(e)[:1000])
+            log(f"  FAILED: {e}")
+
+
+# ---------- classification ----------
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": ["string", "null"]},
+        "author": {"type": ["string", "null"]},
+        "category": {"type": "string", "enum": list(CATEGORIES)},
+        "subcategory": {"type": "string"},
+        "topics": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+        "year": {"type": ["integer", "null"]},
+        "edition": {"type": ["string", "null"]},
+        "depends_on": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+        "status": {"type": "string", "enum": STATUSES},
+        "status_reason": {"type": "string"},
+        "summary": {"type": "string"},
+    },
+    "required": ["title", "author", "category", "subcategory", "topics", "year", "edition", "depends_on", "status", "status_reason", "summary"],
+}
+
+SYSTEM = f"""You catalogue a personal technical and business library for a retrieval system. Today is {TODAY}.
+Answer with JSON only.
+
+title, author: the real title and first author's name from the text, only when the Calibre title or author is a file
+name, a placeholder or junk (e.g. "Microsoft Word - LONG.DOC", "226B-Project+1.pdf", "Unknown", "z"); otherwise null.
+category: exactly one of these folders:
+{chr(10).join(f"- {k}: {v}" for k, v in CATEGORIES.items())}
+subcategory: a short topic label inside the category (e.g. "Kubernetes", "Negotiation tactics", "C").
+topics: 3-8 short keywords.
+year: publication year of this edition, from the copyright page if visible, else the metadata; null if unknown.
+edition: e.g. "2nd edition", null if not stated.
+depends_on: the specific products, tools, platforms, API or language versions, laws or standards the practical
+advice relies on, with versions where visible (e.g. "Kubernetes extensions/v1beta1", "Java 6", "IFRS 9"); [] if none.
+status, judged against today's date and depends_on:
+- outdated: the book's practical value depends on specific versions, APIs, tools, products, platforms, laws,
+  regulations, prices or market facts that have since been superseded, so following it today would mislead
+  (e.g. Java 6, AngularJS 1.x, Kubernetes extensions/v1beta1, Windows XP administration, pre-GDPR data law,
+  Python 2). A newer edition existing also makes it outdated.
+- timeless: principles, theory, maths, algorithms, psychology, negotiation, management, history, fiction:
+  age does not reduce its value.
+- current: tied to technologies or rules that are still in use as described.
+- A book centred on a fast-moving technology (frameworks, cloud, containers, a language's tooling or version,
+  a product) and published more than about 4 years ago is outdated unless the evidence shows its specifics still hold;
+  say what changed. "The concepts still apply" is not enough to call such a book current.
+Judge the content, not the age alone: an old book on enduring ideas is timeless, a recent book on a dead tool is outdated.
+status_reason: one sentence naming what is superseded, or why it still holds.
+summary: 2-3 sentences on what the book covers."""
+
+
+JUNK_TITLE = re.compile(r"\.(pdf|docx?|txt|epub|djvu)$|^Microsoft Word|^untitled|^[\w+-]*\d[\w+-]*$", re.I)
+JUNK_AUTHOR = re.compile(r"^(unknown|admin|administrator|user|owner|.)$", re.I)
+VERSIONY = re.compile(r"\b(v\d+(beta|alpha)\d*|version \d|\d+\.\d+(\.\d+)?\b|apiVersion|deprecated|Python [23]|Java \d|\.NET \d|ES\d|C\+\+\d\d)", re.I)
+
+
+def junk_author(book):
+    return not book["authors"] or all(JUNK_AUTHOR.match(x.strip()) for x in book["authors"])
+
+
+def version_lines(md, n=40):
+    """Lines that name versions or APIs, spread over the whole book: the opening pages rarely show them."""
+    hits = [l.strip()[:160] for l in md.splitlines() if VERSIONY.search(l) and len(l.strip()) > 8]
+    step = max(1, len(hits) // n)
+    return list(dict.fromkeys(hits[::step]))[:n]
+
+
+def classify_prompt(book, md):
+    headings = []
+    for line in md.splitlines():
+        if line.startswith("#") and len(headings) < 80:
+            h = line.lstrip("#").strip()[:90]
+            if h and h not in headings:
+                headings.append(h)
+    junk = [w for w, bad in (("title", JUNK_TITLE.search(book["title"].strip())), ("author", junk_author(book))) if bad]
+    meta = [f"Title: {book['title']}", f"Authors: {', '.join(book['authors']) or 'unknown'}",
+            f"Publisher: {book['publisher'] or 'unknown'}", f"Calibre publication year: {book['year'] or 'unknown'}",
+            f"ISBN: {book['isbn'] or 'unknown'}", f"Language: {', '.join(book['langs']) or 'unknown'}",
+            f"Calibre tags (lib:* tags are the owner's own topic tags and good hints): {', '.join(book['tags']) or 'none'}",
+            f"Description: {(book['comments'] or 'none')[:1500]}"]
+    if junk:
+        meta.append(f"The Calibre {' and '.join(junk)} look like junk: give the real {' and '.join(junk)} from the text.")
+    return ("\n".join(meta) + "\n\nHeadings:\n" + "\n".join(f"- {h}" for h in headings)
+            + "\n\nLines mentioning versions or APIs (sampled across the book):\n" + "\n".join(f"- {l}" for l in version_lines(md))
+            + "\n\nOpening pages:\n<<<\n" + md[:7000] + "\n>>>")
+
+
+def llm_classify(prompt):
+    body = {"model": a.model, "temperature": 0.6 if a.thinking else 0.7, "top_p": 0.95 if a.thinking else 0.8,
+            "max_tokens": 8000 if a.thinking else 1000, "chat_template_kwargs": {"enable_thinking": a.thinking},
+            "response_format": {"type": "json_schema", "json_schema": {"name": "book", "schema": SCHEMA, "strict": True}},
+            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]}
+    res = http_json(f"{a.llm}/v1/chat/completions", json.dumps(body).encode(), "application/json", timeout=1800)
+    out = json.loads(res["choices"][0]["message"]["content"])
+    if out.get("category") not in CATEGORIES or out.get("status") not in STATUSES:
+        raise ValueError(f"bad answer: {out}")
+    return out
+
+
+def wait_for_docling(con):
+    """A timed-out PDF leaves its docling task running; the LLM must not start until it ends."""
+    for r in con.execute("select id, task_id from books where task_id is not null").fetchall():
+        told = False
+        while True:
+            try:
+                if http_json(f"{a.docling}/v1/status/poll/{r['task_id']}")["task_status"] in ("success", "failure"):
+                    break
+            except urllib.error.HTTPError:
+                break  # proxy no longer knows the task
+            if not told:
+                log(f"waiting for docling task of #{r['id']} to finish before using the LLM")
+                told = True
+            time.sleep(15)
+
+
+def stage_classify(con, books, ids):
+    wait_for_docling(con)
+    todo = []
+    for bid in ids:
+        r = row(con, bid)
+        if r.get("conv_status") != "done":
+            continue
+        if r.get("cls_status") == "done" and not a.reclassify or r.get("cls_status") == "failed" and not (a.retry_failed or a.reclassify):
+            continue
+        todo.append(bid)
+    todo = todo[: a.limit] if a.limit else todo
+    log(f"classify: {len(todo)} pending (model {a.model})")
+    for n, bid in enumerate(todo, 1):
+        book, t0 = books[bid], time.time()
+        prompt = classify_prompt(book, (CACHE / f"{bid}.md").read_text(encoding="utf-8"))
+        for attempt in (1, 2):
+            try:
+                out = llm_classify(prompt)
+                save(con, bid, cls_status="done", cls_error=None, cls_json=json.dumps(out), cls_model=a.model)
+                log(f"[{n}/{len(todo)}] #{bid} {out['category']} / {out['status']} ({out.get('year')}) "
+                    f"{book['title'][:60]}  {time.time() - t0:.0f} s")
+                break
+            except (ValueError, KeyError, urllib.error.URLError, OSError) as e:
+                if attempt == 2:
+                    save(con, bid, cls_status="failed", cls_error=str(e)[:1000])
+                    log(f"[{n}/{len(todo)}] #{bid} FAILED: {e}")
+    if todo:
+        unload(a.model)
+
+
+def unload(model):
+    """Hand the GPU back so a later docling run need not wait for the model's ttl; aux models stay loaded."""
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"{a.llm}/api/models/unload/{model}", method="POST"), timeout=120).close()
+        log(f"unloaded {model}")
+    except (urllib.error.URLError, OSError) as e:
+        log(f"could not unload {model}: {e}")
+
+
+# ---------- figure captions ----------
+
+def figure_context(md, pos, before=500, after=300):
+    text = lambda s: re.sub(r"\s+", " ", FIGURE.sub(" ", s)).strip()
+    return text(md[max(0, pos - before):pos])[-before:] + " [PICTURE] " + text(md[pos:pos + after])[:after]
+
+
+def caption(book, path, context):
+    prompt = CAPTION_PROMPT.format(title=book["title"], context=context)
+    url = f"data:image/{path.suffix[1:].replace('jpg', 'jpeg')};base64,{base64.b64encode(path.read_bytes()).decode()}"
+    body = {"model": a.caption_model, "temperature": 0, "max_tokens": 300,
+            "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}},
+                                                      {"type": "text", "text": prompt}]}]}
+    res = http_json(f"{a.llm}/v1/chat/completions", json.dumps(body).encode(), "application/json", timeout=600)
+    text = re.sub(r"\s+", " ", res["choices"][0]["message"]["content"] or "").strip()
+    # granite-vision-4.1 ignores "don't say 'The image is'" and rarely answers DECORATIVE: fix both here
+    text = re.sub(r"^(the|this) (image|picture|figure) (is|shows|depicts|displays) (an? )?", "", text, flags=re.I)
+    if re.match(r"(book )?(cover|logo)\b", text, re.I):
+        return "DECORATIVE"
+    return text[:1].upper() + text[1:]
+
+
+def caption_pending(con, ids):
+    skip = {c.strip() for c in a.caption_skip.split(",") if c.strip()}
+    todo = []
+    for bid in ids:
+        r = row(con, bid)
+        if r.get("conv_status") != "done" or (r.get("conv_version") or 1) < CONV_VERSION:
+            continue
+        category = json.loads(r["cls_json"])["category"] if r.get("cls_status") == "done" else None
+        if category in skip or not r.get("figures"):
+            if r.get("cap_status") != "skipped":
+                save(con, bid, cap_status="skipped")
+            continue
+        if r["figures"] < 0 or r.get("cap_status") in ("done", "skipped") and not a.retry_failed:
+            continue
+        todo.append(bid)
+    return todo[: a.limit] if a.limit else todo
+
+
+def stage_caption(con, books, ids, stop=None, tag="caption"):
+    """Describe the figures of converted books. With `stop` (a threading.Event) this is the worker that runs next to
+    convert: it keeps looking for newly converted books and returns once stop is set, after the current figure."""
+    known = {h for (h,) in con.execute("select hash from captions where caption is not null" if a.retry_failed else "select hash from captions")}
+    described = 0
+    while True:
+        todo = caption_pending(con, ids)
+        log(f"{tag}: {len(todo)} books pending (model {a.caption_model})")
+        for n, bid in enumerate(todo, 1):
+            book, t0 = books[bid], time.time()
+            md = (CACHE / f"{bid}.md").read_text(encoding="utf-8")
+            figs = [(m.group(1), m.start()) for m in FIGURE.finditer(md)]
+            new = [(h, pos) for h, pos in dict(reversed(figs)).items() if h not in known]  # first occurrence of each hash
+            log(f"{tag} [{n}/{len(todo)}] #{bid} {len(new)} of {len(figs)} figures to describe: {book['title'][:60]}")
+            for h, pos in new:
+                if stop and stop.is_set():
+                    break
+                path = next((CACHE / str(bid)).glob(f"{h}.*"), None)
+                if not path:
+                    continue
+                cap, err = None, None
+                for attempt in (1, 2):
+                    try:
+                        cap, err = caption(book, path, figure_context(md, pos)), None
+                        break
+                    except (KeyError, ValueError, urllib.error.URLError, OSError) as e:
+                        err = str(e)[:500]
+                con.execute("insert or replace into captions values (?, ?, ?, ?, ?)",
+                            (h, cap, err, a.caption_model, dt.datetime.now().isoformat(timespec="seconds")))
+                con.commit()
+                known.add(h)
+                described += 1
+            else:
+                save(con, bid, cap_status="done")
+                log(f"{tag}   done #{bid}: {len(new)} described, {time.time() - t0:.0f} s")
+                stage_place(con, books, [bid])  # the book's output gets its figures now, not after the whole stage
+                continue
+            break  # stopped mid-book: its described figures are kept, the rest waits for the next run
+        if not stop or stop.is_set():
+            break
+        stop.wait(30)  # worker: look again for newly converted books
+    if described:
+        unload(a.caption_model)
+
+
+def figure_captions(con, md):
+    hashes = sorted(set(FIGURE.findall(md)))
+    rows = con.execute(f"select hash, caption from captions where hash in ({','.join('?' * len(hashes))})", hashes).fetchall() if hashes else []
+    return {h: c for h, c in rows if c and not c.upper().startswith("DECORATIVE")}
+
+
+# ---------- placement ----------
+
+def safe(s, n):
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", s)
+    return re.sub(r"\s+", " ", s).strip(" .")[:n].strip()
+
+
+def render(book, r, c, md, caps):
+    year = c.get("year") or book["year"]
+    fm = {"title": c.get("title") or book["title"], "authors": [c["author"]] if c.get("author") else book["authors"],
+          "calibre_title": book["title"], "year": year, "edition": c.get("edition"),
+          "publisher": book["publisher"], "isbn": book["isbn"], "language": book["langs"],
+          "category": c["category"], "subcategory": c["subcategory"], "topics": c["topics"],
+          "depends_on": c.get("depends_on", []), "status": c["status"], "status_reason": c["status_reason"], "summary": c["summary"],
+          "calibre_id": book["id"], "calibre_tags": book["tags"], "source": r["src"], "conversion": r["method"],
+          "classified_by": r["cls_model"], "figures_described": len(caps),
+          "figures_described_by": a.caption_model if caps else None, "generated": TODAY}
+    head = "---\n" + "".join(f"{k}: {json.dumps(v, ensure_ascii=False)}\n" for k, v in fm.items()) + "---\n\n"  # JSON scalars are valid YAML
+    if c["status"] == "outdated":
+        head += f"> **Outdated** ({year or 'year unknown'}, judged {TODAY}): {c['status_reason']}\n\n"
+    seen = set()
+
+    def figure(m):  # each picture is described once, at its first position
+        h = m.group(1)
+        if h in seen or h not in caps:
+            return ""
+        seen.add(h)
+        return f"> **Figure:** {caps[h]}"
+    body = FIGURE.sub(figure, md)
+    return head + re.sub(r"\n{3,}", "\n\n", body)
+
+
+def stage_place(con, books, ids):
+    taken = {r["final_path"]: r["id"] for r in con.execute("select id, final_path from books where final_path is not null")}
+    written = 0
+    for bid in ids:
+        r = row(con, bid)
+        if r.get("conv_status") != "done" or r.get("cls_status") != "done":
+            continue
+        book, c = books[bid], json.loads(r["cls_json"])
+        year = c.get("year") or book["year"]
+        author = c.get("author") or ("" if junk_author(book) else book["authors"][0].split(",")[0])
+        name = safe(f"{c.get('title') or book['title']}" + (f" - {author}" if author else "") + (f" ({year})" if year else ""), 150)
+        name += " [OUTDATED]" if c["status"] == "outdated" else ""
+        rel = f"{c['category']}/{name}.md"
+        if taken.get(rel, bid) != bid:
+            rel = f"{c['category']}/{name} #{bid}.md"
+        md = (CACHE / f"{bid}.md").read_text(encoding="utf-8")
+        caps = figure_captions(con, md)
+        sig = hashlib.sha256(json.dumps([book, r["src_sig"], r["cls_json"], r["method"], r["chars"], caps],
+                                        default=str).encode()).hexdigest()[:16]
+        if r.get("final_path") == rel and r.get("final_sig") == sig and (OUT / rel).exists():
+            continue
+        write_atomic(OUT / rel, render(book, r, c, md, caps))
+        if r.get("final_path") and r["final_path"] != rel:
+            (OUT / r["final_path"]).unlink(missing_ok=True)
+            taken.pop(r["final_path"], None)
+        taken[rel] = bid
+        save(con, bid, final_path=rel, final_sig=sig)
+        written += 1
+    gone = [r for r in con.execute("select id, final_path from books") if r["id"] not in books]
+    for r in gone:  # book removed from Calibre, placed or not
+        if r["final_path"]:
+            (OUT / r["final_path"]).unlink(missing_ok=True)
+        con.execute("delete from books where id = ?", (r["id"],))
+        log(f"removed #{r['id']} {r['final_path'] or '(not placed)'} (no longer in Calibre)")
+    con.commit()
+    for d in OUT.iterdir():
+        if d.is_dir() and not d.name.startswith(".") and not any(d.iterdir()):
+            d.rmdir()
+    write_catalog(con, books)
+    log(f"place: {written} written, {len(gone)} removed")
+
+
+def write_catalog(con, books):
+    rows = []
+    for r in con.execute("select * from books where final_path is not null order by final_path"):
+        c, b = json.loads(r["cls_json"]), books.get(r["id"])
+        if b:
+            rows.append(dict(category=c["category"], subcategory=c["subcategory"], status=c["status"],
+                             year=c.get("year") or b["year"], title=c.get("title") or b["title"],
+                             authors=c.get("author") or "; ".join(b["authors"]),
+                             path=r["final_path"], calibre_id=r["id"], conversion=r["method"], reason=c["status_reason"]))
+    tmp = OUT / "catalog.csv.tmp"
+    with open(tmp, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["category"])
+        w.writeheader()
+        w.writerows(rows)
+    os.replace(tmp, OUT / "catalog.csv")
+    md = [f"# Library catalog\n\nGenerated {TODAY} by library-md from the Calibre library. {len(rows)} books.\n",
+          "| Category | Books | Outdated |", "|---|---|---|"]
+    for cat in CATEGORIES:
+        n = [x for x in rows if x["category"] == cat]
+        if n:
+            md.append(f"| {cat} | {len(n)} | {sum(x['status'] == 'outdated' for x in n)} |")
+    for cat in CATEGORIES:
+        n = [x for x in rows if x["category"] == cat]
+        if n:
+            md.append(f"\n## {cat}\n")
+            md += [f"- {x['title']} - {x['authors']} ({x['year'] or '?'}), {x['subcategory']}"
+                   + (f" **[outdated: {x['reason']}]**" if x["status"] == "outdated" else "") for x in n]
+    failed = con.execute("select id, title, conv_status, conv_error from books where conv_status in ('failed', 'nosource', 'skipped')").fetchall()
+    if failed:
+        md.append("\n## Not converted\n")
+        md += [f"- #{f['id']} {f['title']}: {f['conv_status']}, {(f['conv_error'] or '')[:200]}" for f in failed]
+    write_atomic(OUT / "README.md", "\n".join(md) + "\n")
+
+
+def stage_status(con):
+    q = lambda sql: con.execute(sql).fetchall()
+    total = len(calibre_books())
+    conv = q("select count(*) from books where conv_status in ('done', 'failed', 'nosource')")[0][0]
+    cls = q("select count(*) from books where cls_status in ('done', 'failed')")[0][0]
+    done = q("select count(*) from books where conv_status = 'done'")[0][0]
+    try:
+        with open(WORK / "lock", "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        running = "no"
+    except BlockingIOError:
+        running = "yes"
+    print(f"library: {total} books, run active: {running}, log: {WORK / 'run.log'}")
+    print(f"progress: convert stage {conv}/{total} books handled ({100 * conv // max(total, 1)}%), {done} converted; classified {cls}/{done}")
+    print("convert: ", ", ".join(f"{s or 'pending'} {n}" for s, n in q("select conv_status, count(*) from books group by 1")))
+    print("method:  ", ", ".join(f"{s} {n}" for s, n in q("select method, count(*) from books where conv_status = 'done' group by 1")))
+    print("classify:", ", ".join(f"{s or 'pending'} {n}" for s, n in q("select cls_status, count(*) from books where conv_status = 'done' group by 1")))
+    print("status:  ", ", ".join(f"{s} {n}" for s, n in q("select json_extract(cls_json, '$.status'), count(*) from books where cls_status = 'done' group by 1")))
+    kept, described, decorative, failed = q("select (select coalesce(sum(figures), 0) from books), "
+        "(select count(*) from captions where caption is not null), "
+        "(select count(*) from captions where upper(caption) like 'DECORATIVE%'), "
+        "(select count(*) from captions where caption is null)")[0]
+    print("figures: ", f"kept {kept}, described {described} images ({decorative} decorative, {failed} failed); books: "
+          + ", ".join(f"{s or 'pending'} {n}" for s, n in q("select cap_status, count(*) from books where cls_status = 'done' group by 1")))
+    print("placed:  ", q("select count(*) from books where final_path is not null")[0][0])
+    for r in q("select id, title, conv_status, conv_error, cls_error from books where conv_status in ('failed', 'nosource') or cls_status = 'failed'"):
+        print(f"  #{r['id']} {r['title'][:60]}: {r['conv_status']} {(r['conv_error'] or r['cls_error'] or '')[:150]}")
+    if (WORK / "run.log").exists():
+        print("last log lines:")
+        print("".join(open(WORK / "run.log", encoding="utf-8").readlines()[-5:]), end="")
+
+
+def main():
+    con = state_db()
+    if a.stage == "status":
+        return stage_status(con)
+    lock = open(WORK / "lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(f"library-md: another run holds {WORK / 'lock'}")
+    for tool in ("pandoc", "ebook-convert", "pdfinfo", "pdftotext"):
+        if not shutil.which(tool):
+            sys.exit(f"library-md: {tool} not found")
+    if a.stage == "all" and not os.isatty(1):
+        log(f"start: lib {LIB}, out {OUT}, model {a.model}")
+    books = calibre_books()
+    ids = sorted(int(i) for i in a.ids.split(",")) if a.ids else sorted(books)
+    missing = [i for i in ids if i not in books]
+    if missing:
+        sys.exit(f"library-md: not in Calibre: {missing}")
+    if a.stage == "skip":
+        if not a.ids:
+            sys.exit("library-md: skip needs --ids")
+        for bid in ids:
+            save(con, bid, title=books[bid]["title"], conv_status="skipped", conv_error="skipped by owner")
+        return log(f"skipped {ids}: convert leaves them alone from now on")
+    if a.stage == "all":  # caption next to convert, in its own thread with its own connection
+        stop = threading.Event()
+        worker = threading.Thread(target=lambda: stage_caption(state_db(), books, ids, stop, "caption-worker"))
+        worker.start()
+        try:
+            stage_convert(con, books, ids)
+        finally:
+            stop.set()
+            worker.join()
+    if a.stage == "convert":
+        stage_convert(con, books, ids)
+    if a.stage in ("all", "classify"):
+        stage_classify(con, books, ids)
+    if a.stage == "all":  # text output first; captioning can take a day for a large library
+        stage_place(con, books, ids if a.ids else sorted(books))
+    if a.stage in ("all", "caption"):
+        stage_caption(con, books, ids)
+    if a.stage in ("all", "place"):
+        stage_place(con, books, ids if a.ids else sorted(books))
+
+
+if __name__ == "__main__":
+    def interrupt(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGINT, interrupt)  # a detached `... &` run starts with SIGINT ignored
+    signal.signal(signal.SIGTERM, interrupt)
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit("\nlibrary-md: interrupted; rerun the same command to resume")

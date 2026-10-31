@@ -5,7 +5,7 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -185,6 +185,16 @@ class ProxyService:
             job.result_zip_path = await self.state_store.persist_final_zip(job.task_id, job.result_zip)
         await self._sync_job_state(job)
 
+    def _release_persisted_result(self, job: ProxyJob) -> None:
+        # Public jobs stay in job_store forever; once the result is on disk, keep only the paths
+        # and hydrate per request. Private (sync) jobs are read back right after completion.
+        if not job.public:
+            return
+        if job.result_payload_path is not None:
+            job.result_payload = None
+        if job.result_zip_path is not None:
+            job.result_zip = None
+
     async def _hydrate_job_result_from_state(self, job: ProxyJob) -> None:
         if self.state_store is None:
             return
@@ -213,6 +223,7 @@ class ProxyService:
         if job.archive_path is None:
             await self._archive_job_result(job)
         await self._sync_job_state(job)
+        self._release_persisted_result(job)
         return True
 
     async def _load_job(self, task_id: str) -> ProxyJob | None:
@@ -441,10 +452,12 @@ class ProxyService:
         if job is None:
             raise HTTPException(status_code=404, detail="Task not found.")
         await self._restore_completed_job_if_needed(job)
-        await self._hydrate_job_result_from_state(job)
         if job.status not in {"success", "failure"}:
             raise HTTPException(status_code=404, detail="Task result not found. Please wait for a completion status.")
-        return job
+        # Hydrate into a copy so the stored job does not re-pin the payload after the response.
+        result_job = replace(job)
+        await self._hydrate_job_result_from_state(result_job)
+        return result_job
 
     async def _run_file_job(
         self,
@@ -598,6 +611,7 @@ class ProxyService:
         await self._archive_job_result(job)
         job.status = "success"
         await self._sync_job_state(job)
+        self._release_persisted_result(job)
         logger.info("[%s] local conversion ready: file=%s target=%s", job.task_id, job.filename, job.target_kind)
 
     async def _store_batch_result(self, job: ProxyJob, result: BatchConversionResult) -> None:
@@ -611,6 +625,7 @@ class ProxyService:
         await self._archive_job_result(job)
         job.status = "success"
         await self._sync_job_state(job)
+        self._release_persisted_result(job)
         logger.info("[%s] merged batch zip ready: file=%s target=%s status=%s", job.task_id, job.filename, job.target_kind, result.status)
 
     async def _store_split_result(self, job: ProxyJob, result: ConvertDocumentResponse, filename: str) -> None:
@@ -621,6 +636,7 @@ class ProxyService:
         await self._archive_job_result(job)
         job.status = "success"
         await self._sync_job_state(job)
+        self._release_persisted_result(job)
         logger.info("[%s] merged split result ready: file=%s target=%s", job.task_id, filename, job.target_kind)
 
     async def _archive_httpx_response(

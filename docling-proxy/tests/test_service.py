@@ -477,7 +477,7 @@ async def test_split_job_persists_chunk_payloads_and_final_result_state(tmp_path
     await service._run_file_job(job, {})
 
     assert job.status == "success"
-    assert job.result_payload is not None
+    assert job.result_payload is None
     assert job.result_payload_path is not None
     assert len(archive_store.payload_calls) == 1
     for part_index in range(3):
@@ -490,6 +490,48 @@ async def test_split_job_persists_chunk_payloads_and_final_result_state(tmp_path
     assert recovered_job.status == "success"
     assert recovered_job.result_payload is not None
     assert recovered_job.result_payload["document"]["md_content"] == "chunk-1\nchunk-2\nchunk-3"
+
+
+@pytest.mark.asyncio
+async def test_async_job_releases_persisted_result_and_get_result_does_not_repin(tmp_path):
+    archive_store = FakeArchiveStore()
+    state_store = TaskStateStore(tmp_path)
+    service = ProxyService(FakeUpstream(), FakeLocalDocling(), archive_store, state_store)
+    file = FilePayload("small.pdf", make_pdf(1), "application/pdf")
+    job = ProxyJob(
+        task_id="job-release",
+        source_kind="file",
+        filename=file.filename,
+        target_kind="inbody",
+        requested_formats=["md"],
+        options={"to_formats": ["md"]},
+        files=[file],
+        meta=ProxyTaskMeta(source_kind="file", filename=file.filename),
+    )
+    await service._ensure_operation_state(job, {})
+    await job_store.put(job)
+    try:
+        await service._run_file_job(job, {})
+
+        assert job.status == "success"
+        assert job.result_payload is None
+        assert job.result_payload_path is not None and job.result_payload_path.exists()
+
+        for _ in range(2):
+            result_job = await service.get_result(job.task_id)
+            assert result_job.result_payload["status"] == "success"
+            stored = await job_store.get(job.task_id)
+            assert stored is job
+            assert stored.result_payload is None
+        assert (await service.get_status(job.task_id)).task_status == "success"
+
+        await job_store.delete(job.task_id)
+        restarted = ProxyService(FakeUpstream(), FakeLocalDocling(), archive_store, state_store)
+        assert (await restarted.get_status(job.task_id)).task_status == "success"
+        assert (await restarted.get_result(job.task_id)).result_payload["status"] == "success"
+        assert (await job_store.get(job.task_id)).result_payload is None
+    finally:
+        await job_store.delete(job.task_id)
 
 
 @pytest.mark.asyncio
@@ -546,8 +588,9 @@ async def test_split_recovery_skips_already_persisted_chunks(tmp_path, monkeypat
 
     assert recovered_job.status == "success"
     assert len(recovered_local_docling.calls) == 2
-    assert recovered_job.result_payload is not None
-    assert recovered_job.result_payload["document"]["md_content"] == "chunk-1\nchunk-1\nchunk-2"
+    assert recovered_job.result_payload is None
+    recovered_payload = await state_store.load_result_payload(job.task_id)
+    assert recovered_payload["document"]["md_content"] == "chunk-1\nchunk-1\nchunk-2"
     for part_index in range(3):
         assert state_store.part_payload_path(job.task_id, part_index).exists()
 

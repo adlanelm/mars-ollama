@@ -36,6 +36,30 @@ services:
     restart: always
 
   # ─────────────────────────────────────────────────────────────
+  # KOKORO TTS (CPU only, no GPU) — OpenAI-compatible /v1/audio/speech for Open Notebook podcasts on jupiter, see docs/kokoro.md
+  # ─────────────────────────────────────────────────────────────
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.2@sha256:cbcc28802fb5d1eaaba8b91e38b0e872a669e85831c513cf6a29c709cbe25405
+    container_name: kokoro
+    mem_limit: 3g   # RAM headroom is ~12 GiB with a MoE chat model loaded; keep TTS from eating llama-swap's expert offload
+    cpus: "6"       # of 16 threads; llama-swap keeps 12.8
+    environment:
+      - USE_GPU=false
+      - TORCH_NUM_THREADS=6
+      - OMP_NUM_THREADS=6
+      - MKL_NUM_THREADS=6
+    ports:
+      - "8880:8880" # LAN: the k3s cluster on jupiter reaches http://mars.internal:8880/v1
+    networks:
+      - ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8880/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+    restart: always
+
+  # ─────────────────────────────────────────────────────────────
   # COMFYUI (ROCm) — started by `bin/gpu-mode comfy`, see ROADMAP Phase 6; GPU arbitration with llama-swap: docs/gpu-switching.md
   # ─────────────────────────────────────────────────────────────
   comfyui:

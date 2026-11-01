@@ -17,6 +17,7 @@ This repo runs the local AI stack: the LLM server (Ollama on `:11434`, **llama-s
 | [trellis.md](trellis.md) | TRELLIS.2 image → textured .glb on ROCm (gfx1101): build, pins, how to run, measurements, licences |
 | [acestep.md](acestep.md) | ACE-Step 1.5 text-to-music on ROCm (gfx1101): container recipe, tier settings, timings, VRAM, licences |
 | [skintokens.md](skintokens.md) | SkinTokens/TokenRig auto-rigging feasibility test on gfx1101 (PR #14): recipe, timings, VRAM, rig quality, licences |
+| [kokoro.md](kokoro.md) | Kokoro TTS on CPU (`:8880`, OpenAI-compatible `/v1/audio/speech`) for Open Notebook podcasts: image pin, limits, voices, measured speed |
 | [krita.md](krita.md) | Krita (Flatpak) + krita-ai-diffusion v1.53.0 as a custom-server client of the local ComfyUI: install, connect, styles, limits, troubleshooting |
 | [library-md.md](library-md.md) | `bin/library-md`: Calibre library to a categorised Markdown copy for local RAG: output format, conversion routes (pandoc, docling OCR), LLM classification with outdated marking, GPU rule, resumability, timings |
 | [licenses.md](licenses.md) | Licence registry for everything that can put content into the game (verdicts, conditions, revisions), already-produced assets, prioritised replacement plan, provenance tagging |

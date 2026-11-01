@@ -132,6 +132,13 @@ The docling / embedding / reranker models in the lock file (granite, bge, snowfl
 | Pixelorama (@`e205f476`) | MIT | **OK** | none |
 | Tencent Hunyuan3D / HY-Motion | Licence excludes the EU | **NOT OK** | Already excluded |
 
+### 6. Text to speech (Kokoro, CPU service `kokoro`, [kokoro.md](kokoro.md))
+
+| Component | Used for | Licence (source @ revision) | Commercial use of outputs | Redistribution | Verdict | Action |
+|---|---|---|---|---|---|---|
+| Kokoro-FastAPI v0.9.2 (`ghcr.io/remsky/kokoro-fastapi-cpu`) | OpenAI-compatible TTS server for Open Notebook podcasts | Apache-2.0 (remsky/Kokoro-FastAPI) | Yes | Yes (Apache notice) | **OK [verify]** | Not read at a revision yet: confirm the LICENSE file at tag v0.9.2 |
+| Kokoro-82M weights (`hexgrad/Kokoro-82M`, baked into the image) | speech synthesis | Apache-2.0 (HF card) | Yes | Yes | **OK [verify]** | Confirm the card at the revision in the image. Local tool, not shipped in the game |
+
 ## Assets already produced (status 2026-10-12)
 
 | Asset | Chain | Verdict | What to do |

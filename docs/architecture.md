@@ -10,6 +10,7 @@ See also: [../ROADMAP.md](../ROADMAP.md), [colibri.md](colibri.md), [gpu-switchi
 |---|---|---|
 | `ollama` (**removed 2026-10-13**, replaced by llama-swap) | container `ollama`, port `11434` | Image `ollama/ollama:rocm` (0.35.1), `OLLAMA_VULKAN=1`, flash attention on, q8_0 KV cache, `OLLAMA_MAX_LOADED_MODELS=2`, `OLLAMA_KEEP_ALIVE=35`, `mem_limit: 28g`, `cpus: "12.8"`, models set `num_thread 13`. Data in `$HOME/llm/ollama/data` (78 GB) |
 | `docling-proxy` | container `docling-proxy`, host port `8000` (container `8080`) | **Also uses the GPU** (`/dev/dri`, `/dev/kfd`) for layout and OCR. Output archive in `$HOME/llm/docling` |
+| `kokoro` | container `kokoro`, host port `8880` | CPU-only Kokoro-82M text-to-speech (`/v1/audio/speech`) for Open Notebook, `mem_limit: 3g`, `cpus: "6"`, no GPU. See [kokoro.md](kokoro.md) |
 | Open WebUI | homelab k3s (not in this repo) | Connection, RAG and reranker settings live in its database and are set through the UI |
 
 Both containers share the compose network `ollama`.
@@ -80,6 +81,7 @@ Qwen3.8 KV note: 32k is about 1.06 GiB and 64k about 2.1 GiB. The 48k entry gets
 | `11434` | Ollama today; llama-swap (container `8080`) after cutover | At cutover llama-swap takes this host port and the network alias `ollama` |
 | `11435` | llama-swap (container `8080`), **current** | Phase 2 side by side, without the `ollama` alias. Goes away at cutover |
 | `8000` | docling-proxy (container `8080`) | Unchanged. Also uses the GPU |
+| `8880` | kokoro | OpenAI-compatible TTS, published on the LAN (`0.0.0.0`) for the k3s cluster on jupiter. CPU only |
 | `${PORT}` | colibri | Internal, assigned by llama-swap. Bound to `127.0.0.1`, not published |
 
 ## Volumes and paths

@@ -48,6 +48,8 @@ services:
       - TORCH_NUM_THREADS=6
       - OMP_NUM_THREADS=6
       - MKL_NUM_THREADS=6
+      - MALLOC_ARENA_MAX=2             # glibc per-thread arenas (52 threads) fragmented the heap to the 3g limit and got OOM-killed
+      - MALLOC_TRIM_THRESHOLD_=131072  # return freed memory to the OS sooner
     ports:
       - "8880:8880" # LAN: the k3s cluster on jupiter reaches http://mars.internal:8880/v1
     networks:

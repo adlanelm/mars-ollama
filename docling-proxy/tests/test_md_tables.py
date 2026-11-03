@@ -97,6 +97,25 @@ def test_merge_results_compact_and_split():
     assert all(len(block) <= 400 for block in split.split("\n\n") if block.startswith("|"))
 
 
+def test_merge_results_keeps_embedded_pictures():
+    from docling_core.types.doc.document import DoclingDocument, ImageRef
+    from PIL import Image
+
+    from docling_proxy.merge import merge_results
+
+    chunks = []
+    for name in ("part1", "part2"):
+        doc = DoclingDocument(name=name)
+        doc.add_text(label="text", text=f"text of {name}")
+        doc.add_picture(image=ImageRef.from_pil(Image.new("RGB", (40, 30), "red"), dpi=72))
+        chunks.append({"document": {"json_content": doc.export_to_dict()}, "processing_time": 1.0})
+
+    embedded = merge_results(chunks, ["md"], image_export_mode="embedded").document.md_content
+    placeholder = merge_results(chunks, ["md"]).document.md_content
+    assert embedded.count("](data:image/png;base64,") == 2
+    assert "data:image" not in placeholder and placeholder.count("<!-- image -->") == 2
+
+
 class FakeHttpxResponse:
     def __init__(self, content: bytes, content_type="application/json", status_code=200):
         self.content, self.status_code = content, status_code

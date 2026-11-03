@@ -37,10 +37,15 @@ def merge_results(
     proxy_meta: dict | None = None,
     compact_tables: bool = False,
     table_max_chars: int = 0,
+    image_export_mode: str | None = None,
 ) -> ConvertDocumentResponse:
     ensure_supported_formats(requested_formats)
 
+    from docling_core.types.doc.base import ImageRefMode
     from docling_core.types.doc.document import DoclingDocument
+
+    # Chunk JSON carries the picture data, so "embedded" can be honoured; "referenced" would need files, keep placeholders.
+    image_mode = ImageRefMode.EMBEDDED if image_export_mode == "embedded" else ImageRefMode.PLACEHOLDER
 
     docs = []
     total_processing_time = 0.0
@@ -57,13 +62,15 @@ def merge_results(
 
     document = ExportDocumentResponse(
         md_content=split_long_tables(
-            merged_doc.export_to_markdown(page_break_placeholder=page_break_placeholder, compact_tables=compact_tables),
+            merged_doc.export_to_markdown(
+                page_break_placeholder=page_break_placeholder, compact_tables=compact_tables, image_mode=image_mode
+            ),
             table_max_chars,
         )
         if "md" in requested_formats
         else None,
         json_content=merged_doc.export_to_dict() if "json" in requested_formats else None,
-        html_content=merged_doc.export_to_html() if "html" in requested_formats else None,
+        html_content=merged_doc.export_to_html(image_mode=image_mode) if "html" in requested_formats else None,
         text_content=merged_doc.export_to_text(page_break_placeholder=page_break_placeholder)
         if "text" in requested_formats
         else None,

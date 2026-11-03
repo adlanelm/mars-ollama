@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """library-md: turn a Calibre library into a Markdown copy for local RAG, sorted into topic folders, outdated books marked.
 
-  library-md [all|convert|classify|caption|place|status|skip] [--lib ~/MEGA/mainlib] [--out ~/llm/library-md]
+  library-md [all|convert|classify|replace|caption|place|status|skip] [--lib ~/MEGA/mainlib] [--out ~/MEGA/library-md] [--work DIR]
              [--ids 12,40] [--limit N] [--retry-failed] [--reclassify] [--model qwen3.6-35b-a3b]
 
 Stages (`all` runs them in order; each one is resumable, Ctrl-C and rerun picks up where it stopped):
@@ -11,19 +11,22 @@ Stages (`all` runs them in order; each one is resumable, Ctrl-C and rerun picks 
             (icons, logos) are dropped.
   classify  local LLM (llama-swap) reads the Calibre metadata, headings and opening pages and returns the category,
             topics, year and status current|outdated|timeless with a reason.
+  replace   for each outdated book the same LLM searches the web through searxng (two rounds: candidates, then their
+            editions) and picks a replacement, citing only result URLs; writes OUT/replacements.md. Redone when the
+            book's classification changes.
   caption   a vision model (granite-vision-4.1) describes each kept figure, with the text around it as context;
             decorative images are dropped. Captions are stored per image hash, so duplicates are described once.
   place     writes OUT/<Category>/<Title - Author (Year)>[ [OUTDATED]].md with YAML front matter and the figure
             descriptions in place, plus catalog.csv and README.md. Books deleted from Calibre lose their output file.
-The Calibre library is only read. State and the Markdown cache live in OUT/.library-md/ (keep it out of uploads).
+The Calibre library is only read. State, the Markdown cache and logs live in --work (~/llm/library-md/.library-md, 4 GB; kept out of MEGA and uploads).
 GPU: docling and the light caption model share the GPU, so in `all` a caption worker describes the figures of converted
 books while convert runs. It stops when convert ends, because qwen3.6 (classify) and granite-vision are in the same
 llama-swap group and would swap on every request; leftover figures are described after classify. Docling waits only
 for ComfyUI. Each LLM stage unloads its model when done, and only one library-md runs at once.
 Spec: docs/library-md.md.
 """
-import argparse, base64, csv, datetime as dt, fcntl, hashlib, html, json, os, pathlib, re, shutil, signal, sqlite3, struct
-import subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, base64, collections, csv, datetime as dt, fcntl, hashlib, html, json, os, pathlib, re, shutil, signal, sqlite3, struct
+import subprocess, sys, tempfile, threading, time, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
 
 CATEGORIES = {  # folder name: what belongs there (shown to the LLM)
     "Software Architecture": "system design, distributed systems, DDD, microservices, data mesh, integration, APIs",
@@ -64,9 +67,10 @@ CAPTION_PROMPT = ("This picture is from the book \"{title}\". Text around it:\n<
                   "photo, ornament), answer only: DECORATIVE")
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-ap.add_argument("stage", nargs="?", default="all", choices=["all", "convert", "classify", "caption", "place", "status", "skip"])
+ap.add_argument("stage", nargs="?", default="all", choices=["all", "convert", "classify", "replace", "caption", "place", "status", "skip"])
 ap.add_argument("--lib", default="~/MEGA/mainlib")
-ap.add_argument("--out", default="~/llm/library-md")
+ap.add_argument("--out", default="~/MEGA/library-md", help="the Markdown copy, next to the Calibre library")
+ap.add_argument("--work", default="~/llm/library-md/.library-md", help="state, cache and logs, outside synced folders")
 ap.add_argument("--ids", help="comma-separated Calibre book ids (default: all)")
 ap.add_argument("--limit", type=int, help="process at most N pending books per stage")
 ap.add_argument("--retry-failed", action="store_true", help="retry books whose convert or classify failed")
@@ -74,6 +78,8 @@ ap.add_argument("--reclassify", action="store_true", help="classify again even i
 ap.add_argument("--docling", default="http://localhost:8000")
 ap.add_argument("--llm", default="http://localhost:11434")
 ap.add_argument("--model", default="qwen3.6-35b-a3b")
+ap.add_argument("--searxng", default="https://jupiter.internal:8888", help="searxng JSON API for the replace stage")
+ap.add_argument("--search-delay", type=float, default=8, help="seconds between searxng queries")
 ap.add_argument("--thinking", action="store_true", help="let the model reason before answering (slower, better outdated calls)")
 ap.add_argument("--epub-engine", default="pandoc", choices=["pandoc", "docling"],
                 help="pandoc keeps code blocks; docling 2.138 joins them into one line")
@@ -87,7 +93,7 @@ a = ap.parse_args()
 
 LIB = pathlib.Path(a.lib).expanduser()
 OUT = pathlib.Path(a.out).expanduser()
-WORK = OUT / ".library-md"
+WORK = pathlib.Path(a.work).expanduser()
 CACHE = WORK / "cache"
 TODAY = dt.date.today().isoformat()
 
@@ -419,9 +425,12 @@ SCHEMA = {
         "depends_on": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
         "status": {"type": "string", "enum": STATUSES},
         "status_reason": {"type": "string"},
+        "status_evidence": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "what_changed": {"type": "string"},
         "summary": {"type": "string"},
     },
-    "required": ["title", "author", "category", "subcategory", "topics", "year", "edition", "depends_on", "status", "status_reason", "summary"],
+    "required": ["title", "author", "category", "subcategory", "topics", "year", "edition", "depends_on", "status",
+                 "status_reason", "status_evidence", "what_changed", "summary"],
 }
 
 SYSTEM = f"""You catalogue a personal technical and business library for a retrieval system. Today is {TODAY}.
@@ -450,6 +459,10 @@ status, judged against today's date and depends_on:
   say what changed. "The concepts still apply" is not enough to call such a book current.
 Judge the content, not the age alone: an old book on enduring ideas is timeless, a recent book on a dead tool is outdated.
 status_reason: one sentence naming what is superseded, or why it still holds.
+status_evidence: up to 5 concrete signals from the text behind the status: versions, APIs, commands, products, laws or
+dates the book uses (e.g. "Deployments use apiVersion extensions/v1beta1", "installs Helm 2 with Tiller"); [] if none.
+what_changed: for an outdated book, what replaced those specifics and what a reader should use today (e.g. "Deployments
+moved to apps/v1 in Kubernetes 1.16; Helm 3 removed Tiller"); "" for current and timeless books.
 summary: 2-3 sentences on what the book covers."""
 
 
@@ -649,24 +662,135 @@ def figure_captions(con, md):
 
 # ---------- placement ----------
 
-def safe(s, n):
-    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", s)
-    return re.sub(r"\s+", " ", s).strip(" .")[:n].strip()
+CYRILLIC = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюяєіїґ", "a b v g d e e zh z i y k l m n o p r s t u f kh ts ch sh shch _ y _ e yu ya ye i yi g".split()))
+LATIN = {"ß": "ss", "æ": "ae", "œ": "oe", "ø": "o", "ł": "l", "đ": "d", "þ": "th", "ä": "ae", "ö": "oe", "ü": "ue", "½": ".5"}
+
+
+def ascii_name(s):
+    """File and folder names that survive any upload (Open WebUI knowledge, URLs, shells, Windows): ASCII letters,
+    digits, space and . _ ( ) - only. Cyrillic is transliterated, C++/C# kept readable."""
+    s = s.replace("C++", "Cpp").replace("C#", "CSharp").replace("F#", "FSharp").replace("&", " and ").replace("'", "").replace("’", "")
+    s = re.sub(r"\s*:\s+", " - ", s)
+    out = []
+    for ch in s:
+        t = CYRILLIC.get(ch.lower(), LATIN.get(ch.lower()))
+        out.append(ch if t is None else "" if t == "_" else t.capitalize() if ch.isupper() else t)
+    s = "".join(ch for ch in unicodedata.normalize("NFKD", "".join(out)) if not unicodedata.combining(ch))  # é -> e; a dash -> space below
+    return re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 ._()-]+", " ", s)).strip(" .-")
+
+
+def shorten(s, n):
+    """At most n chars, cut at a word boundary."""
+    return s if len(s) <= n else (s[:n].rsplit(" ", 1)[0] or s[:n]).rstrip(" .-")
+
+
+def book_title(book, c):
+    """Calibre is the source of truth; the LLM's title only stands in for a junk Calibre title."""
+    return c.get("title") or book["title"] if JUNK_TITLE.search(book["title"].strip()) else book["title"]
+
+
+def book_author(book, c):
+    return (c.get("author") or "") if junk_author(book) else book["authors"][0]
+
+
+def file_name(book, c, year):
+    """Title - Surname (Year) (OUTDATED): ASCII, at most about 110 chars; a long title loses its subtitle first."""
+    title, author = book_title(book, c), book_author(book, c)
+    main = re.split(r"\s*[:|]\s+|\s+[-–—]\s+", title)[0]
+    title = ascii_name(title if len(ascii_name(title)) <= 70 else main)
+    first = author.split(",")[0].split()  # "Last, First", "First Last" or "First Last, Second Author"
+    surname = ascii_name(first[0] if "," in author and len(first) == 1 else (first or [""])[-1])
+    return (shorten(title, 70) or f"Book {book['id']}") + (f" - {shorten(surname, 25)}" if surname else "") \
+        + (f" ({year})" if year else "") + (" (OUTDATED)" if c["status"] == "outdated" else "")
+
+
+ORDINALS = {w: n for n, w in enumerate("first second third fourth fifth sixth seventh eighth ninth tenth".split(), 1)}
+EDITION_WORDS = re.compile(r"\b(\d+(st|nd|rd|th)|" + "|".join(ORDINALS) + r"|revised|updated|expanded|anniversary|new)\s+(edition|ed\b\.?)|\bedition\b", re.I)
+
+
+def fold(s):
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+
+
+def title_key(t):
+    """(main title, subtitle), lowercased, without edition words, brackets and punctuation."""
+    t = re.sub(r"[(\[].*?[)\]]", " ", fold(t).replace("&", " and "))
+    t = re.sub(r"[^\w:]+", " ", EDITION_WORDS.sub(" ", t))
+    main, _, sub = t.partition(":")
+    return " ".join(main.split()), " ".join(sub.replace(":", " ").split())
+
+
+def edition_no(e):
+    m = re.search(r"\d+", e or "") or re.search("|".join(ORDINALS), (e or "").lower())
+    return 0 if not m else int(m.group()) if m.group().isdigit() else ORDINALS[m.group()]
+
+
+def newer_editions(con, books):
+    """{calibre id: label of the newest other edition of the same book in the library}. Same first-author surname and
+    title; a subtitle only matters when the group's subtitled books disagree. Newer means a higher edition number, or,
+    when the other book's edition is unknown, at least a 2nd edition published 2+ years later. Fiction is left out."""
+    groups = {}
+    for r in con.execute("select id, cls_json from books where conv_status = 'done' and cls_status = 'done'"):
+        b, c = books.get(r["id"]), json.loads(r["cls_json"])
+        author = book_author(b, c) if b else ""
+        if not b or not author or c["category"] == "Fiction & Literature":
+            continue
+        title = book_title(b, c)
+        main, sub = title_key(title)
+        surname = fold(author.split(",")[0] if "," in author else author).split()[-1:]
+        if main and surname:
+            groups.setdefault((surname[0], main), []).append(dict(
+                id=r["id"], sub=sub, year=c.get("year") or b["year"], ed=edition_no(c.get("edition")),
+                label=f"{title} - {author} ({c.get('year') or b['year'] or 'year unknown'}"
+                      + (f", {c['edition']}" if c.get("edition") else "") + f"), Calibre #{r['id']}"))
+    out = {}
+    for g in groups.values():
+        subs = {x["sub"] for x in g if x["sub"]}
+        for part in [g] if len(subs) <= 1 else [[x for x in g if x["sub"] == s] for s in subs]:
+            def newer(y, x):  # years alone are often reprint or ebook dates, so an edition number must say it
+                if not y["ed"] or x["ed"]:
+                    return y["ed"] > x["ed"]
+                return y["ed"] >= 2 and bool(x["year"] and y["year"] and y["year"] - x["year"] >= 2)
+            for x in part:
+                cand = [y for y in part if newer(y, x)]
+                if cand:
+                    out[x["id"]] = max(cand, key=lambda y: (y["ed"], y["year"] or 0))["label"]
+    return out
+
+
+def with_edition(c, newer):
+    """A newer edition in the library makes a book outdated, whatever the LLM said."""
+    if not newer:
+        return c
+    reason = c["status_reason"] if c["status"] == "outdated" else f"A newer edition is in this library: {newer}."
+    return dict(c, status="outdated", status_reason=reason, newer_edition=newer)
+
+
+def outdated_banner(c, year):
+    why = [f"Newer edition in this library: {c['newer_edition']}"] if c.get("newer_edition") else []
+    why += [f"Relies on: {'; '.join(c['depends_on'])}"] if c.get("depends_on") else []
+    why += [f"Evidence in the book: {'; '.join(c['status_evidence'])}"] if c.get("status_evidence") else []
+    why += [f"What changed since: {c['what_changed']}"] if c.get("what_changed") else []
+    why += [f"Age: published {year}, {int(TODAY[:4]) - int(year)} years before this check"] if year else []
+    return (f"> **Outdated** ({year or 'year unknown'}, judged {TODAY}): {c['status_reason']}\n"
+            + (">\n" + "".join(f"> - {w}\n" for w in why) if why else "") + "\n")
 
 
 def render(book, r, c, md, caps):
     year = c.get("year") or book["year"]
-    fm = {"title": c.get("title") or book["title"], "authors": [c["author"]] if c.get("author") else book["authors"],
+    fm = {"title": book_title(book, c), "authors": [c["author"]] if junk_author(book) and c.get("author") else book["authors"],
           "calibre_title": book["title"], "year": year, "edition": c.get("edition"),
           "publisher": book["publisher"], "isbn": book["isbn"], "language": book["langs"],
           "category": c["category"], "subcategory": c["subcategory"], "topics": c["topics"],
-          "depends_on": c.get("depends_on", []), "status": c["status"], "status_reason": c["status_reason"], "summary": c["summary"],
+          "depends_on": c.get("depends_on", []), "status": c["status"], "status_reason": c["status_reason"],
+          "status_evidence": c.get("status_evidence", []), "what_changed": c.get("what_changed") or None,
+          "newer_edition_in_library": c.get("newer_edition"), "summary": c["summary"],
           "calibre_id": book["id"], "calibre_tags": book["tags"], "source": r["src"], "conversion": r["method"],
           "classified_by": r["cls_model"], "figures_described": len(caps),
           "figures_described_by": a.caption_model if caps else None, "generated": TODAY}
     head = "---\n" + "".join(f"{k}: {json.dumps(v, ensure_ascii=False)}\n" for k, v in fm.items()) + "---\n\n"  # JSON scalars are valid YAML
     if c["status"] == "outdated":
-        head += f"> **Outdated** ({year or 'year unknown'}, judged {TODAY}): {c['status_reason']}\n\n"
+        head += outdated_banner(c, year)
     seen = set()
 
     def figure(m):  # each picture is described once, at its first position
@@ -681,22 +805,20 @@ def render(book, r, c, md, caps):
 
 def stage_place(con, books, ids):
     taken = {r["final_path"]: r["id"] for r in con.execute("select id, final_path from books where final_path is not null")}
-    written = 0
+    newer, written = newer_editions(con, books), 0
     for bid in ids:
         r = row(con, bid)
         if r.get("conv_status") != "done" or r.get("cls_status") != "done":
             continue
-        book, c = books[bid], json.loads(r["cls_json"])
+        book, c = books[bid], with_edition(json.loads(r["cls_json"]), newer.get(bid))
         year = c.get("year") or book["year"]
-        author = c.get("author") or ("" if junk_author(book) else book["authors"][0].split(",")[0])
-        name = safe(f"{c.get('title') or book['title']}" + (f" - {author}" if author else "") + (f" ({year})" if year else ""), 150)
-        name += " [OUTDATED]" if c["status"] == "outdated" else ""
-        rel = f"{c['category']}/{name}.md"
+        name, folder = file_name(book, c, year), ascii_name(c["category"])
+        rel = f"{folder}/{name}.md"
         if taken.get(rel, bid) != bid:
-            rel = f"{c['category']}/{name} #{bid}.md"
+            rel = f"{folder}/{name} id{bid}.md"
         md = (CACHE / f"{bid}.md").read_text(encoding="utf-8")
         caps = figure_captions(con, md)
-        sig = hashlib.sha256(json.dumps([book, r["src_sig"], r["cls_json"], r["method"], r["chars"], caps],
+        sig = hashlib.sha256(json.dumps([book, r["src_sig"], r["cls_json"], newer.get(bid), r["method"], r["chars"], caps],
                                         default=str).encode()).hexdigest()[:16]
         if r.get("final_path") == rel and r.get("final_sig") == sig and (OUT / rel).exists():
             continue
@@ -717,19 +839,20 @@ def stage_place(con, books, ids):
     for d in OUT.iterdir():
         if d.is_dir() and not d.name.startswith(".") and not any(d.iterdir()):
             d.rmdir()
-    write_catalog(con, books)
-    log(f"place: {written} written, {len(gone)} removed")
+    write_catalog(con, books, newer)
+    log(f"place: {written} written, {len(gone)} removed" + (f", {len(newer)} superseded by a newer edition in the library" if newer else ""))
 
 
-def write_catalog(con, books):
+def write_catalog(con, books, newer):
     rows = []
     for r in con.execute("select * from books where final_path is not null order by final_path"):
-        c, b = json.loads(r["cls_json"]), books.get(r["id"])
+        c, b = with_edition(json.loads(r["cls_json"]), newer.get(r["id"])), books.get(r["id"])
         if b:
             rows.append(dict(category=c["category"], subcategory=c["subcategory"], status=c["status"],
-                             year=c.get("year") or b["year"], title=c.get("title") or b["title"],
-                             authors=c.get("author") or "; ".join(b["authors"]),
-                             path=r["final_path"], calibre_id=r["id"], conversion=r["method"], reason=c["status_reason"]))
+                             year=c.get("year") or b["year"], title=book_title(b, c),
+                             authors=book_author(b, c) if junk_author(b) else "; ".join(b["authors"]),
+                             path=r["final_path"], calibre_id=r["id"], conversion=r["method"], reason=c["status_reason"],
+                             what_changed=c.get("what_changed", ""), newer_edition=c.get("newer_edition", "")))
     tmp = OUT / "catalog.csv.tmp"
     with open(tmp, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["category"])
@@ -747,12 +870,259 @@ def write_catalog(con, books):
         if n:
             md.append(f"\n## {cat}\n")
             md += [f"- {x['title']} - {x['authors']} ({x['year'] or '?'}), {x['subcategory']}"
-                   + (f" **[outdated: {x['reason']}]**" if x["status"] == "outdated" else "") for x in n]
+                   + (f" **[outdated: {x['reason']}"
+                      + (f" Since then: {x['what_changed']}" if x["what_changed"] else "")
+                      + (f" Newer edition: {x['newer_edition']}." if x["newer_edition"] and "newer edition" not in x["reason"] else "")
+                      + "]**" if x["status"] == "outdated" else "") for x in n]
     failed = con.execute("select id, title, conv_status, conv_error from books where conv_status in ('failed', 'nosource', 'skipped')").fetchall()
     if failed:
         md.append("\n## Not converted\n")
         md += [f"- #{f['id']} {f['title']}: {f['conv_status']}, {(f['conv_error'] or '')[:200]}" for f in failed]
     write_atomic(OUT / "README.md", "\n".join(md) + "\n")
+
+
+# ---------- replacements (local LLM + searxng) ----------
+
+REPLACE_SYSTEM = f"""You help the owner of a personal library replace outdated books. Today is {TODAY}. Answer with JSON only.
+Work only from the search results you are given: never invent a book, an edition, a year or a publisher.
+Books are good replacements when they teach the same subject for today's versions, tools, laws or markets,
+at a similar level and in the same practical style. Prefer, in order: a newer edition of the same book; a book the
+owner already has (listed) that is not outdated; a well-regarded current book by a recognised publisher or author.
+Official documentation or a course is fine as no_replacement when no current book exists."""
+
+REPLACE_QUERIES = {"type": "object", "properties": {"queries": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 4}},
+                   "required": ["queries"]}
+REPLACE_VERIFY = {"type": "object", "properties": {
+    "candidates": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
+    "queries": {"type": "array", "items": {"type": "string"}, "maxItems": 4}}, "required": ["candidates", "queries"]}
+REPLACE_SCHEMA = {"type": "object", "properties": {
+    "verdict_disputed": {"type": "string"},
+    "has_replacement": {"type": "boolean"},
+    "replacement": {"type": "object", "properties": {
+        "title": {"type": "string"}, "authors": {"type": "string"}, "year": {"type": ["integer", "null"]},
+        "edition": {"type": ["string", "null"]}, "publisher": {"type": "string"}, "language": {"type": "string"},
+        "source": {"type": ["integer", "null"]}},
+        "required": ["title", "authors", "year", "edition", "publisher", "language", "source"]},
+    "already_in_library": {"type": ["integer", "null"]},
+    "no_replacement": {"type": "string"},
+    "why_fit": {"type": "string"},
+    "alternatives": {"type": "array", "maxItems": 4, "items": {"type": "object", "properties": {
+        "title": {"type": "string"}, "authors": {"type": "string"}, "year": {"type": ["integer", "null"]}, "why_not": {"type": "string"}},
+        "required": ["title", "authors", "year", "why_not"]}},
+    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    "sources": {"type": "array", "items": {"type": "integer"}, "maxItems": 6}},
+    "required": ["verdict_disputed", "has_replacement", "replacement", "already_in_library", "no_replacement", "why_fit",
+                 "alternatives", "confidence", "sources"]}
+class SearchDown(Exception):
+    """searxng answers but its engines return nothing (rate limits): stop instead of researching blind."""
+
+
+PIRATE = re.compile(r"\.(pdf|epub|djvu|zip)(\?|$)|github\.com/.+/blob/|libgen|z-lib|annas-archive|scribd|dokumen\.pub|vdoc\.pub", re.I)
+
+
+def llm_json(system, prompt, schema, name, thinking=False, max_tokens=1500):
+    body = {"model": a.model, "temperature": 0.6 if thinking else 0.7, "top_p": 0.95 if thinking else 0.8,
+            "max_tokens": 8000 + max_tokens if thinking else max_tokens, "chat_template_kwargs": {"enable_thinking": thinking},
+            "response_format": {"type": "json_schema", "json_schema": {"name": name, "schema": schema, "strict": True}},
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]}
+    res = http_json(f"{a.llm}/v1/chat/completions", json.dumps(body).encode(), "application/json", timeout=1800)
+    return json.loads(res["choices"][0]["message"]["content"])
+
+
+def search(q, n=8):
+    url = f"{a.searxng}/search?" + urllib.parse.urlencode({"q": q, "format": "json"})
+    for attempt in (1, 2, 3):
+        time.sleep(a.search_delay)  # brave and google cse suspend themselves after a burst of queries
+        try:
+            res = http_json(url, timeout=60)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            if attempt == 3:
+                raise SearchDown(f"searxng unreachable: {e}")
+            continue
+        if res.get("results"):
+            return [dict(title=r.get("title", ""), url=r["url"], snippet=(r.get("content") or "")[:300])
+                    for r in res["results"] if not PIRATE.search(r["url"])][:n]
+        down = res.get("unresponsive_engines") or []
+        if not down:
+            return []  # a query with no hits
+        if attempt == 3:
+            raise SearchDown("searxng engines unavailable: " + "; ".join(": ".join(e) for e in down))
+        time.sleep(30 * attempt)
+
+
+def replace_book_prompt(book, c, newer):
+    return "\n".join([f"Outdated book: {book_title(book, c)}", f"Authors: {', '.join(book['authors']) or 'unknown'}",
+                      f"Year: {c.get('year') or book['year'] or 'unknown'}", f"Edition: {c.get('edition') or 'not stated'}",
+                      f"Language: {', '.join(book['langs']) or 'unknown'}", f"Topic: {c['category']} / {c['subcategory']}",
+                      f"Topics: {', '.join(c['topics'])}", f"Relies on: {'; '.join(c.get('depends_on', [])) or 'nothing specific'}",
+                      f"Why outdated: {c['status_reason']}", f"What changed since: {c.get('what_changed') or 'not stated'}"]
+                     + ([f"Newer edition already in the library: {newer}"] if newer else []) + [f"Summary: {c['summary']}"])
+
+
+def library_shelf(con, books, bid, c, n=120):
+    """Books the owner already has in the same category, same subcategory first, for already_in_library."""
+    shelf = []
+    for r in con.execute("select id, cls_json from books where cls_status = 'done' and id != ?", (bid,)):
+        o = json.loads(r["cls_json"])
+        if o["category"] == c["category"] and r["id"] in books:
+            b = books[r["id"]]
+            shelf.append((o["subcategory"] != c["subcategory"], f"#{r['id']} {book_title(b, o)} - {', '.join(b['authors'][:2])} "
+                          f"({o.get('year') or b['year'] or '?'}, {o['subcategory']}, {o['status']})"))
+    return [s for _, s in sorted(shelf)[:n]]
+
+
+def research(con, books, bid, c, newer):
+    about = replace_book_prompt(books[bid], c, newer)
+    qs = llm_json(REPLACE_SYSTEM, about + "\n\nWrite 2-4 web search queries to find the best current replacement: the newest edition "
+                  "of this book, and current books on the same subject (e.g. \"best books <subject> 2026\", \"<title> <author> latest "
+                  "edition\"). Add a query in the book's language if it is not English.", REPLACE_QUERIES, "queries")["queries"]
+    results, seen = [], set()
+
+    def run_queries(queries):
+        for q in queries:
+            for r in search(q):
+                if r["url"] not in seen:
+                    seen.add(r["url"])
+                    results.append(r)
+    run_queries(qs)
+    if not results:
+        raise SearchDown(f"no search results for {qs}")
+    listing = lambda: "\n".join(f"[{i}] {r['title']} | {r['url']}\n    {r['snippet']}" for i, r in enumerate(results, 1))
+    ver = llm_json(REPLACE_SYSTEM, about + "\n\nSearch results:\n" + listing() + "\n\nName up to 4 candidate replacement books "
+                   "from these results, and write up to 4 queries that confirm their latest edition, year and publisher "
+                   "(e.g. \"<title> <author> <publisher> edition\").", REPLACE_VERIFY, "verify")
+    run_queries(ver["queries"])
+    shelf = library_shelf(con, books, bid, c)
+    out = llm_json(REPLACE_SYSTEM, about + "\n\nBooks the owner already has in this category (#id title - authors (year, topic, status)):\n"
+                   + ("\n".join(shelf) or "none") + "\n\nSearch results:\n" + listing() + """
+
+Pick the best replacement. Fields:
+verdict_disputed: "" if the book really is outdated; otherwise why it is not, or only partly (e.g. the ideas hold and only tool versions aged).
+has_replacement: false when no current book fits; then explain in no_replacement what to use instead (docs, course) and leave replacement fields empty.
+replacement: title, authors, year and edition as the results show them; publisher; language; source = the number of the result that best confirms it (publisher page preferred), null if none.
+already_in_library: the #id (number only) when the replacement is a book from the owner's list that is not outdated, else null.
+why_fit: 2-3 sentences on why this one beats the alternatives for this owner.
+alternatives: other candidates from the results and why they were not picked.
+confidence: high when a publisher or retailer result confirms the title and edition; medium when the book is confirmed but the edition or fit is less certain; low otherwise.
+sources: numbers of the results you relied on.""", REPLACE_SCHEMA, "replacement", thinking=a.thinking, max_tokens=2500)
+    url = lambda i: results[i - 1]["url"] if isinstance(i, int) and 1 <= i <= len(results) else None
+    p = out["replacement"]
+    p["url"] = url(p.pop("source"))
+    out["sources"] = list(dict.fromkeys(u for u in map(url, out["sources"]) if u))
+    if out["already_in_library"] not in books or out["already_in_library"] == bid:
+        out["already_in_library"] = None
+    if not out["has_replacement"]:
+        out["replacement"], out["already_in_library"] = None, None
+    if out["confidence"] == "high" and not (out["replacement"] and out["replacement"]["url"] or out["already_in_library"]):
+        out["confidence"] = "medium"  # high needs a result that confirms the book
+    return dict(out, queries=qs + ver["queries"], results=len(results))
+
+
+def outdated_books(con, books):
+    newer = newer_editions(con, books)
+    for r in con.execute("select id, cls_json from books where cls_status = 'done' and conv_status = 'done' order by id"):
+        if r["id"] in books:
+            c = with_edition(json.loads(r["cls_json"]), newer.get(r["id"]))
+            if c["status"] == "outdated":
+                yield r["id"], c, newer.get(r["id"])
+
+
+def stage_replace(con, books, ids):
+    con.execute("create table if not exists replacements (id integer primary key, sig text, status text, json text, error text, model text, updated text)")
+    wait_for_docling(con)
+    want, todo = set(ids), []
+    for bid, c, newer in outdated_books(con, books):
+        sig = hashlib.sha256(json.dumps([c, newer]).encode()).hexdigest()[:16]  # a new classification gets new research
+        r = con.execute("select sig, status from replacements where id = ?", (bid,)).fetchone()
+        if bid in want and not (r and r["sig"] == sig and (r["status"] == "done" or r["status"] == "failed" and not a.retry_failed)):
+            todo.append((bid, c, newer, sig))
+    todo = todo[: a.limit] if a.limit else todo
+    log(f"replace: {len(todo)} pending (model {a.model}, searxng {a.searxng})")
+    for n, (bid, c, newer, sig) in enumerate(todo, 1):
+        t0, now = time.time(), dt.datetime.now().isoformat(timespec="seconds")
+        try:
+            out = research(con, books, bid, c, newer)
+            con.execute("insert or replace into replacements values (?, ?, 'done', ?, null, ?, ?)", (bid, sig, json.dumps(out), a.model, now))
+            p = out["replacement"]
+            log(f"[{n}/{len(todo)}] #{bid} {book_title(books[bid], c)[:50]} -> "
+                f"{(p['title'] + ' (' + str(p['year']) + ')') if p else 'no book'} [{out['confidence']}]  {time.time() - t0:.0f} s")
+        except SearchDown as e:  # not the book's fault: leave it pending
+            log(f"[{n}/{len(todo)}] #{bid} stopped: {e}; rerun `replace` later")
+            break
+        except (ValueError, KeyError, TypeError, urllib.error.URLError, OSError) as e:
+            con.execute("insert or replace into replacements values (?, ?, 'failed', null, ?, ?, ?)", (bid, sig, str(e)[:1000], a.model, now))
+            log(f"[{n}/{len(todo)}] #{bid} FAILED: {e}")
+        con.commit()
+    if todo:
+        unload(a.model)
+    write_replacements(con, books)
+
+
+def write_replacements(con, books):
+    esc = lambda s: str(s or "").replace("|", "/").replace("\n", " ").strip()
+    rows = []
+    for bid, c, newer in outdated_books(con, books):
+        r = con.execute("select json from replacements where id = ? and status = 'done'", (bid,)).fetchone()
+        rows.append((bid, c, json.loads(r["json"]) if r else None))
+
+    def repl(p):
+        ed = f", {p['edition']}" if p.get("edition") else ""
+        lang = f", {p['language']}" if p.get("language") and p["language"].lower() not in ("english", "en", "eng") else ""
+        return f"{p['title']}{ed} ({p.get('year') or '?'}{lang}), {p['authors'] or '?'}"
+    title = lambda bid, c: f"{book_title(books[bid], c)} ({c.get('year') or books[bid]['year'] or '?'})"
+    done = [x for x in rows if x[2]]
+    conf = collections.Counter(x[2]["confidence"] for x in done)
+    md = ["# Replacements for outdated books", "",
+          f"Generated {TODAY} by `library-md replace`: {len(rows)} books are classified outdated; {len(done)} researched with the local "
+          f"LLM ({a.model}) over searxng results. Confidence: {conf['high']} high, {conf['medium']} medium, {conf['low']} low. "
+          f"{sum(bool(x[2]['already_in_library']) for x in done)} are replaced by a book already in the library, "
+          f"{sum(not x[2]['replacement'] for x in done)} have no book replacement.", "",
+          "- **Confidence**: high means a publisher or retailer result confirms the title and edition; medium means the book is "
+          "confirmed but the edition or fit is less certain; low means no good successor was found or details are unconfirmed.",
+          "- **Verdict disputed**: the model, having seen the search results, thinks the book is not, or only partly, outdated.",
+          "- The model only saw search snippets: check editions and prices on the linked sources before buying.", "", "## Overview", ""]
+    by = collections.defaultdict(list)
+    for x in rows:
+        by[x[1]["category"]].append(x)
+    for cat in sorted(by):
+        md += [f"### {cat}", "", "| Outdated book | Replacement | Confidence | Note |", "|---|---|---|---|"]
+        for bid, c, o in sorted(by[cat], key=lambda x: book_title(books[x[0]], x[1])):
+            if not o:
+                md.append(f"| {esc(title(bid, c))} | not researched yet | | |")
+                continue
+            note = ([f"owned (#{o['already_in_library']})"] if o["already_in_library"] else []) + (["verdict disputed"] if o["verdict_disputed"] else [])
+            rp = repl(o["replacement"]) if o["replacement"] else f"none: {esc(o['no_replacement'])[:120]}"
+            md.append(f"| [{esc(title(bid, c))}](#b{bid}) | {esc(rp)} | {o['confidence']} | {', '.join(note)} |")
+        md.append("")
+    md += ["## Details", ""]
+    for cat in sorted(by):
+        md += [f"### {cat}", ""]
+        for bid, c, o in sorted(by[cat], key=lambda x: book_title(books[x[0]], x[1])):
+            if not o:
+                continue
+            md += [f'<a id="b{bid}"></a>', f"#### {title(bid, c)}, {', '.join(books[bid]['authors'][:3])}", "",
+                   f"Calibre #{bid}. **Why outdated:** {esc(c['status_reason'])}"
+                   + (f" **Since then:** {esc(c['what_changed'])}" if c.get("what_changed") else "")]
+            if o["verdict_disputed"]:
+                md.append(f"\n**Verdict disputed:** {esc(o['verdict_disputed'])}")
+            p = o["replacement"]
+            if p:
+                link = f" ([source]({p['url']}))" if p.get("url") else ""
+                owned = f" Already in the library: Calibre #{o['already_in_library']}." if o["already_in_library"] else ""
+                md.append(f"\n**Replacement ({o['confidence']}):** {esc(repl(p))}, {esc(p['publisher'])}{link}.{owned}")
+                md.append(f"\n**Why this one:** {esc(o['why_fit'])}")
+            else:
+                md.append(f"\n**No book replacement ({o['confidence']}):** {esc(o['no_replacement'])}")
+                if o["why_fit"]:
+                    md.append(f"\n{esc(o['why_fit'])}")
+            if o["alternatives"]:
+                md.append("\n**Alternatives considered:**")
+                md += [f"- {esc(x['title'])} ({x['year'] or '?'}), {esc(x['authors'])}: {esc(x['why_not'])}" for x in o["alternatives"]]
+            if o["sources"]:
+                md.append("\nSources: " + ", ".join(f"[{i}]({u})" for i, u in enumerate(o["sources"], 1)))
+            md.append("")
+    write_atomic(OUT / "replacements.md", "\n".join(md) + "\n")
+    log(f"replacements.md: {len(done)}/{len(rows)} outdated books researched")
 
 
 def stage_status(con):
@@ -825,6 +1195,8 @@ def main():
         stage_convert(con, books, ids)
     if a.stage in ("all", "classify"):
         stage_classify(con, books, ids)
+    if a.stage in ("all", "replace"):
+        stage_replace(con, books, ids)
     if a.stage == "all":  # text output first; captioning can take a day for a large library
         stage_place(con, books, ids if a.ids else sorted(books))
     if a.stage in ("all", "caption"):

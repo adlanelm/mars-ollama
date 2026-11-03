@@ -1,7 +1,7 @@
 from io import BytesIO
 
 from pypdf import PdfWriter
-from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject
+from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject, TextStringObject
 
 from docling_proxy.contracts import ProxyOptions
 from docling_proxy.pdf_tools import build_split_plan, count_pdf_pages, decide_split, is_pdf, materialize_pdf_chunk, split_pdf
@@ -61,6 +61,33 @@ def test_materialize_pdf_chunk_handles_malformed_link_actions():
     chunk_bytes = materialize_pdf_chunk(pdf_bytes, plan.chunks[0])
 
     assert count_pdf_pages(chunk_bytes) == 1
+
+
+def make_pdf_with_named_links(page_count: int) -> bytes:
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=300, height=300)
+    for i in range(page_count):
+        writer.add_named_destination(f"dest{i}", i)
+    for i in range(page_count):
+        annotation = DictionaryObject()
+        annotation[NameObject("/Type")] = NameObject("/Annot")
+        annotation[NameObject("/Subtype")] = NameObject("/Link")
+        annotation[NameObject("/Rect")] = ArrayObject([NumberObject(10), NumberObject(10), NumberObject(100), NumberObject(100)])
+        annotation[NameObject("/Dest")] = TextStringObject(f"dest{(i + 1) % page_count}")
+        writer.pages[i][NameObject("/Annots")] = ArrayObject([writer._add_object(annotation)])
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def test_materialize_pdf_chunk_skips_link_resolution():
+    pdf_bytes = make_pdf_with_named_links(6)
+    plan = build_split_plan(pdf_bytes, ProxyOptions(max_pages_per_part=2))
+
+    chunk_bytes = materialize_pdf_chunk(pdf_bytes, plan.chunks[1])
+
+    assert count_pdf_pages(chunk_bytes) == 2
 
 
 def test_decide_split_respects_disable_flag():

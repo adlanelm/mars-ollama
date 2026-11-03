@@ -6,7 +6,7 @@ See also: [clients.md](clients.md), [gpu-switching.md](gpu-switching.md).
 
 ## What it is
 
-Converts the Calibre library `~/MEGA/mainlib` (526 books: 287 PDF, 246 EPUB, 26 CHM, 12 MOBI, 4 FB2, 2 AZW3, 1 MD; 268 books are PDF-only, 13 of them scanned without any text layer) into a Markdown copy for local RAG (Open WebUI + Qdrant later; Open WebUI on jupiter.internal is not used yet). The Calibre library is only read. Output goes to `~/llm/library-md`, deliberately outside MEGA so it isn't synced.
+Converts the Calibre library `~/MEGA/mainlib` (526 books: 287 PDF, 246 EPUB, 26 CHM, 12 MOBI, 4 FB2, 2 AZW3, 1 MD; 268 books are PDF-only, 13 of them scanned without any text layer) into a Markdown copy for local RAG (Open WebUI + Qdrant later; Open WebUI on jupiter.internal is not used yet). The Calibre library is only read. Output goes to `~/MEGA/library-md`, next to the Calibre library, so MEGA syncs it (438 MB for 497 books). State, the Markdown cache and logs (4 GB, rewritten constantly) stay outside MEGA in `~/llm/library-md/.library-md` (`--work`, called WORK below).
 
 ## Output format
 
@@ -14,19 +14,21 @@ Converts the Calibre library `~/MEGA/mainlib` (526 books: 287 PDF, 246 EPUB, 26 
 |---|---|---|
 | One file per book | UTF-8 Markdown | Open WebUI loads `.md` as plain text (no docling round trip) and splits on Markdown headers, which suits chapter headings |
 | Front matter | YAML, scalars written as JSON | JSON scalars are valid YAML; title, authors, year, category, topics, `depends_on`, status, summary, Calibre id and tags, conversion method, `figures_described`, `figures_described_by` |
-| Outdated banner | `> **Outdated** (year, judged date): reason` after the front matter | The reader of a retrieved chunk sees it |
-| Filename | `Title - Author (Year) [OUTDATED].md` | Every retrieved chunk's source name carries `[OUTDATED]` |
-| Folders | one per top-level category | Browsing, and upload by folder |
-| `catalog.csv`, `README.md` | one row / one line per book, with status and reason | A catalog that can itself be indexed |
+| Outdated banner | `> **Outdated** (year, judged date): reason` after the front matter, then the why: newer edition in the library, what the book relies on, evidence from the text, what changed since, age | The reader of a retrieved chunk sees it and why |
+| Filename | `Title - Surname (Year) (OUTDATED).md`, ASCII only (letters, digits, space, `. _ ( ) -`), Cyrillic transliterated (`Создание сильных брендов` -> `Sozdanie silnykh brendov`), `C++`/`C#` -> `Cpp`/`CSharp`, `&` -> `and`, a colon -> ` - `; titles over 70 chars lose the subtitle, then are cut at a word; a name clash gets ` id<calibre id>` | Every retrieved chunk's source name carries `(OUTDATED)`; names survive Open WebUI knowledge upload, URLs, shells and Windows |
+| Title source | the Calibre title and first author; the LLM's title/author only replaces a junk Calibre value. Front matter keeps the original (e.g. Cyrillic) title | Fix titles in Calibre, then `place` |
+| Folders | one per top-level category, same ASCII rule (`Data and AI`) | Browsing, and upload by folder |
+| `catalog.csv`, `README.md` | one row / one line per book, with status, reason, what changed and newer edition | A catalog that can itself be indexed |
+| `replacements.md` | per outdated book: replacement (or what to use instead), why it fits, alternatives, sources, confidence | Written by the `replace` stage, see [Replacements](#replacements) |
 | Figures | `> **Figure:** description` line at the picture's position | Described by granite-vision in the `caption` stage, see [Figures and captions](#figures-and-captions); decorative images and books in skipped categories have none |
 
-Layout: `OUT/<Category>/<name>.md`, `OUT/catalog.csv`, `OUT/README.md` (also lists books that failed to convert), `OUT/.library-md/` (cache and state).
+Layout: `OUT/<Category>/<name>.md`, `OUT/catalog.csv`, `OUT/README.md` (also lists books that failed to convert), `OUT/replacements.md`; cache and state in `WORK`.
 
 ## Usage
 
 ```bash
-bin/library-md                                   # everything: convert (+ caption worker), classify, place, caption, place
-bin/library-md convert --limit 20                # one stage (convert|classify|caption|place), at most 20 pending books
+bin/library-md                                   # everything: convert (+ caption worker), classify, replace, place, caption, place
+bin/library-md convert --limit 20                # one stage (convert|classify|replace|caption|place), at most 20 pending books
 bin/library-md status                            # counts per stage and the failures
 bin/library-md skip --ids 883                    # never convert these books (--retry-failed leaves them alone)
 bin/library-md classify --reclassify && bin/library-md place
@@ -43,7 +45,7 @@ pkill -TERM -xf 'python3 bin/library-md'           # stop; rerun the start line 
 
 A detached `&` run starts with SIGINT ignored, so the script treats SIGTERM like Ctrl-C.
 
-Options: `--lib`, `--out`, `--ids`, `--limit`, `--retry-failed`, `--reclassify`, `--model` (default `qwen3.6-35b-a3b`), `--thinking`, `--epub-engine pandoc|docling`, `--min-text` (200), `--pdf-timeout`, `--no-gpu-wait`, `--caption-model` (default `granite-vision-4.1`), `--caption-skip` (comma-separated categories, default `Fiction & Literature`), `--figure-min-area` (40000 px), `--docling`, `--llm`.
+Options: `--lib`, `--out` (default `~/MEGA/library-md`), `--work` (default `~/llm/library-md/.library-md`), `--ids`, `--limit`, `--retry-failed`, `--reclassify`, `--model` (default `qwen3.6-35b-a3b`), `--thinking`, `--epub-engine pandoc|docling`, `--min-text` (200), `--pdf-timeout`, `--no-gpu-wait`, `--caption-model` (default `granite-vision-4.1`), `--caption-skip` (comma-separated categories, default `Fiction & Literature`), `--figure-min-area` (40000 px), `--docling`, `--llm`, `--searxng` (default `https://jupiter.internal:8888`), `--search-delay` (8 s).
 
 ## Conversion routes
 
@@ -95,13 +97,44 @@ Pictures matter in technical books (architecture diagrams, dashboards), so `conv
 
 ## Classification
 
-The local LLM (llama-swap) answers with JSON-schema constrained output: category (enum), subcategory, topics, title and author (only when the Calibre metadata is junk), year, edition, `depends_on`, status `current|outdated|timeless`, `status_reason`, summary.
+The local LLM (llama-swap) answers with JSON-schema constrained output: category (enum), subcategory, topics, title and author (only when the Calibre metadata is junk), year, edition, `depends_on`, status `current|outdated|timeless`, `status_reason`, `status_evidence` (up to 5 concrete signals from the text: versions, APIs, products), `what_changed` (for outdated books: what replaced them and what to use today), summary. Books classified before these two fields existed (2026-11-01) lack them until `classify --reclassify`; their banner shows the rest.
 
 Inputs: Calibre metadata including the owner's `lib:*` tags, up to 80 headings, about 40 lines mentioning versions or APIs sampled across the whole book, and the first 7000 characters.
 
 Lesson: without the version lines and the rule "depends_on first; fast-moving tech older than about 4 years is outdated unless the evidence says otherwise", the model called Kubernetes Best Practices (2019, `extensions/v1beta1`) current. With them it says outdated, with a concrete reason.
 
+Example banner:
+
+```markdown
+> **Outdated** (2012, judged 2026-11-01): The practical case studies rely on obsolete versions (Linux 3.2 and Windows 7) ...
+>
+> - Newer edition in this library: Operating System Concepts - Abraham Silberschatz (2018, 10th edition), Calibre #839
+> - Relies on: Linux 3.2 kernel; Windows 7; POSIX Pthreads API
+> - Age: published 2012, 14 years before this check
+```
+
+### Newer edition in the library
+
+`place` (no LLM) groups classified books by first-author surname and title (lowercased, without edition words, brackets and punctuation; a subtitle only splits a group when two subtitled books disagree) and marks every older edition outdated, whatever the LLM said, with "A newer edition is in this library: ..." as the reason. Newer means a higher edition number, or, when the older book's edition is unknown, at least a 2nd edition published 2+ years later. Years alone don't count: Calibre often has the reprint or ebook date, and two copies of one edition a year apart are common. Fiction is left out. Front matter `newer_edition_in_library` names the newer book. On 2026-11-01 it found 4 (Principles of Banking, Physics for Game Developers, Operating System Concepts, The Art of Scalability); the LLM had called only Operating System Concepts outdated (the other three timeless or current).
+
 Status is the LLM's judgment, limited by its knowledge cutoff. Spot-check `catalog.csv`. Categories are the `CATEGORIES` dict at the top of the script: edit it, run `classify --reclassify`, then `place`.
+
+## Replacements
+
+`replace` researches a replacement for every book whose status (after the newer-edition check) is outdated, with the classify model (qwen3.6 through llama-swap) and the homelab searxng only; nothing goes to a cloud model. Per book:
+
+1. The LLM writes 2-4 queries from the classification (title, author, edition, depends_on, what changed): the latest edition, current books on the subject, one in the book's language if it is not English.
+2. searxng returns up to 8 results per query (title, URL, ~300-char snippet); pirate links (`.pdf`/`.epub` files, GitHub blobs, libgen and similar) are dropped.
+3. The LLM names up to 4 candidates and writes queries that confirm their edition, year and publisher; a second search round runs.
+4. With the numbered results and the owner's books in the same category (id, title, year, status), it returns the replacement or `no_replacement` (docs or a course when no current book exists), `already_in_library`, `why_fit`, alternatives with `why_not`, `verdict_disputed` and confidence. It cites result numbers, which the script turns into URLs, so a source is always a real search result; an `already_in_library` id outside the library is dropped.
+
+Results live in the `replacements` table of `state.db`, keyed by a hash of the book's classification: a reclassify that changes a book redoes it, books that stop being outdated drop out of the document. Queries are spaced by `--search-delay` (8 s). When searxng is unreachable or all its engines report themselves unavailable, the stage stops and leaves the rest pending instead of letting the model answer from memory; rerun later. The homelab searxng has three web engines (brave, google cse, duckduckgo); on 2026-11-01 a run without the delay got all three suspended after ~10 books (too many requests / access denied), and 58 answers made without results were thrown away. A pick without a confirming result is capped at medium confidence. `--retry-failed` retries books whose LLM step failed. `OUT/replacements.md` is rewritten at the end of every `replace` run: overview table per category, then details. The model only sees snippets, so editions and years can be off; confidence says how well the results back the pick. About 15-45 s per book.
+
+## Calibre metadata fixes (2026-11-01)
+
+- Titles and authors in Calibre were audited by subagents (book text first, web search for ISBNs and Russian books) and 309 books fixed with `calibredb set_metadata` (Calibre renames the files itself): junk and file-name titles, publisher prefixes, "Last, First" and "Unknown" authors, Latin transliterations and mojibake of Russian titles back to Cyrillic, a few language fields; then `author_sort` synced. Backup: `WORK/calibre-metadata.before-titles-2026-11-01.db`; old and new values: `WORK/calibre-titles-2026-11-01.json`. Six low-confidence proposals were left alone (747, 783, 881, 883, 1038, 1164).
+- Duplicates: 19 copies of the same edition moved to Calibre's trash (emptied 2026-11-01, so only the DB backups below remain); kept EPUB over PDF, then the copy with ISBN or year, then one with a file. Different editions stay (the older one is marked outdated by the edition check). Backup `WORK/calibre-metadata.before-dedupe-2026-11-01.db`, list with reasons `WORK/calibre-dedupe-2026-11-01.tsv`. `place` removed their output files. Then the 4 older editions with a newer one in the library (806, 723, 997, 845; `WORK/calibre-old-editions-2026-11-01.tsv`, backup `calibre-metadata.before-editions-2026-11-01.db`); 682 kept as the only edition with a file. Then the 5 entries without any file (571, 593, 747, 748, 865; `WORK/calibre-fileless-removed-2026-11-01.tsv`, backup `calibre-metadata.before-fileless-2026-11-01.db`) were removed and the missing PDF formats of 581, 613, 907, 908 dropped (their EPUBs stay). The library now has 498 books and `check_library` is clean.
+- `OUT/replacements.md`: a first version was researched by cloud subagents with web search; it was replaced the same day by the `replace` stage (local LLM and searxng only).
 
 ## GPU rule
 
@@ -110,11 +143,11 @@ docling and llama-swap may run at the same time (granite-vision-4.1 is light; us
 - `convert` (docling) waits only while a ComfyUI container runs. `--no-gpu-wait` overrides. It does not wait for loaded llama-swap models.
 - `classify` (qwen3.6) is not mixed with granite: both are in llama-swap's chat group and would swap on every request. So the caption worker stops when convert ends, and classify runs alone.
 - `classify` and the caption stage wait for any docling task the script started (for example a timed-out PDF still running), and unload their model when done (`POST /api/models/unload/<model>`, aux models stay).
-- A lock file (`OUT/.library-md/lock`) allows one run at a time.
+- A lock file (`WORK/lock`) allows one run at a time.
 
 ## Resumability
 
-State is in `OUT/.library-md/state.db`: per book the source signature (`format:size:mtime`), conversion status, method and `conv_version`, docling task id, kept figure count, classification JSON, caption status and output path. Table `captions` holds one caption per image hash (model, error), so identical images, also across books, are described once.
+State is in `WORK/state.db`: per book the source signature (`format:size:mtime`), conversion status, method and `conv_version`, docling task id, kept figure count, classification JSON, caption status and output path. Table `captions` holds one caption per image hash (model, error), so identical images, also across books, are described once.
 
 | Event | Effect on rerun |
 |---|---|
@@ -126,7 +159,7 @@ State is in `OUT/.library-md/state.db`: per book the source signature (`format:s
 | Book deleted in Calibre | Its output file is removed |
 | Conversion or classification failed | Skipped until `--retry-failed` |
 
-`status` prints counts and the failures. **`OUT/.library-md/` (cache and state) must be excluded when uploading to Open WebUI later.**
+`status` prints counts and the failures. `OUT` holds only the books, `catalog.csv`, `README.md` and `replacements.md`, so it can be uploaded to Open WebUI as is.
 
 ## Known limits
 

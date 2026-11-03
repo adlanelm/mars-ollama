@@ -14,6 +14,8 @@ All child `DOCLING_SERVE_*` settings are inherited from the proxy container envi
 
 `md_compact_tables=true` (a docling-serve option, no column padding) is honoured for split-merged PDFs as well, since the proxy re-renders their Markdown itself.
 
+Split-merged PDFs also honour `image_export_mode=embedded`: the merge re-renders Markdown and HTML from the chunks' JSON with `ImageRefMode.EMBEDDED`, so pictures arrive as data URIs. Any other mode gives `<!-- image -->` placeholders. Before 2026-10-30 split results always had placeholders (`merge.py` called `export_to_markdown` without an image mode).
+
 ## Supported endpoints
 
 - `POST /v1/convert/file`
@@ -84,6 +86,7 @@ For a large PDF sent to `POST /v1/convert/file`, the proxy processes it in this 
 5. The proxy normalizes output options, forces chunk `target_type` to `inbody`, and ensures `json` is included for chunk processing, because merge happens through `DoclingDocument` JSON payloads.
 6. The proxy enqueues chunk work from those planned page ranges immediately, so `queued chunk ...` logs appear before every chunk PDF has been written.
 7. For each chunk that actually begins work, the proxy materializes that chunk's PDF bytes on demand, acquires a ready local `docling-serve` child from the warm pool when available, and starts a replacement child in the background to keep the configured idle pool filled.
+   - Materialisation skips pypdf's internal-link fix-up (`writer._unresolved_links.clear()` in `pdf_tools.materialize_pdf_chunk`). With pypdf 5.9 the fix-up rescanned the whole book's named destinations per link: 63.7 s instead of 0.8 s for 50 pages of a 1556-page book. Docling ignores link targets.
 8. If no ready child is available, the proxy waits for one to finish prewarming.
 9. The proxy forwards the chunk to the child server with `POST /v1/convert/file` and waits for the chunk response.
 10. The proxy reads `document.json_content` from the chunk response.

@@ -1191,6 +1191,7 @@ class ProxyService:
             proxy_meta=proxy_meta,
             compact_tables=truthy(options.get("md_compact_tables")),
             table_max_chars=settings.md_table_max_chars,
+            image_export_mode=options.get("image_export_mode"),
         )
 
     def _status_from_job(self, job: ProxyJob) -> TaskStatusResponse:

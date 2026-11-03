@@ -9,7 +9,7 @@ services:
     mem_limit: 28g
     cpus: "12.8"
     environment:
-      - GGML_VK_VISIBLE_DEVICES=0 # Vulkan0 = RX 7800 XT; Vulkan1 is the 610M iGPU
+      - GGML_VK_VISIBLE_DEVICES=0 # belt and braces: the 7800 XT is the only device passed in, so it is always Vulkan0
       - LLAMA_CACHE=/cache        # only used by `-hf` experiments
     ports:
       - "11434:11434" # same host and in-network port as Ollama had, so clients keep their URL
@@ -23,8 +23,13 @@ services:
       ollama:
         aliases:
           - ollama # docling-proxy and other in-network clients keep resolving http://ollama:11434
-    devices:
-      - /dev/dri:/dev/dri
+    devices: # only the RX 7800 XT (PCI 03:00.0); by-path because cardN/renderDN numbering can change between boots. The 610M iGPU stays invisible
+      - source: /dev/dri/by-path/pci-0000:03:00.0-card # long syntax: the colons in the PCI path break the short one
+        target: /dev/dri/card0
+        permissions: rwm
+      - source: /dev/dri/by-path/pci-0000:03:00.0-render
+        target: /dev/dri/renderD128
+        permissions: rwm
       - /dev/kfd:/dev/kfd
     group_add:
       - "983" # video (host gid; names don't exist in the image)

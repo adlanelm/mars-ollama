@@ -135,6 +135,10 @@ def materialize_pdf_chunk(source: PdfSource, chunk: PdfChunkPlan) -> bytes:
                 finally:
                     if annotations is not None:
                         page[NameObject("/Annots")] = annotations
+        # pypdf re-reads the whole book's named destinations for every internal link while writing (about 60 s for
+        # 50 pages of a 1556-page book on pypdf 5.9). Docling ignores link targets, so skip the fix-up.
+        if hasattr(writer, "_unresolved_links"):
+            writer._unresolved_links.clear()
         buffer = BytesIO()
         writer.write(buffer)
         return buffer.getvalue()

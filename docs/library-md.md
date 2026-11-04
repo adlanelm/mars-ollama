@@ -6,7 +6,7 @@ See also: [clients.md](clients.md), [gpu-switching.md](gpu-switching.md).
 
 ## What it is
 
-Converts the Calibre library `~/MEGA/mainlib` (526 books: 287 PDF, 246 EPUB, 26 CHM, 12 MOBI, 4 FB2, 2 AZW3, 1 MD; 268 books are PDF-only, 13 of them scanned without any text layer) into a Markdown copy for local RAG (Open WebUI + Qdrant later; Open WebUI on jupiter.internal is not used yet). The Calibre library is only read. Output goes to `~/MEGA/library-md`, next to the Calibre library, so MEGA syncs it (438 MB for 497 books). State, the Markdown cache and logs (4 GB, rewritten constantly) stay outside MEGA in `~/llm/library-md/.library-md` (`--work`, called WORK below).
+Converts the Calibre library `~/MEGA/mainlib` (526 books: 287 PDF, 246 EPUB, 26 CHM, 12 MOBI, 4 FB2, 2 AZW3, 1 MD; 268 books are PDF-only, 13 of them scanned without any text layer) into a Markdown copy for local RAG (Open WebUI + Qdrant later; Open WebUI on jupiter.internal is not used yet). The Calibre library is only read. Output goes to `~/MEGA/library-md`, next to the Calibre library, so MEGA syncs it (438 MB for 497 books). State, the Markdown cache and logs (4 GB, rewritten constantly) stay outside MEGA in `~/.cache/library-md` (`--work`, called WORK below).
 
 ## Output format
 
@@ -38,14 +38,14 @@ bin/library-md --ids 823,924                     # only these Calibre ids
 Long runs, detached, with a log:
 
 ```bash
-setsid nohup bin/library-md >> ~/llm/library-md/.library-md/run.log 2>&1 < /dev/null &
-tail -f ~/llm/library-md/.library-md/run.log      # live, one line per book
+setsid nohup bin/library-md >> ~/.cache/library-md/run.log 2>&1 < /dev/null &
+tail -f ~/.cache/library-md/run.log      # live, one line per book
 pkill -TERM -xf 'python3 bin/library-md'           # stop; rerun the start line to resume
 ```
 
 A detached `&` run starts with SIGINT ignored, so the script treats SIGTERM like Ctrl-C.
 
-Options: `--lib`, `--out` (default `~/MEGA/library-md`), `--work` (default `~/llm/library-md/.library-md`), `--ids`, `--limit`, `--retry-failed`, `--reclassify`, `--model` (default `qwen3.6-35b-a3b`), `--thinking`, `--epub-engine pandoc|docling`, `--min-text` (200), `--pdf-timeout`, `--no-gpu-wait`, `--caption-model` (default `granite-vision-4.1`), `--caption-skip` (comma-separated categories, default `Fiction & Literature`), `--figure-min-area` (40000 px), `--docling`, `--llm`, `--searxng` (default `https://jupiter.internal:8888`), `--search-delay` (8 s).
+Options: `--lib`, `--out` (default `~/MEGA/library-md`), `--work` (default `~/.cache/library-md`), `--ids`, `--limit`, `--retry-failed`, `--reclassify`, `--model` (default `qwen3.6-35b-a3b`), `--thinking`, `--epub-engine pandoc|docling`, `--min-text` (200), `--pdf-timeout`, `--no-gpu-wait`, `--caption-model` (default `granite-vision-4.1`), `--caption-skip` (comma-separated categories, default `Fiction & Literature`), `--figure-min-area` (40000 px), `--docling`, `--llm`, `--searxng` (default `https://jupiter.internal:8888`), `--search-delay` (8 s).
 
 ## Conversion routes
 
@@ -160,6 +160,10 @@ State is in `WORK/state.db`: per book the source signature (`format:size:mtime`)
 | Conversion or classification failed | Skipped until `--retry-failed` |
 
 `status` prints counts and the failures. `OUT` holds only the books, `catalog.csv`, `README.md` and `replacements.md`, so it can be uploaded to Open WebUI as is.
+
+## Work folder history
+
+- 2026-11-04: the work folder (then `~/llm/library-md/.library-md`) was deleted by mistake, together with the old output copy around it. The state was rebuilt from the placed files in `OUT`: front matter became `cls_json` and the conversion fields, `> **Figure:**` lines became figure markers with matching `captions` rows, and the source signature was taken from the current Calibre file. Re-rendering matched 500 of 503 books apart from the date stamps, so `place` does not rewrite them. Lost for good: the source images (books captioned later need `convert` again first), the Calibre metadata backups, and the replacement research (redone with `replace`). The folder then moved to `~/.cache/library-md`.
 
 ## Known limits
 

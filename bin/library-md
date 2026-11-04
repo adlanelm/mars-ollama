@@ -18,7 +18,7 @@ Stages (`all` runs them in order; each one is resumable, Ctrl-C and rerun picks 
             decorative images are dropped. Captions are stored per image hash, so duplicates are described once.
   place     writes OUT/<Category>/<Title - Author (Year)>[ [OUTDATED]].md with YAML front matter and the figure
             descriptions in place, plus catalog.csv and README.md. Books deleted from Calibre lose their output file.
-The Calibre library is only read. State, the Markdown cache and logs live in --work (~/llm/library-md/.library-md, 4 GB; kept out of MEGA and uploads).
+The Calibre library is only read. State, the Markdown cache and logs live in --work (~/.cache/library-md, 4 GB; kept out of MEGA and uploads).
 GPU: docling and the light caption model share the GPU, so in `all` a caption worker describes the figures of converted
 books while convert runs. It stops when convert ends, because qwen3.6 (classify) and granite-vision are in the same
 llama-swap group and would swap on every request; leftover figures are described after classify. Docling waits only
@@ -70,7 +70,7 @@ ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
 ap.add_argument("stage", nargs="?", default="all", choices=["all", "convert", "classify", "replace", "caption", "place", "status", "skip"])
 ap.add_argument("--lib", default="~/MEGA/mainlib")
 ap.add_argument("--out", default="~/MEGA/library-md", help="the Markdown copy, next to the Calibre library")
-ap.add_argument("--work", default="~/llm/library-md/.library-md", help="state, cache and logs, outside synced folders")
+ap.add_argument("--work", default="~/.cache/library-md", help="state, cache and logs, outside synced folders")
 ap.add_argument("--ids", help="comma-separated Calibre book ids (default: all)")
 ap.add_argument("--limit", type=int, help="process at most N pending books per stage")
 ap.add_argument("--retry-failed", action="store_true", help="retry books whose convert or classify failed")

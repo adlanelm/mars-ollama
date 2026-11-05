@@ -237,6 +237,9 @@ services:
       DOCLING_PROXY_MD_TABLE_MAX_CHARS: 1500 # split longer md tables at row boundaries, header repeated, so Open WebUI's 1800-char chunks never cut a table mid-row
       DOCLING_PROXY_CHILD_STARTUP_TIMEOUT_SEC: 120
       DOCLING_PROXY_CHILD_REQUEST_TIMEOUT_SEC: 36000
+      # Parent only (stripped for docling-serve children): idle parent held ~700 MiB of freed heap after big jobs; also malloc_trim on warm-pool drain
+      MALLOC_ARENA_MAX: "2"
+      MALLOC_TRIM_THRESHOLD_: "131072"
       DOCLING_SERVE_ENABLE_UI: "false"
       DOCLING_SERVE_ENABLE_REMOTE_SERVICES: "true"
       DOCLING_SERVE_LOAD_MODELS_AT_BOOT: "false"

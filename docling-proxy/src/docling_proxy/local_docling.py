@@ -50,6 +50,20 @@ class LocalDoclingExecution:
 
 logger = logging.getLogger(__name__)
 
+# Allocator tuning meant for the long-lived proxy process only; children keep glibc defaults.
+_PARENT_ONLY_ENV = ("MALLOC_ARENA_MAX", "MALLOC_TRIM_THRESHOLD_")
+
+
+def release_free_heap() -> bool:
+    """Hand freed heap pages back to the OS (glibc malloc_trim). PDF splits and JSON merges leave
+    hundreds of MiB free-but-mapped in the parent otherwise. No-op without glibc."""
+    try:
+        import ctypes
+
+        return bool(ctypes.CDLL("libc.so.6").malloc_trim(0))
+    except (OSError, AttributeError):
+        return False
+
 
 class LocalDoclingManager:
     def __init__(self) -> None:
@@ -81,6 +95,10 @@ class LocalDoclingManager:
         await self._ensure_pool_capacity()
         await self._wait_for_ready_sessions(settings.warm_child_pool_size)
         if settings.warm_child_idle_timeout_sec > 0:
+            # Start the idle clock now, or the boot-time warm child (~1 GiB) stays until the first request
+            async with self._ready_condition:
+                if self._active_leases == 0 and self._last_pool_idle_at is None:
+                    self._last_pool_idle_at = time.monotonic()
             self._idle_reaper_task = asyncio.create_task(self._run_idle_reaper())
         logger.info("local docling-serve warm pool ready: idle=%s", settings.warm_child_pool_size)
 
@@ -339,6 +357,8 @@ class LocalDoclingManager:
                 )
                 await asyncio.gather(*(self._stop_session(session) for session in sessions_to_drain), return_exceptions=True)
                 logger.info("warm pool drained to idle=0")
+                if release_free_heap():
+                    logger.info("returned free heap to the OS (malloc_trim)")
         except asyncio.CancelledError:
             raise
 
@@ -471,6 +491,8 @@ class LocalDoclingManager:
 
     def _environment(self, scratch_dir: Path) -> dict[str, str]:
         env = dict(os.environ)
+        for name in _PARENT_ONLY_ENV:
+            env.pop(name, None)
         env["DOCLING_SERVE_SCRATCH_PATH"] = str(scratch_dir)
         return env
 

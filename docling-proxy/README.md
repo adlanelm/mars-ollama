@@ -224,6 +224,7 @@ Requests outside those rules still go through docling-compatible processing, but
 - `DOCLING_PROXY_CHILD_LAUNCH_CONCURRENCY` limits simultaneous child startups and warm-pool replacements.
 - `DOCLING_PROXY_WARM_CHILD_POOL_SIZE` keeps that many idle ready child instances prelaunched when warm pooling is enabled.
 - `DOCLING_PROXY_WARM_CHILD_IDLE_TIMEOUT_SEC` drains those idle ready children after the configured period since the last active request finished.
+- After that drain the parent calls glibc `malloc_trim(0)` so freed heap from PDF splitting and result merging goes back to the OS. The compose file also sets `MALLOC_ARENA_MAX=2` and `MALLOC_TRIM_THRESHOLD_=131072` for the parent. Both are removed from the child `docling-serve` environment. Without this, an idle parent held about 700 MiB after large jobs.
 - Split chunks are processed sequentially in part order.
 - Multi-file batch requests process file 1 completely before file 2 begins, including ordered split chunks within each file.
 - The same file-by-file ordering also applies across separate requests handled by the same proxy process.

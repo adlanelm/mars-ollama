@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from docling_proxy.local_docling import LocalDoclingManager, settings as local_docling_settings
+from docling_proxy.local_docling import LocalDoclingManager, release_free_heap, settings as local_docling_settings
 from docling_proxy.models import FilePayload
 
 
@@ -31,6 +31,25 @@ async def test_child_env_inherits_docling_settings_and_uses_unique_scratch(monke
         assert child_scratch.exists()
     finally:
         await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_child_env_drops_parent_only_malloc_tuning(monkeypatch, tmp_path):
+    monkeypatch.setenv("MALLOC_ARENA_MAX", "2")
+    monkeypatch.setenv("MALLOC_TRIM_THRESHOLD_", "131072")
+    monkeypatch.setenv("DOCLING_SERVE_SCRATCH_PATH", str(tmp_path))
+
+    manager = LocalDoclingManager()
+    try:
+        env = manager._environment(manager._create_child_scratch_dir())
+        assert "MALLOC_ARENA_MAX" not in env
+        assert "MALLOC_TRIM_THRESHOLD_" not in env
+    finally:
+        await manager.close()
+
+
+def test_release_free_heap_never_raises():
+    assert isinstance(release_free_heap(), bool)
 
 
 @pytest.mark.asyncio
@@ -193,6 +212,45 @@ async def test_warm_pool_drains_ready_instances_after_idle_timeout(monkeypatch):
         assert len(manager._ready_sessions) == 0
         assert stop_calls.count(1) == 1
         assert any(pid != 1 for pid in stop_calls)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_boot_prewarm_drains_without_any_request(monkeypatch):
+    monkeypatch.setattr(local_docling_settings, "warm_child_pool_size", 1)
+    monkeypatch.setattr(local_docling_settings, "warm_child_idle_timeout_sec", 0.05)
+    monkeypatch.setattr(local_docling_settings, "warm_child_reap_interval_sec", 0.01)
+
+    manager = LocalDoclingManager()
+    stop_calls: list[int] = []
+
+    async def fake_start_session():
+        return SimpleNamespace(
+            base_url="http://127.0.0.1:6100",
+            port=6100,
+            process=SimpleNamespace(pid=1, returncode=None),
+            scratch_dir=Path("/tmp/fake-boot-1"),
+            log_prefix="fake-boot-1",
+            stderr_lines=deque(),
+            stream_tasks=(),
+        )
+
+    async def fake_stop_session(session):
+        stop_calls.append(session.process.pid)
+
+    monkeypatch.setattr(manager, "_start_session", fake_start_session)
+    monkeypatch.setattr(manager, "_stop_session", fake_stop_session)
+
+    await manager.start()
+    try:
+        for _ in range(50):
+            if manager._pool_suspended and stop_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert manager._pool_suspended is True
+        assert len(manager._ready_sessions) == 0
+        assert stop_calls == [1]
     finally:
         await manager.close()
 

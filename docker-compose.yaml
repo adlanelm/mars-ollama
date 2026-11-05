@@ -46,6 +46,11 @@ services:
   kokoro:
     image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.2@sha256:cbcc28802fb5d1eaaba8b91e38b0e872a669e85831c513cf6a29c709cbe25405
     container_name: kokoro
+    # Idle stop inside the container: kokoro/idle-proxy.py holds :8880, starts the image's ./entrypoint.sh on 127.0.0.1:8881
+    # at the first request (~7 s) and stops it after 15 min without connections (the loaded model held 1.3-2.4 GiB while idle)
+    command: ["python", "/opt/idle-proxy.py"]
+    volumes:
+      - ./kokoro/idle-proxy.py:/opt/idle-proxy.py:ro
     mem_limit: 3g   # RAM headroom is ~12 GiB with a MoE chat model loaded; keep TTS from eating llama-swap's expert offload
     cpus: "6"       # of 16 threads; llama-swap keeps 12.8
     environment:
@@ -55,15 +60,17 @@ services:
       - MKL_NUM_THREADS=6
       - MALLOC_ARENA_MAX=2             # glibc per-thread arenas (52 threads) fragmented the heap to the 3g limit and got OOM-killed
       - MALLOC_TRIM_THRESHOLD_=131072  # return freed memory to the OS sooner
+      - IDLE_PROXY_IDLE_SEC=900
     ports:
       - "8880:8880" # LAN: the k3s cluster on jupiter reaches http://mars.internal:8880/v1
     networks:
       - ollama
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8880/health || exit 1"]
+      # Connect-only probe: the proxy does not start the model for a connection that sends no data
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8880), 3).close()"]
       interval: 30s
       timeout: 5s
-      start_period: 60s
+      start_period: 10s
     restart: always
 
   # ─────────────────────────────────────────────────────────────

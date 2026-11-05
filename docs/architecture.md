@@ -10,7 +10,7 @@ See also: [../ROADMAP.md](../ROADMAP.md), [colibri.md](colibri.md), [gpu-switchi
 |---|---|---|
 | `ollama` (**removed 2026-10-13**, replaced by llama-swap) | container `ollama`, port `11434` | Image `ollama/ollama:rocm` (0.35.1), `OLLAMA_VULKAN=1`, flash attention on, q8_0 KV cache, `OLLAMA_MAX_LOADED_MODELS=2`, `OLLAMA_KEEP_ALIVE=35`, `mem_limit: 28g`, `cpus: "12.8"`, models set `num_thread 13`. Data in `$HOME/llm/ollama/data` (78 GB) |
 | `docling-proxy` | container `docling-proxy`, host port `8000` (container `8080`) | **Also uses the GPU** (`/dev/dri`, `/dev/kfd`) for layout and OCR. Output archive in `$HOME/llm/docling` |
-| `kokoro` | container `kokoro`, host port `8880` | CPU-only Kokoro-82M text-to-speech (`/v1/audio/speech`) for Open Notebook, `mem_limit: 3g`, `cpus: "6"`, no GPU. See [kokoro.md](kokoro.md) |
+| `kokoro` | container `kokoro`, host port `8880` | CPU-only Kokoro-82M text-to-speech (`/v1/audio/speech`) for Open Notebook, `mem_limit: 3g`, `cpus: "6"`, no GPU. Model loads at the first request and unloads after 15 min idle (in-container proxy). See [kokoro.md](kokoro.md) |
 | Open WebUI | homelab k3s (not in this repo) | Connection, RAG and reranker settings live in its database and are set through the UI |
 
 Both containers share the compose network `ollama`.
